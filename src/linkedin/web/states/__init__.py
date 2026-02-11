@@ -1,0 +1,1 @@
+"""Web dashboard state classes."""

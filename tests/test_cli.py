@@ -5,12 +5,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from cli import (
-    cli,
-    ensure_dirs,
-    load_json,
-    save_json,
-)
+from linkedin.cli import cli
+from linkedin.data.json_store import ensure_dirs, load_json, save_json
 
 
 @pytest.fixture
@@ -23,13 +19,20 @@ def runner():
 def temp_data_dir(tmp_path, monkeypatch):
     """Use a temporary directory for data storage."""
     test_data_dir = tmp_path / ".linkedin-cli"
-    monkeypatch.setattr("cli.DATA_DIR", test_data_dir)
-    monkeypatch.setattr("cli.PROFILE_FILE", test_data_dir / "my_profile.json")
-    monkeypatch.setattr("cli.CONTACTS_FILE", test_data_dir / "contacts.json")
-    monkeypatch.setattr("cli.COMPANIES_FILE", test_data_dir / "companies.json")
-    monkeypatch.setattr("cli.DRAFTS_FILE", test_data_dir / "drafts.json")
-    monkeypatch.setattr("cli.RESEARCH_FILE", test_data_dir / "research.json")
-    monkeypatch.setattr("cli.BACKUPS_DIR", test_data_dir / "backups")
+    monkeypatch.setattr("linkedin.data.json_store.DATA_DIR", test_data_dir)
+    monkeypatch.setattr("linkedin.data.json_store.PROFILE_FILE", test_data_dir / "my_profile.json")
+    monkeypatch.setattr("linkedin.data.json_store.CONTACTS_FILE", test_data_dir / "contacts.json")
+    monkeypatch.setattr("linkedin.data.json_store.COMPANIES_FILE", test_data_dir / "companies.json")
+    monkeypatch.setattr("linkedin.data.json_store.DRAFTS_FILE", test_data_dir / "drafts.json")
+    monkeypatch.setattr("linkedin.data.json_store.RESEARCH_FILE", test_data_dir / "research.json")
+    monkeypatch.setattr("linkedin.data.json_store.BACKUPS_DIR", test_data_dir / "backups")
+    # Also patch the data_service module which imports these directly
+    monkeypatch.setattr("linkedin.services.data_service.CONTACTS_FILE", test_data_dir / "contacts.json")
+    monkeypatch.setattr("linkedin.services.data_service.COMPANIES_FILE", test_data_dir / "companies.json")
+    monkeypatch.setattr("linkedin.services.data_service.DRAFTS_FILE", test_data_dir / "drafts.json")
+    monkeypatch.setattr("linkedin.services.data_service.PROFILE_FILE", test_data_dir / "my_profile.json")
+    monkeypatch.setattr("linkedin.services.data_service.RESEARCH_FILE", test_data_dir / "research.json")
+    monkeypatch.setattr("linkedin.services.data_service.BACKUPS_DIR", test_data_dir / "backups")
     return test_data_dir
 
 
@@ -222,7 +225,7 @@ class TestDrafts:
         assert result.exit_code == 0
         assert "not found" in result.output
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.draft_service.generate_with_ai")
     def test_drafts_connection_generates(self, mock_ai, runner, temp_data_dir):
         """drafts connection should generate AI draft."""
         mock_ai.return_value = "Hi! I'd love to connect and discuss AI engineering."
@@ -264,7 +267,7 @@ class TestResearch:
         assert "LinkedIn Engagement Strategies" in result.output
         assert "Post Formats" in result.output
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.research_service.generate_with_ai")
     def test_research_ideas(self, mock_ai, runner, temp_data_dir):
         """research ideas should generate post ideas."""
         mock_ai.return_value = "1. Post idea one\n2. Post idea two"
@@ -273,7 +276,7 @@ class TestResearch:
         assert result.exit_code == 0
         assert "Post idea" in result.output
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.research_service.generate_with_ai")
     def test_research_hashtags(self, mock_ai, runner, temp_data_dir):
         """research hashtags should generate hashtag suggestions."""
         mock_ai.return_value = "#MachineLearning\n#AI\n#DataScience"
@@ -493,7 +496,7 @@ class TestEnhancedContacts:
 class TestEnhancedDrafts:
     """Tests for enhanced drafts features."""
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.draft_service.generate_with_ai")
     def test_drafts_intro_request(self, mock_ai, runner, temp_data_dir):
         """drafts intro-request should generate intro request."""
         mock_ai.return_value = "Hi, could you introduce me to someone?"
@@ -513,7 +516,7 @@ class TestEnhancedDrafts:
         assert result.exit_code == 0
         assert "Introduction Request" in result.output
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.draft_service.generate_with_ai")
     def test_drafts_thank_you(self, mock_ai, runner, temp_data_dir):
         """drafts thank-you should generate thank you note."""
         mock_ai.return_value = "Thank you for your time!"
@@ -531,7 +534,7 @@ class TestEnhancedDrafts:
         assert result.exit_code == 0
         assert "Thank You" in result.output
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.draft_service.generate_with_ai")
     def test_drafts_follow_up(self, mock_ai, runner, temp_data_dir):
         """drafts follow-up should generate follow-up message."""
         mock_ai.return_value = "Just checking in..."
@@ -565,7 +568,7 @@ class TestDiscover:
         assert result.exit_code == 0
         assert "Specify --company or --role" in result.output
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.discover_service.generate_with_ai")
     def test_discover_contacts_with_company(self, mock_ai, runner, temp_data_dir):
         """discover contacts should generate suggestions for a company."""
         mock_ai.return_value = "1. Engineering Manager\n2. Developer Advocate"
@@ -580,7 +583,7 @@ class TestDiscover:
         assert result.exit_code == 0
         assert "Contact Discovery" in result.output
 
-    @patch("cli.generate_with_ai")
+    @patch("linkedin.services.discover_service.generate_with_ai")
     def test_discover_companies(self, mock_ai, runner, temp_data_dir):
         """discover companies should generate company suggestions."""
         mock_ai.return_value = "1. Company A\n2. Company B"
@@ -655,7 +658,7 @@ class TestAIGeneration:
     @patch("anthropic.Anthropic")
     def test_generate_with_ai_success(self, mock_anthropic_class):
         """generate_with_ai should return AI response."""
-        from cli import generate_with_ai
+        from linkedin.ai.client import generate_with_ai
 
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
@@ -669,7 +672,7 @@ class TestAIGeneration:
     @patch("anthropic.Anthropic")
     def test_generate_with_ai_failure(self, mock_anthropic_class):
         """generate_with_ai should handle errors gracefully."""
-        from cli import generate_with_ai
+        from linkedin.ai.client import generate_with_ai
 
         mock_anthropic_class.side_effect = Exception("API Error")
 

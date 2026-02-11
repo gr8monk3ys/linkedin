@@ -1,25 +1,39 @@
-import pickle
+"""Secure credential storage using system keyring."""
 
-def get_creds():
-	print('Please enter the following information:')
-	credentials = {}
+import keyring
+
+SERVICE_NAME = "linkedin-cli"
+
+CREDENTIAL_KEYS = ("email", "password")
 
 
-	print('Which browser is installed on your system? Chrome or Firefox (0 for Chrome, 1 for Firefox)')
-	ans = input()
-	if ans == '0':
-		credentials['Browser'] = 'Chrome'
-	else:
-		credentials['Browser'] = 'Firefox'
+def store_credentials(email: str, password: str) -> None:
+    """Store LinkedIn credentials in the system keyring."""
+    keyring.set_password(SERVICE_NAME, "email", email)
+    keyring.set_password(SERVICE_NAME, "password", password)
 
-	print('Please enter the path to geckodriver')
-	credentials['EXECUTABLE_PATH'] = input()
 
-	print("Please enter your LinkedIn Email/Phone No")
-	credentials['Email_or_phone_no'] = input()
+def get_credentials() -> tuple[str, str] | None:
+    """Retrieve LinkedIn credentials from the system keyring.
 
-	print("Please enter your password")
-	credentials['Password'] = input()
+    Returns (email, password) tuple or None if not stored.
+    """
+    email = keyring.get_password(SERVICE_NAME, "email")
+    password = keyring.get_password(SERVICE_NAME, "password")
+    if email and password:
+        return email, password
+    return None
 
-	with open('credentials.pickle','wb') as f:	
-		pickle.dump(credentials,f)
+
+def delete_credentials() -> None:
+    """Remove stored credentials from the system keyring."""
+    for key in CREDENTIAL_KEYS:
+        try:
+            keyring.delete_password(SERVICE_NAME, key)
+        except keyring.errors.PasswordDeleteError:
+            pass
+
+
+def has_credentials() -> bool:
+    """Check if credentials are stored."""
+    return get_credentials() is not None

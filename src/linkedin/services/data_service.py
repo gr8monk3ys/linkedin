@@ -11,8 +11,12 @@ from linkedin.data.json_store import (
     COMPANIES_FILE,
     CONTACTS_FILE,
     DRAFTS_FILE,
+    JOB_POSTINGS_FILE,
     PROFILE_FILE,
     RESEARCH_FILE,
+    RUN_DAILY_LOG_FILE,
+    RUN_DAILY_STATE_FILE,
+    TEMPLATES_FILE,
     ensure_dirs,
     load_json,
     save_json,
@@ -136,7 +140,17 @@ class DataService:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_name = output or str(BACKUPS_DIR / f"linkedin_cli_backup_{timestamp}.zip")
 
-        files_to_backup = [PROFILE_FILE, CONTACTS_FILE, COMPANIES_FILE, DRAFTS_FILE, RESEARCH_FILE]
+        files_to_backup = [
+            PROFILE_FILE,
+            CONTACTS_FILE,
+            COMPANIES_FILE,
+            DRAFTS_FILE,
+            RESEARCH_FILE,
+            TEMPLATES_FILE,
+            JOB_POSTINGS_FILE,
+            RUN_DAILY_STATE_FILE,
+            RUN_DAILY_LOG_FILE,
+        ]
 
         backed_up = 0
         with zipfile.ZipFile(backup_name, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -147,7 +161,63 @@ class DataService:
 
         return backup_name, backed_up
 
-    def restore_backup(self, backup_file: str) -> int | None:
+    def _validate_backup_member_path(self, member_name: str, data_dir: Path) -> Path | None:
+        member_path = Path(member_name)
+        if member_path.is_absolute() or ".." in member_path.parts:
+            return None
+
+        target_path = (data_dir / member_path).resolve()
+        if data_dir != target_path and data_dir not in target_path.parents:
+            return None
+        return target_path
+
+    def verify_backup(self, backup_file: str) -> dict:
+        """Verify backup integrity, path safety, and JSON readability."""
+        backup_path = Path(backup_file)
+        result = {
+            "valid": False,
+            "files_checked": 0,
+            "json_files_checked": 0,
+            "errors": [],
+        }
+
+        if not zipfile.is_zipfile(backup_path):
+            result["errors"].append("Not a zip archive.")
+            return result
+
+        from linkedin.data.json_store import DATA_DIR
+
+        data_dir = DATA_DIR.resolve()
+        try:
+            with zipfile.ZipFile(backup_path, "r") as zipf:
+                for member in zipf.infolist():
+                    target_path = self._validate_backup_member_path(member.filename, data_dir)
+                    if target_path is None:
+                        result["errors"].append(f"Unsafe path: {member.filename}")
+                        return result
+
+                    if member.is_dir():
+                        continue
+
+                    result["files_checked"] += 1
+                    content = zipf.read(member)
+                    suffix = target_path.suffix.lower()
+                    if suffix == ".json":
+                        json.loads(content.decode("utf-8"))
+                        result["json_files_checked"] += 1
+                    elif suffix == ".jsonl":
+                        for line in content.decode("utf-8").splitlines():
+                            if line.strip():
+                                json.loads(line)
+                        result["json_files_checked"] += 1
+        except Exception as exc:
+            result["errors"].append(str(exc))
+            return result
+
+        result["valid"] = result["files_checked"] > 0 and not result["errors"]
+        return result
+
+    def restore_backup(self, backup_file: str, dry_run: bool = False) -> int | None:
         """Restore from backup. Returns files_restored or None if invalid."""
         backup_path = Path(backup_file)
 
@@ -159,9 +229,33 @@ class DataService:
         restored = 0
         from linkedin.data.json_store import DATA_DIR
 
+        data_dir = DATA_DIR.resolve()
         with zipfile.ZipFile(backup_path, "r") as zipf:
-            for filename in zipf.namelist():
-                zipf.extract(filename, DATA_DIR)
+            for member in zipf.infolist():
+                target_path = self._validate_backup_member_path(member.filename, data_dir)
+                if target_path is None:
+                    return None
+
+                if member.is_dir():
+                    if not dry_run:
+                        target_path.mkdir(parents=True, exist_ok=True)
+                    continue
+
+                with zipf.open(member, "r") as src:
+                    content = src.read()
+
+                if dry_run:
+                    suffix = target_path.suffix.lower()
+                    if suffix == ".json":
+                        json.loads(content.decode("utf-8"))
+                    elif suffix == ".jsonl":
+                        for line in content.decode("utf-8").splitlines():
+                            if line.strip():
+                                json.loads(line)
+                else:
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    with target_path.open("wb") as dst:
+                        dst.write(content)
                 restored += 1
 
         return restored

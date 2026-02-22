@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Sync dependencies
+        run: uv sync --extra dev
+
+      - name: Ruff
+        run: uv run ruff check src tests
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      - name: CLI smoke
+        env:
+          HOME: ${{ runner.temp }}/home
+        run: |
+          mkdir -p "$HOME"
+          uv run linkedin-cli --version
+          uv run linkedin-cli health --json --time 09:00
+          uv run linkedin-cli run-daily --json --idempotency-key ci-smoke --retry-attempts 0 --retry-backoff-seconds 0

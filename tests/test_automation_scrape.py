@@ -1,15 +1,17 @@
 """Tests for LinkedIn scraping actions."""
 
-import pytest
 from unittest.mock import MagicMock
+
+import pytest
+
 import linkedin.data.json_store as js
-from linkedin.data.json_store import JsonContactRepo
 from linkedin.automation.actions.scrape import (
+    _parse_headline,
     import_search_results,
     scrape_and_import_profile,
     search_and_collect,
-    _parse_headline,
 )
+from linkedin.data.json_store import JsonContactRepo
 
 
 @pytest.fixture

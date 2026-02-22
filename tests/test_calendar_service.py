@@ -1,6 +1,7 @@
 """Tests for ContentCalendarService."""
 
 import pytest
+
 import linkedin.data.json_store as js
 from linkedin.data.json_store import JsonCalendarRepo
 from linkedin.services.calendar_service import ContentCalendarService

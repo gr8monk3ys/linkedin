@@ -1,8 +1,9 @@
 """Tests for ConversationService."""
 
 import pytest
+
 import linkedin.data.json_store as js
-from linkedin.data.json_store import JsonConversationRepo, JsonContactRepo, JsonCompanyRepo
+from linkedin.data.json_store import JsonContactRepo, JsonConversationRepo
 from linkedin.services.conversation_service import ConversationService
 from tests.conftest import sample_contact
 

@@ -1355,7 +1355,8 @@ def profile():
 
 
 @profile.command("setup")
-def profile_setup():
+@click.option("--resume-file", "-r", default="", help="Load resume text from a .txt file instead of typing")
+def profile_setup(resume_file):
     """Set up your profile for personalized drafts."""
     console.print("\n[bold]Profile Setup[/bold]")
     console.print("This info helps AI generate personalized outreach.\n")
@@ -1372,6 +1373,41 @@ def profile_setup():
         "industries": click.prompt("Target industries (comma-separated)", default=existing.get("industries", "")),
         "location": click.prompt("Your location", default=existing.get("location", "")),
     }
+
+    # Resume text
+    current_resume = existing.get("resume_text", "") if existing else ""
+    if resume_file:
+        try:
+            with open(resume_file) as fh:
+                resume_text = fh.read()
+            console.print(f"[green]Loaded resume from {resume_file}[/green]")
+        except OSError as e:
+            console.print(f"[yellow]Warning: could not read {resume_file}: {e}. Keeping existing.[/yellow]")
+            resume_text = current_resume
+    else:
+        has_resume = bool(current_resume)
+        update_resume = click.confirm(
+            f"{'Update' if has_resume else 'Add'} resume text? "
+            f"{'(currently set — press N to keep)' if has_resume else '(used for AI resume tailoring, cover letters, skills gap)'}",
+            default=not has_resume,
+        )
+        if update_resume:
+            console.print("[dim]Paste your resume text below. Enter a blank line then press Enter to finish.[/dim]")
+            lines = []
+            prev_blank = False
+            while True:
+                try:
+                    line = input()
+                except EOFError:
+                    break
+                if line == "" and prev_blank:
+                    break
+                prev_blank = line == ""
+                lines.append(line)
+            resume_text = "\n".join(lines).rstrip()
+        else:
+            resume_text = current_resume
+    data["resume_text"] = resume_text
 
     _profile_svc.save_profile(data)
     console.print("\n[green]✓ Profile saved![/green]")

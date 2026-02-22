@@ -252,7 +252,7 @@ class TestDrafts:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Name\nTitle\nRole\nSkills\nExp\nUnique\nIndustry\nLoc\n",
+            input="Name\nTitle\nRole\nSkills\nExp\nUnique\nIndustry\nLoc\nn\n",
         )
 
         result = runner.invoke(cli, ["drafts", "connection", "999"])
@@ -268,7 +268,7 @@ class TestDrafts:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         # Add contact
@@ -336,7 +336,7 @@ class TestDashboard:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         # Add contact
@@ -366,7 +366,7 @@ class TestDashboard:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nSenior Engineer\nPython, SQL\nBuilt AI\nUnique\nTech\nSan Francisco\n",
+            input="Lorenzo\nAI Engineer\nSenior Engineer\nPython, SQL\nBuilt AI\nUnique\nTech\nSan Francisco\nn\n",
         )
         runner.invoke(
             cli,
@@ -479,7 +479,7 @@ class TestDashboard:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
         runner.invoke(
             cli,
@@ -1071,7 +1071,7 @@ class TestEnhancedContacts:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
         runner.invoke(
             cli,
@@ -1193,7 +1193,7 @@ class TestEnhancedDrafts:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         # Add two contacts
@@ -1213,7 +1213,7 @@ class TestEnhancedDrafts:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         runner.invoke(cli, ["contacts", "add"], input="Person\nRole\nCo\nurl\nNotes\n")
@@ -1231,7 +1231,7 @@ class TestEnhancedDrafts:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         runner.invoke(cli, ["contacts", "add"], input="Person\nRole\nCo\nurl\nNotes\n")
@@ -1249,7 +1249,7 @@ class TestDiscover:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         result = runner.invoke(cli, ["discover", "contacts"])
@@ -1264,7 +1264,7 @@ class TestDiscover:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         result = runner.invoke(cli, ["discover", "contacts", "--company", "LangChain"])
@@ -1279,7 +1279,7 @@ class TestDiscover:
         runner.invoke(
             cli,
             ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\n",
+            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
         )
 
         result = runner.invoke(cli, ["discover", "companies"], input="n\n")

@@ -47,12 +47,16 @@ from linkedin.constants import (
 )
 from linkedin.data.factory import create_repos
 from linkedin.services.analytics_service import AnalyticsService
+from linkedin.services.application_service import ApplicationService
+from linkedin.services.calendar_service import ContentCalendarService
 from linkedin.services.company_service import CompanyService
 from linkedin.services.contact_service import ContactService
+from linkedin.services.conversation_service import ConversationService
 from linkedin.services.dashboard_service import DashboardService
 from linkedin.services.data_service import DataService
 from linkedin.services.discover_service import DiscoverService
 from linkedin.services.draft_service import DraftService
+from linkedin.services.interview_service import InterviewService
 from linkedin.services.market_service import MarketService
 from linkedin.services.optimizer_service import OptimizerService
 from linkedin.services.profile_service import ProfileService
@@ -96,6 +100,10 @@ _analytics_svc = AnalyticsService(_contact_repo, _draft_repo)
 _market_svc = MarketService(_profile_repo)
 _optimizer_svc = OptimizerService(_profile_repo)
 _template_svc = TemplateService(_contact_repo, _draft_repo)
+_application_svc = ApplicationService(_application_repo, _profile_repo, _contact_repo)
+_interview_svc = InterviewService(_application_repo, _interview_prep_repo, _profile_repo)
+_conversation_svc = ConversationService(_conversation_repo, _contact_repo)
+_calendar_svc = ContentCalendarService(_calendar_repo)
 
 NEXT_ACTION_LABELS = {
     "follow_up_overdue": "Follow up (overdue)",
@@ -3688,6 +3696,91 @@ def automation_unschedule(as_json):
     console.print("[green]✓ Managed schedule removed.[/green]")
 
 
+@automation.command("search")
+@click.option("--query", "-q", required=True, help="LinkedIn people search query")
+@click.option("--limit", default=20, help="Max results (default: 20)")
+def automation_search(query, limit):
+    """Search LinkedIn and print results table (no import)."""
+    try:
+        from linkedin.automation.actions.scrape import search_and_collect
+        from linkedin.automation.browser import BrowserManager
+        from linkedin.automation.linkedin_page import LinkedInPage
+    except ImportError:
+        console.print("[red]Playwright not installed. Run: uv sync --extra automation[/red]")
+        raise SystemExit(1)
+
+    with BrowserManager() as browser:
+        page = LinkedInPage(browser.page)
+        if not page.is_logged_in():
+            console.print("[yellow]Not logged in. Run: linkedin-cli automation login[/yellow]")
+            raise SystemExit(1)
+        results = search_and_collect(page, query, limit=limit)
+
+    if not results:
+        console.print("[dim]No results found.[/dim]")
+        return
+
+    table = Table(title=f"Search: {query}")
+    table.add_column("Name", style="cyan")
+    table.add_column("Headline", style="white")
+    table.add_column("URL", style="dim")
+    for r in results:
+        table.add_row(r.get("name", ""), r.get("headline", "")[:60], r.get("linkedin_url", "")[:50])
+    console.print(table)
+
+
+@automation.command("import-search")
+@click.option("--query", "-q", required=True, help="LinkedIn people search query")
+@click.option("--limit", default=20, help="Max results to import (default: 20)")
+def automation_import_search(query, limit):
+    """Search LinkedIn and import results into contacts CRM."""
+    try:
+        from linkedin.automation.actions.scrape import import_search_results, search_and_collect
+        from linkedin.automation.browser import BrowserManager
+        from linkedin.automation.linkedin_page import LinkedInPage
+    except ImportError:
+        console.print("[red]Playwright not installed. Run: uv sync --extra automation[/red]")
+        raise SystemExit(1)
+
+    with BrowserManager() as browser:
+        page = LinkedInPage(browser.page)
+        if not page.is_logged_in():
+            console.print("[yellow]Not logged in. Run: linkedin-cli automation login[/yellow]")
+            raise SystemExit(1)
+        results = search_and_collect(page, query, limit=limit)
+
+    added, skipped = import_search_results(results, _contact_repo)
+    console.print(f"[green]Imported {len(added)} new contacts.[/green] Skipped {len(skipped)} duplicates.")
+    for c in added:
+        console.print(f"  #{c['id']} {c['name']} — {c.get('title', '')} at {c.get('company', '')}")
+
+
+@automation.command("profile")
+@click.argument("linkedin_url")
+def automation_profile(linkedin_url):
+    """Scrape a LinkedIn profile and add/update in CRM."""
+    try:
+        from linkedin.automation.actions.scrape import scrape_and_import_profile
+        from linkedin.automation.browser import BrowserManager
+        from linkedin.automation.linkedin_page import LinkedInPage
+    except ImportError:
+        console.print("[red]Playwright not installed. Run: uv sync --extra automation[/red]")
+        raise SystemExit(1)
+
+    with BrowserManager() as browser:
+        page = LinkedInPage(browser.page)
+        if not page.is_logged_in():
+            console.print("[yellow]Not logged in. Run: linkedin-cli automation login[/yellow]")
+            raise SystemExit(1)
+        contact = scrape_and_import_profile(page, linkedin_url, _contact_repo)
+
+    if not contact:
+        console.print("[red]Could not scrape profile. Check URL and login status.[/red]")
+        raise SystemExit(1)
+    action = "Updated" if contact.get("linkedin_url") else "Added"
+    console.print(f"[green]{action}:[/green] {contact['name']} — {contact.get('title', '')} at {contact.get('company', '')}")
+
+
 # =============================================================================
 # Analytics Commands
 # =============================================================================
@@ -4117,6 +4210,356 @@ def templates_dashboard():
             template.get("response_rate", "0%"),
         )
     console.print(top_table)
+
+
+# =============================================================================
+# applications
+# =============================================================================
+
+
+@cli.group()
+def applications():
+    """Track job applications through their lifecycle."""
+
+
+@applications.command("add")
+@click.option("--company", "-c", required=True, help="Company name")
+@click.option("--title", "-t", required=True, help="Job title")
+@click.option("--url", "-u", default="", help="Job posting URL")
+@click.option("--jd", default="", help="Job description text")
+@click.option("--notes", "-n", default="", help="Notes")
+def applications_add(company, title, url, jd, notes):
+    """Add a new job application."""
+    app = _application_svc.add_application(company, title, url=url, jd_text=jd, notes=notes)
+    console.print(f"[green]Added application #{app['id']}:[/green] {title} at {company}")
+
+
+@applications.command("list")
+@click.option("--status", default="all", help="Filter by status (saved/applied/phone_screen/…)")
+@click.option("--company", default="", help="Filter by company name")
+def applications_list(status, company):
+    """List job applications."""
+    apps = _application_svc.list_applications(status=status, company=company)
+    if not apps:
+        console.print("[dim]No applications found.[/dim]")
+        return
+    table = Table()
+    table.add_column("ID", style="dim")
+    table.add_column("Company", style="cyan")
+    table.add_column("Title", style="white")
+    table.add_column("Status", style="yellow")
+    table.add_column("Applied", style="dim")
+    for a in apps:
+        table.add_row(
+            str(a["id"]),
+            a.get("company", ""),
+            a.get("title", ""),
+            a.get("status", ""),
+            (a.get("applied_date") or "—")[:10],
+        )
+    console.print(table)
+
+
+@applications.command("view")
+@click.argument("application_id", type=int)
+def applications_view(application_id):
+    """View application details and history."""
+    app = _application_svc.get_application(application_id)
+    if not app:
+        console.print(f"[red]Application #{application_id} not found.[/red]")
+        raise SystemExit(1)
+    console.print(
+        Panel(
+            f"[bold]{app.get('title')}[/bold] at [cyan]{app.get('company')}[/cyan]\n"
+            f"Status: [yellow]{app.get('status')}[/yellow]  |  "
+            f"Applied: {(app.get('applied_date') or 'Not yet')[:10]}\n"
+            f"URL: {app.get('url') or '—'}\n"
+            f"Notes: {app.get('notes') or '—'}\n"
+            f"JD: {(app.get('jd_text') or '—')[:200]}"
+            f"{'…' if len(app.get('jd_text') or '') > 200 else ''}",
+            title=f"Application #{application_id}",
+        )
+    )
+    history = app.get("history") or []
+    if history:
+        console.print("\n[bold]History:[/bold]")
+        for event in history:
+            console.print(
+                f"  {(event.get('date') or '')[:10]}  {event.get('status')}  {event.get('notes') or ''}"
+            )
+
+
+@applications.command("advance")
+@click.argument("application_id", type=int)
+@click.option("--status", "-s", required=True, help="New status")
+@click.option("--notes", "-n", default="", help="Notes for this stage")
+def applications_advance(application_id, status, notes):
+    """Advance application to next status."""
+    error, app = _application_svc.advance(application_id, status, notes=notes)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]Advanced #{application_id} to:[/green] {status}")
+
+
+@applications.command("tailor-resume")
+@click.argument("application_id", type=int)
+@click.option("--resume-file", "-r", default="", help="Path to resume .txt file (overrides profile resume)")
+def applications_tailor_resume(application_id, resume_file):
+    """AI-tailor your resume bullets to this job's description."""
+    resume_text = ""
+    if resume_file:
+        try:
+            with open(resume_file) as f:
+                resume_text = f.read()
+        except OSError as e:
+            console.print(f"[red]Cannot read file: {e}[/red]")
+            raise SystemExit(1)
+    error, result = _application_svc.tailor_resume(application_id, resume_override=resume_text)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(Panel(result, title="Tailored Resume Bullets"))
+
+
+@applications.command("cover-letter")
+@click.argument("application_id", type=int)
+def applications_cover_letter(application_id):
+    """AI-generate a cover letter for this application."""
+    error, result = _application_svc.cover_letter(application_id)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(Panel(result, title="Cover Letter"))
+
+
+@applications.command("skills-gap")
+@click.argument("application_id", type=int)
+def applications_skills_gap(application_id):
+    """AI skills gap analysis vs the job description."""
+    error, result = _application_svc.skills_gap(application_id)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(Markdown(result))
+
+
+@applications.command("stats")
+def applications_stats():
+    """Application funnel statistics."""
+    stats = _application_svc.get_stats()
+    console.print(f"\n[bold]Application Stats[/bold]  (total: {stats['total']})\n")
+    for status, count in sorted(stats["by_status"].items()):
+        console.print(f"  {status:<20} {count}")
+
+
+@applications.command("delete")
+@click.argument("application_id", type=int)
+@click.confirmation_option(prompt="Delete this application?")
+def applications_delete(application_id):
+    """Delete an application."""
+    if not _application_svc.delete(application_id):
+        console.print(f"[red]Application #{application_id} not found.[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]Deleted application #{application_id}.[/green]")
+
+
+# =============================================================================
+# interview
+# =============================================================================
+
+
+@cli.group()
+def interview():
+    """Interview preparation tools."""
+
+
+@interview.command("prep")
+@click.argument("application_id", type=int)
+def interview_prep_cmd(application_id):
+    """Generate interview questions and model STAR answers (saved for later)."""
+    error, result = _interview_svc.prep(application_id)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(Markdown(result))
+
+
+@interview.command("research")
+@click.argument("application_id", type=int)
+def interview_research(application_id):
+    """Generate company research briefing for the interview."""
+    error, result = _interview_svc.research(application_id)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(Markdown(result))
+
+
+@interview.command("star")
+@click.argument("application_id", type=int)
+def interview_star(application_id):
+    """Generate STAR method answer scaffolds for top behavioral questions."""
+    error, result = _interview_svc.star(application_id)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(Markdown(result))
+
+
+@interview.command("questions")
+@click.argument("application_id", type=int)
+def interview_questions(application_id):
+    """Generate smart questions to ask the interviewer."""
+    error, result = _interview_svc.questions_to_ask(application_id)
+    if error:
+        console.print(f"[red]{error}[/red]")
+        raise SystemExit(1)
+    console.print(Markdown(result))
+
+
+@interview.command("view")
+@click.argument("application_id", type=int)
+def interview_view(application_id):
+    """Show all saved prep for an application."""
+    prep = _interview_svc.get_prep(application_id)
+    if not prep:
+        console.print("[dim]No prep saved yet. Run `interview prep <id>` first.[/dim]")
+        return
+    if prep.get("questions"):
+        console.print(Panel("\n".join(prep["questions"]), title="Questions & STAR Answers"))
+    if prep.get("star_answers"):
+        console.print(Panel("\n".join(prep["star_answers"]), title="STAR Answer Scaffolds"))
+    if prep.get("company_research"):
+        console.print(Panel(prep["company_research"], title="Company Research"))
+    if prep.get("questions_to_ask"):
+        console.print(Panel("\n".join(prep["questions_to_ask"]), title="Questions to Ask"))
+
+
+# =============================================================================
+# conversations
+# =============================================================================
+
+
+@cli.group()
+def conversations():
+    """Log and view LinkedIn message threads with contacts."""
+
+
+@conversations.command("log")
+@click.argument("contact_id", type=int)
+@click.option("--from", "sender", required=True, type=click.Choice(["me", "them"]), help="Who sent this message")
+@click.option("--text", "-t", required=True, help="Message text")
+@click.option("--at", "timestamp", default="", help="Timestamp override (ISO format)")
+def conversations_log(contact_id, sender, text, timestamp):
+    """Log a message in a contact's conversation thread."""
+    try:
+        _conversation_svc.log(contact_id, sender=sender, text=text, timestamp=timestamp)
+        console.print(f"[green]Logged message from {sender}.[/green]")
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise SystemExit(1)
+
+
+@conversations.command("view")
+@click.argument("contact_id", type=int)
+def conversations_view(contact_id):
+    """View conversation thread with a contact."""
+    thread = _conversation_svc.get_thread(contact_id)
+    if not thread:
+        console.print("[dim]No messages logged yet. Use `conversations log` to add messages.[/dim]")
+        return
+    console.print(f"\n[bold]Conversation — Contact #{contact_id}[/bold]\n")
+    for msg in thread.get("messages") or []:
+        prefix = "[bold cyan][Me][/bold cyan]" if msg["sender"] == "me" else "[bold yellow][Them][/bold yellow]"
+        ts = (msg.get("timestamp") or "")[:16]
+        console.print(f"  {prefix}  ({ts})  {msg['text']}")
+
+
+@conversations.command("export")
+@click.argument("contact_id", type=int)
+def conversations_export(contact_id):
+    """Export conversation thread as plain text."""
+    text = _conversation_svc.export(contact_id)
+    if not text:
+        console.print("[dim]No messages logged.[/dim]")
+        return
+    console.print(text)
+
+
+# =============================================================================
+# calendar
+# =============================================================================
+
+
+@cli.group()
+def calendar():
+    """Content calendar — schedule and track LinkedIn posts."""
+
+
+@calendar.command("add")
+@click.option("--title", "-t", required=True, help="Post title or topic")
+@click.option("--date", "-d", required=True, help="Scheduled date (YYYY-MM-DD)")
+@click.option("--draft-id", type=int, default=None, help="Link to a saved draft ID")
+@click.option("--platform", default="linkedin", help="Platform (default: linkedin)")
+def calendar_add(title, date, draft_id, platform):
+    """Add a post to the content calendar."""
+    post = _calendar_svc.add(title=title, scheduled_date=date, draft_id=draft_id, platform=platform)
+    console.print(f"[green]Scheduled post #{post['id']}:[/green] {title} on {date}")
+
+
+@calendar.command("list")
+@click.option("--week", is_flag=True, help="Show upcoming 7 days only")
+@click.option("--month", is_flag=True, help="Show upcoming 30 days only")
+def calendar_list(week, month):
+    """List content calendar."""
+    if week:
+        posts = _calendar_svc.list_upcoming(days=7)
+    elif month:
+        posts = _calendar_svc.list_upcoming(days=30)
+    else:
+        posts = _calendar_svc.list_all()
+    if not posts:
+        console.print("[dim]No posts scheduled.[/dim]")
+        return
+    table = Table()
+    table.add_column("ID", style="dim")
+    table.add_column("Date", style="cyan")
+    table.add_column("Title", style="white")
+    table.add_column("Status", style="yellow")
+    table.add_column("Draft", style="dim")
+    for p in posts:
+        table.add_row(
+            str(p["id"]),
+            p.get("scheduled_date", ""),
+            p.get("title", ""),
+            p.get("status", ""),
+            str(p.get("draft_id") or "—"),
+        )
+    console.print(table)
+
+
+@calendar.command("mark-posted")
+@click.argument("post_id", type=int)
+@click.option("--date", default="", help="Actual posted date (YYYY-MM-DD, defaults to today)")
+def calendar_mark_posted(post_id, date):
+    """Mark a scheduled post as posted."""
+    post = _calendar_svc.mark_posted(post_id, posted_date=date)
+    if not post:
+        console.print(f"[red]Post #{post_id} not found.[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]Marked post #{post_id} as posted.[/green]")
+
+
+@calendar.command("stats")
+def calendar_stats():
+    """Content calendar statistics."""
+    stats = _calendar_svc.get_stats()
+    console.print("\n[bold]Content Calendar Stats[/bold]")
+    console.print(f"  Total:     {stats['total']}")
+    console.print(f"  Scheduled: {stats['scheduled']}")
+    console.print(f"  Posted:    {stats['posted']}")
+    console.print(f"  Skipped:   {stats['skipped']}")
 
 
 if __name__ == "__main__":

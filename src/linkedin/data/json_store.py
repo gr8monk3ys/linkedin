@@ -3,8 +3,28 @@
 import json
 from pathlib import Path
 
-from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo, ResearchRepo
-from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict
+from linkedin.data.repository import (
+    ApplicationRepo,
+    CalendarRepo,
+    CompanyRepo,
+    ContactRepo,
+    ConversationRepo,
+    DraftRepo,
+    InterviewPrepRepo,
+    ProfileRepo,
+    ResearchRepo,
+)
+from linkedin.types import (
+    ApplicationDict,
+    CompanyDict,
+    ContactDict,
+    ContentPostDict,
+    ConversationDict,
+    DraftDict,
+    InterviewPrepDict,
+    ProfileDict,
+    ResearchDict,
+)
 
 DATA_DIR = Path.home() / ".linkedin-cli"
 PROFILE_FILE = DATA_DIR / "my_profile.json"
@@ -12,7 +32,16 @@ CONTACTS_FILE = DATA_DIR / "contacts.json"
 COMPANIES_FILE = DATA_DIR / "companies.json"
 DRAFTS_FILE = DATA_DIR / "drafts.json"
 RESEARCH_FILE = DATA_DIR / "research.json"
+TEMPLATES_FILE = DATA_DIR / "templates.json"
+JOB_POSTINGS_FILE = DATA_DIR / "job_postings.json"
+RUN_DAILY_STATE_FILE = DATA_DIR / "run_daily_state.json"
+RUN_DAILY_LOG_FILE = DATA_DIR / "run_daily.log.jsonl"
+RUN_DAILY_LOCK_FILE = DATA_DIR / "run_daily.lock"
 BACKUPS_DIR = DATA_DIR / "backups"
+APPLICATIONS_FILE = DATA_DIR / "applications.json"
+CONVERSATIONS_FILE = DATA_DIR / "conversations.json"
+CALENDAR_FILE = DATA_DIR / "content_calendar.json"
+INTERVIEW_PREP_FILE = DATA_DIR / "interview_prep.json"
 
 
 def ensure_dirs():
@@ -30,6 +59,18 @@ def load_json(path: Path, default=None):
 def save_json(path: Path, data):
     ensure_dirs()
     path.write_text(json.dumps(data, indent=2, default=str))
+
+
+def _next_id(items: list[dict]) -> int:
+    """Return the next integer ID, resilient to deletions and sparse IDs."""
+    max_id = 0
+    for item in items:
+        raw_id = item.get("id")
+        if isinstance(raw_id, int):
+            max_id = max(max_id, raw_id)
+        elif isinstance(raw_id, str) and raw_id.isdigit():
+            max_id = max(max_id, int(raw_id))
+    return max_id + 1
 
 
 class JsonContactRepo(ContactRepo):
@@ -63,7 +104,7 @@ class JsonContactRepo(ContactRepo):
 
     def next_id(self) -> int:
         contacts = self.list_all()
-        return len(contacts) + 1
+        return _next_id(contacts)
 
     def save_all(self, contacts: list[ContactDict]) -> None:
         save_json(CONTACTS_FILE, contacts)
@@ -100,7 +141,7 @@ class JsonCompanyRepo(CompanyRepo):
 
     def next_id(self) -> int:
         companies = self.list_all()
-        return len(companies) + 1
+        return _next_id(companies)
 
 
 class JsonProfileRepo(ProfileRepo):
@@ -126,7 +167,7 @@ class JsonDraftRepo(DraftRepo):
 
     def next_id(self) -> int:
         drafts = self.list_all()
-        return len(drafts) + 1
+        return _next_id(drafts)
 
 
 class JsonResearchRepo(ResearchRepo):
@@ -135,3 +176,103 @@ class JsonResearchRepo(ResearchRepo):
 
     def save(self, data: ResearchDict) -> None:
         save_json(RESEARCH_FILE, data)
+
+
+class JsonApplicationRepo(ApplicationRepo):
+    def list_all(self) -> list[ApplicationDict]:
+        return load_json(APPLICATIONS_FILE)
+
+    def get(self, application_id: int) -> ApplicationDict | None:
+        return next((a for a in self.list_all() if a["id"] == application_id), None)
+
+    def add(self, application: ApplicationDict) -> ApplicationDict:
+        apps = self.list_all()
+        apps.append(application)
+        save_json(APPLICATIONS_FILE, apps)
+        return application
+
+    def update(self, application: ApplicationDict) -> None:
+        apps = self.list_all()
+        for i, a in enumerate(apps):
+            if a["id"] == application["id"]:
+                apps[i] = application
+                break
+        save_json(APPLICATIONS_FILE, apps)
+
+    def delete(self, application_id: int) -> bool:
+        apps = self.list_all()
+        new_apps = [a for a in apps if a["id"] != application_id]
+        if len(new_apps) == len(apps):
+            return False
+        save_json(APPLICATIONS_FILE, new_apps)
+        return True
+
+    def next_id(self) -> int:
+        return _next_id(self.list_all())
+
+
+class JsonConversationRepo(ConversationRepo):
+    def list_all(self) -> list[ConversationDict]:
+        return load_json(CONVERSATIONS_FILE)
+
+    def get_by_contact(self, contact_id: int) -> ConversationDict | None:
+        return next((c for c in self.list_all() if c["contact_id"] == contact_id), None)
+
+    def upsert(self, conversation: ConversationDict) -> None:
+        convs = self.list_all()
+        for i, c in enumerate(convs):
+            if c["contact_id"] == conversation["contact_id"]:
+                convs[i] = conversation
+                save_json(CONVERSATIONS_FILE, convs)
+                return
+        convs.append(conversation)
+        save_json(CONVERSATIONS_FILE, convs)
+
+
+class JsonCalendarRepo(CalendarRepo):
+    def list_all(self) -> list[ContentPostDict]:
+        return load_json(CALENDAR_FILE)
+
+    def get(self, post_id: int) -> ContentPostDict | None:
+        return next((p for p in self.list_all() if p["id"] == post_id), None)
+
+    def add(self, post: ContentPostDict) -> ContentPostDict:
+        posts = self.list_all()
+        posts.append(post)
+        save_json(CALENDAR_FILE, posts)
+        return post
+
+    def update(self, post: ContentPostDict) -> None:
+        posts = self.list_all()
+        for i, p in enumerate(posts):
+            if p["id"] == post["id"]:
+                posts[i] = post
+                break
+        save_json(CALENDAR_FILE, posts)
+
+    def delete(self, post_id: int) -> bool:
+        posts = self.list_all()
+        new_posts = [p for p in posts if p["id"] != post_id]
+        if len(new_posts) == len(posts):
+            return False
+        save_json(CALENDAR_FILE, new_posts)
+        return True
+
+    def next_id(self) -> int:
+        return _next_id(self.list_all())
+
+
+class JsonInterviewPrepRepo(InterviewPrepRepo):
+    def get_by_application(self, application_id: int) -> InterviewPrepDict | None:
+        all_prep = load_json(INTERVIEW_PREP_FILE)
+        return next((p for p in all_prep if p["application_id"] == application_id), None)
+
+    def upsert(self, prep: InterviewPrepDict) -> None:
+        all_prep = load_json(INTERVIEW_PREP_FILE)
+        for i, p in enumerate(all_prep):
+            if p["application_id"] == prep["application_id"]:
+                all_prep[i] = prep
+                save_json(INTERVIEW_PREP_FILE, all_prep)
+                return
+        all_prep.append(prep)
+        save_json(INTERVIEW_PREP_FILE, all_prep)

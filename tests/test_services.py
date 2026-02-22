@@ -146,6 +146,28 @@ class TestContactService:
         due = svc.get_due_contacts()
         assert len(due["overdue"]) == 1
 
+    def test_get_next_actions_includes_overdue_followup(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        svc.set_reminder(1, date=yesterday)
+
+        actions = svc.get_next_actions()
+        assert len(actions) >= 1
+        assert actions[0]["action"] == "follow_up_overdue"
+        assert actions[0]["contact_id"] == 1
+
+    def test_get_next_actions_includes_connected_message_prompt(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        svc.update_contact(1, status="connected")
+        contact = svc.get_contact(1)
+        contact["last_contact"] = (datetime.now() - timedelta(days=10)).isoformat()
+        svc.contacts.update(contact)
+
+        actions = svc.get_next_actions()
+        assert any(a["action"] == "send_first_message" and a["contact_id"] == 1 for a in actions)
+
     def test_list_contacts_filter_status(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
@@ -186,6 +208,74 @@ class TestContactService:
         svc = self._svc(json_repos)
         result = svc.add_contact(name="Bob", title="Designer", company="TestCo", linkedin="", referral_id=999)
         assert isinstance(result, str)  # error message
+
+    def test_find_duplicate_candidates(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(
+            name="Alice Smith",
+            title="Engineer",
+            company="Acme",
+            linkedin="https://linkedin.com/in/alice-smith",
+            email="alice@example.com",
+        )
+        svc.add_contact(
+            name="Alice S.",
+            title="Engineer",
+            company="Acme",
+            linkedin="https://linkedin.com/in/alice-smith",
+            email="alice@example.com",
+        )
+
+        candidates = svc.find_duplicate_candidates()
+        assert len(candidates) >= 1
+        assert candidates[0]["confidence"] in {"high", "medium"}
+        assert "email" in candidates[0]["signals"]
+
+    def test_merge_contacts_updates_referrals(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice Smith", title="Engineer", company="Acme", linkedin="", notes="Met at meetup")
+        svc.add_contact(name="Alice S", title="Sr Engineer", company="Acme", linkedin="", notes="Had coffee chat")
+        svc.add_contact(name="Bob", title="Manager", company="Acme", linkedin="", referral_id=2)
+
+        merged = svc.merge_contacts(1, 2)
+        assert isinstance(merged, dict)
+        assert merged["id"] == 1
+        assert svc.get_contact(2) is None
+        assert "meetup" in merged["notes"]
+        assert "coffee chat" in merged["notes"]
+        referred = svc.get_contact(3)
+        assert referred["referral_contact_id"] == 1
+
+    def test_campaign_enroll_and_due(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        enrolled = svc.enroll_campaign(1, campaign_name="networking_21d", start_date=datetime.now().strftime("%Y-%m-%d"))
+        assert isinstance(enrolled, dict)
+
+        due = svc.get_due_campaign_steps(limit=5)
+        assert len(due) == 1
+        assert due[0]["contact_id"] == 1
+        assert due[0]["step_label"] == "Send connection request"
+
+    def test_campaign_advance_to_completion(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        svc.enroll_campaign(1, campaign_name="networking_21d")
+
+        for _ in range(4):
+            result = svc.advance_campaign(1)
+            assert isinstance(result, dict)
+
+        status = svc.campaign_status(1)
+        assert status is not None
+        assert status["active"] is False
+        assert status["completed_at"] is not None
+
+    def test_campaign_enroll_unknown_campaign(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        result = svc.enroll_campaign(1, campaign_name="unknown_campaign")
+        assert isinstance(result, str)
 
 
 class TestCompanyService:
@@ -287,7 +377,7 @@ class TestDraftService:
     def _svc(self, json_repos):
         from linkedin.services.draft_service import DraftService
 
-        contact_repo, _, profile_repo, draft_repo, _ = json_repos
+        contact_repo, _, profile_repo, draft_repo, *_= json_repos
         return DraftService(draft_repo, contact_repo, profile_repo)
 
     @patch("linkedin.services.draft_service.generate_with_ai", return_value="Hi Alice!")
@@ -334,6 +424,34 @@ class TestDraftService:
         svc = self._svc(json_repos)
         error, draft = svc.generate_message(999)
         assert error is not None
+
+    def test_generate_connection_fallback_when_ai_unavailable(self, json_repos, monkeypatch):
+        from linkedin.services.draft_service import AIClientError
+
+        monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+
+        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
+            error, draft = svc.generate_connection(1)
+        assert error is None
+        assert "Alice" in draft
+
+    def test_generate_connection_fallback_disabled_returns_error(self, json_repos, monkeypatch):
+        from linkedin.services.draft_service import AIClientError
+
+        monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "0")
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+
+        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
+            error, draft = svc.generate_connection(1)
+        assert error is not None
+        assert draft == ""
 
     @patch("linkedin.services.draft_service.generate_with_ai", return_value="Intro message")
     def test_generate_intro_request(self, mock_ai, json_repos):
@@ -472,7 +590,7 @@ class TestResearchService:
     def _svc(self, json_repos):
         from linkedin.services.research_service import ResearchService
 
-        _, _, profile_repo, draft_repo, research_repo = json_repos
+        _, _, profile_repo, draft_repo, research_repo, *_ = json_repos
         return ResearchService(profile_repo, research_repo, draft_repo)
 
     def test_engagement_strategies(self, json_repos):
@@ -504,7 +622,7 @@ class TestResearchService:
     def test_save_ideas(self, json_repos):
         svc = self._svc(json_repos)
         svc.save_ideas("AI", "Some ideas about AI")
-        _, _, _, _, research_repo = json_repos
+        _, _, _, _, research_repo, *_ = json_repos
         data = research_repo.get()
         assert len(data["ideas"]) == 1
         assert data["ideas"][0]["topic"] == "AI"
@@ -513,7 +631,7 @@ class TestResearchService:
     def test_save_post_draft(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         svc.save_post_draft("AI", "story", "A great post")
-        _, _, _, draft_repo, _ = json_repos
+        _, _, _, draft_repo, *_= json_repos
         drafts = draft_repo.list_all()
         assert len(drafts) == 1
         assert drafts[0]["type"] == "post_story"
@@ -529,7 +647,7 @@ class TestDashboardService:
     def _svc(self, json_repos):
         from linkedin.services.dashboard_service import DashboardService
 
-        contact_repo, company_repo, profile_repo, draft_repo, _ = json_repos
+        contact_repo, company_repo, profile_repo, draft_repo, *_= json_repos
         return DashboardService(profile_repo, contact_repo, company_repo, draft_repo)
 
     def test_empty_dashboard(self, json_repos):

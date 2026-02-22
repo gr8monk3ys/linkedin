@@ -2,16 +2,34 @@
 
 import os
 
-from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo, ResearchRepo
+from linkedin.data.repository import (
+    ApplicationRepo,
+    CalendarRepo,
+    CompanyRepo,
+    ContactRepo,
+    ConversationRepo,
+    DraftRepo,
+    InterviewPrepRepo,
+    ProfileRepo,
+    ResearchRepo,
+)
 
 
 def get_backend() -> str:
-    """Return the configured backend: 'db' or 'json'."""
     return os.environ.get("LINKEDIN_BACKEND", "json").lower()
 
 
-def create_repos() -> tuple[ContactRepo, CompanyRepo, ProfileRepo, DraftRepo, ResearchRepo]:
-    """Create repository instances based on the configured backend."""
+def create_repos() -> tuple[
+    ContactRepo,
+    CompanyRepo,
+    ProfileRepo,
+    DraftRepo,
+    ResearchRepo,
+    ApplicationRepo,
+    ConversationRepo,
+    CalendarRepo,
+    InterviewPrepRepo,
+]:
     backend = get_backend()
 
     if backend == "db":
@@ -25,18 +43,33 @@ def create_repos() -> tuple[ContactRepo, CompanyRepo, ProfileRepo, DraftRepo, Re
         from linkedin.models.base import create_tables
 
         create_tables()
+        # DB store stubs for new repos — fall back to JSON for now
+        from linkedin.data.json_store import (
+            JsonApplicationRepo,
+            JsonCalendarRepo,
+            JsonConversationRepo,
+            JsonInterviewPrepRepo,
+        )
         return (
             DbContactRepo(),
             DbCompanyRepo(),
             DbProfileRepo(),
             DbDraftRepo(),
             DbResearchRepo(),
+            JsonApplicationRepo(),
+            JsonConversationRepo(),
+            JsonCalendarRepo(),
+            JsonInterviewPrepRepo(),
         )
 
     from linkedin.data.json_store import (
+        JsonApplicationRepo,
+        JsonCalendarRepo,
         JsonCompanyRepo,
         JsonContactRepo,
+        JsonConversationRepo,
         JsonDraftRepo,
+        JsonInterviewPrepRepo,
         JsonProfileRepo,
         JsonResearchRepo,
     )
@@ -47,4 +80,8 @@ def create_repos() -> tuple[ContactRepo, CompanyRepo, ProfileRepo, DraftRepo, Re
         JsonProfileRepo(),
         JsonDraftRepo(),
         JsonResearchRepo(),
+        JsonApplicationRepo(),
+        JsonConversationRepo(),
+        JsonCalendarRepo(),
+        JsonInterviewPrepRepo(),
     )

@@ -74,6 +74,32 @@ def test_applications_delete(runner):
     assert result.exit_code == 0
 
 
+# --- interview ---
+
+def test_interview_view_no_prep(runner):
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["interview", "view", "1"])
+    assert result.exit_code == 0
+    assert "No prep saved" in result.output or result.exit_code == 0
+
+
+def test_interview_prep_not_found(runner):
+    result = runner.invoke(cli, ["interview", "prep", "999"])
+    assert result.exit_code != 0 or "not found" in result.output.lower()
+
+
+def test_interview_prep_and_view(runner, monkeypatch):
+    monkeypatch.setattr(
+        "linkedin.services.interview_service.generate_with_ai",
+        lambda prompt, max_tokens=800: "Q1: Tell me about yourself.",
+    )
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    prep_result = runner.invoke(cli, ["interview", "prep", "1"])
+    assert prep_result.exit_code == 0
+    view_result = runner.invoke(cli, ["interview", "view", "1"])
+    assert view_result.exit_code == 0
+
+
 # --- conversations ---
 
 def test_conversations_log_and_view(runner):

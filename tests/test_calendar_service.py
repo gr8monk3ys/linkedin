@@ -71,3 +71,29 @@ def test_stats_counts(svc):
     assert stats["total"] == 2
     assert stats["posted"] == 1
     assert stats["scheduled"] == 1
+
+
+def test_list_upcoming_excludes_posted(svc):
+    """Posted posts should not appear in list_upcoming."""
+    svc.add(title="Post", scheduled_date="2026-03-01")
+    post_id = svc.list_all()[0]["id"]
+    svc.mark_posted(post_id)
+    upcoming = svc.list_upcoming(days=3650)
+    assert len(upcoming) == 0
+
+
+def test_delete_nonexistent(svc):
+    """Deleting a post that doesn't exist should return False."""
+    assert svc.delete(999) is False
+
+
+def test_stats_all_states(svc):
+    """Stats should correctly count both scheduled and posted states."""
+    svc.add(title="Scheduled post", scheduled_date="2026-03-01")
+    svc.add(title="Also scheduled", scheduled_date="2026-03-02")
+    post_id = svc.list_all()[0]["id"]
+    svc.mark_posted(post_id)
+    stats = svc.get_stats()
+    assert stats["scheduled"] == 1
+    assert stats["posted"] == 1
+    assert stats["total"] == 2

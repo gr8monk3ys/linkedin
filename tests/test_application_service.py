@@ -3,6 +3,7 @@
 import pytest
 
 import linkedin.data.json_store as js
+from linkedin.ai.client import AIClientError
 from linkedin.data.json_store import (
     JsonApplicationRepo,
     JsonContactRepo,
@@ -10,6 +11,10 @@ from linkedin.data.json_store import (
 )
 from linkedin.services.application_service import ApplicationService
 from tests.conftest import sample_profile
+
+
+def _raise_ai_error(*args, **kwargs):
+    raise AIClientError("API error")
 
 
 @pytest.fixture
@@ -135,3 +140,69 @@ def test_skills_gap_with_ai(svc, app_repos, monkeypatch):
     error, result = svc.skills_gap(app_id)
     assert error is None
     assert "Missing" in result
+
+
+def test_tailor_resume_ai_error(svc, app_repos, monkeypatch):
+    """AI failure should return an error string and empty result."""
+    _, profile_repo, _ = app_repos
+    profile_repo.save(sample_profile())
+    svc.add_application("Acme", "ML Engineer", jd_text="Python required")
+    app_id = svc.list_applications()[0]["id"]
+    monkeypatch.setattr("linkedin.services.application_service.generate_with_ai", _raise_ai_error)
+    error, result = svc.tailor_resume(app_id)
+    assert error is not None
+    assert result == ""
+
+
+def test_cover_letter_ai_error(svc, app_repos, monkeypatch):
+    """AI failure should return an error string and empty result."""
+    _, profile_repo, _ = app_repos
+    profile_repo.save(sample_profile())
+    svc.add_application("Acme", "ML Engineer")
+    app_id = svc.list_applications()[0]["id"]
+    monkeypatch.setattr("linkedin.services.application_service.generate_with_ai", _raise_ai_error)
+    error, result = svc.cover_letter(app_id)
+    assert error is not None
+    assert result == ""
+
+
+def test_skills_gap_ai_error(svc, app_repos, monkeypatch):
+    """AI failure should return an error string and empty result."""
+    _, profile_repo, _ = app_repos
+    profile_repo.save(sample_profile())
+    svc.add_application("Acme", "ML Engineer", jd_text="Python required")
+    app_id = svc.list_applications()[0]["id"]
+    monkeypatch.setattr("linkedin.services.application_service.generate_with_ai", _raise_ai_error)
+    error, result = svc.skills_gap(app_id)
+    assert error is not None
+    assert result == ""
+
+
+def test_tailor_resume_with_resume_override(svc, monkeypatch):
+    """resume_override bypasses profile lookup entirely."""
+    svc.add_application("Acme", "ML Engineer", jd_text="Python required")
+    app_id = svc.list_applications()[0]["id"]
+    monkeypatch.setattr(
+        "linkedin.services.application_service.generate_with_ai",
+        lambda prompt, max_tokens=800: "• Optimized data pipelines",
+    )
+    error, result = svc.tailor_resume(app_id, resume_override="Led ML team for 3 years.")
+    assert error is None
+    assert "Optimized" in result
+
+
+def test_advance_same_status_allowed(svc):
+    """Re-applying the same status should not error."""
+    svc.add_application("Acme", "ML Engineer")
+    app_id = svc.list_applications()[0]["id"]
+    svc.advance(app_id, "applied")
+    error, _ = svc.advance(app_id, "applied")
+    assert error is None
+
+
+def test_list_filter_company_case_insensitive(svc):
+    """Company filter should match regardless of case."""
+    svc.add_application("Stripe Inc", "Engineer")
+    results = svc.list_applications(company="stripe")
+    assert len(results) == 1
+    assert results[0]["company"] == "Stripe Inc"

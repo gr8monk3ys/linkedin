@@ -2,6 +2,7 @@
 
 import pytest
 import linkedin.data.json_store as js
+from linkedin.ai.client import AIClientError
 from linkedin.data.json_store import (
     JsonApplicationRepo,
     JsonInterviewPrepRepo,
@@ -9,6 +10,10 @@ from linkedin.data.json_store import (
 )
 from linkedin.services.interview_service import InterviewService
 from tests.conftest import sample_profile
+
+
+def _raise_ai_error(*args, **kwargs):
+    raise AIClientError("API error")
 
 
 @pytest.fixture
@@ -97,3 +102,37 @@ def test_questions_to_ask(svc, app_with_jd, monkeypatch):
 def test_get_prep_none_when_missing(svc, app_with_jd):
     prep = svc.get_prep(1)
     assert prep is None
+
+
+def test_research_missing_application(svc):
+    """research() should return an error for a nonexistent application."""
+    error, result = svc.research(999)
+    assert error is not None
+    assert "not found" in error.lower()
+
+
+def test_prep_ai_error(svc, app_with_jd, monkeypatch):
+    """AI failure during prep should return an error string and empty result."""
+    monkeypatch.setattr("linkedin.services.interview_service.generate_with_ai", _raise_ai_error)
+    error, result = svc.prep(1)
+    assert error is not None
+    assert result == ""
+
+
+def test_prep_saves_and_overwrites(svc, app_with_jd, monkeypatch):
+    """Calling prep twice should overwrite the previously saved questions."""
+    monkeypatch.setattr(
+        "linkedin.services.interview_service.generate_with_ai",
+        lambda prompt, max_tokens=1200: "First response",
+    )
+    svc.prep(1)
+
+    monkeypatch.setattr(
+        "linkedin.services.interview_service.generate_with_ai",
+        lambda prompt, max_tokens=1200: "Updated response",
+    )
+    svc.prep(1)
+
+    prep = svc.get_prep(1)
+    assert prep is not None
+    assert "Updated response" in str(prep)

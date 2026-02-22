@@ -35,13 +35,23 @@ def db_engine():
 
 @pytest.fixture
 def db_repos(db_engine):
-    """Full set of DB repos."""
+    """Full set of DB repos (new repos fall back to JSON stubs matching factory.py)."""
+    from linkedin.data.json_store import (
+        JsonApplicationRepo,
+        JsonCalendarRepo,
+        JsonConversationRepo,
+        JsonInterviewPrepRepo,
+    )
     return (
         DbContactRepo(db_engine),
         DbCompanyRepo(db_engine),
         DbProfileRepo(db_engine),
         DbDraftRepo(db_engine),
         DbResearchRepo(db_engine),
+        JsonApplicationRepo(),
+        JsonConversationRepo(),
+        JsonCalendarRepo(),
+        JsonInterviewPrepRepo(),
     )
 
 

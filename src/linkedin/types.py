@@ -73,6 +73,7 @@ class ProfileDict(TypedDict, total=False):
     industries: str
     location: str
     updated_at: str
+    resume_text: str
 
 
 class DraftDict(TypedDict, total=False):

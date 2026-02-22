@@ -1,8 +1,9 @@
 """Draft generation and management service."""
 
+import os
 from datetime import datetime
 
-from linkedin.ai.client import generate_with_ai
+from linkedin.ai.client import AIClientError, generate_with_ai
 from linkedin.data.repository import ContactRepo, DraftRepo, ProfileRepo
 from linkedin.types import DraftDict, ProfileDict
 
@@ -44,8 +45,11 @@ class DraftService:
             return f"Contact #{contact_id} not found", ""
 
         prompt = self._connection_prompt(profile, contact)
-        draft = generate_with_ai(prompt, max_tokens=200)
-        return None, draft
+        return self._generate_with_fallback(
+            prompt=prompt,
+            max_tokens=200,
+            fallback_text=self._fallback_connection(profile, contact),
+        )
 
     def generate_message(self, contact_id: int, context: str = "") -> tuple[str | None, str]:
         profile = self.profiles.get()
@@ -54,8 +58,11 @@ class DraftService:
             return f"Contact #{contact_id} not found", ""
 
         prompt = self._message_prompt(profile, contact, context)
-        draft = generate_with_ai(prompt, max_tokens=400)
-        return None, draft
+        return self._generate_with_fallback(
+            prompt=prompt,
+            max_tokens=400,
+            fallback_text=self._fallback_message(profile, contact, context),
+        )
 
     def generate_intro_request(self, contact_id: int, target_id: int) -> tuple[str | None, str]:
         profile = self.profiles.get()
@@ -71,8 +78,11 @@ class DraftService:
             return f"Target contact #{target_id} not found", ""
 
         prompt = self._intro_request_prompt(profile, contact, target)
-        draft = generate_with_ai(prompt, max_tokens=400)
-        return None, draft
+        return self._generate_with_fallback(
+            prompt=prompt,
+            max_tokens=400,
+            fallback_text=self._fallback_intro_request(profile, contact, target),
+        )
 
     def generate_thank_you(self, contact_id: int, context: str = "") -> tuple[str | None, str]:
         profile = self.profiles.get()
@@ -84,8 +94,11 @@ class DraftService:
             return f"Contact #{contact_id} not found", ""
 
         prompt = self._thank_you_prompt(profile, contact, context)
-        draft = generate_with_ai(prompt, max_tokens=250)
-        return None, draft
+        return self._generate_with_fallback(
+            prompt=prompt,
+            max_tokens=250,
+            fallback_text=self._fallback_thank_you(profile, contact, context),
+        )
 
     def generate_follow_up(self, contact_id: int, attempt: int = 1) -> tuple[str | None, str]:
         profile = self.profiles.get()
@@ -97,8 +110,11 @@ class DraftService:
             return f"Contact #{contact_id} not found", ""
 
         prompt = self._follow_up_prompt(profile, contact, attempt)
-        draft = generate_with_ai(prompt, max_tokens=200)
-        return None, draft
+        return self._generate_with_fallback(
+            prompt=prompt,
+            max_tokens=200,
+            fallback_text=self._fallback_follow_up(profile, contact, attempt),
+        )
 
     def generate_batch_connections(self, limit: int = 5) -> tuple[str | None, list[tuple[dict, str]]]:
         profile = self.profiles.get()
@@ -113,7 +129,13 @@ class DraftService:
         results = []
         for contact in not_contacted[:limit]:
             prompt = self._connection_prompt(profile, contact)
-            draft = generate_with_ai(prompt, max_tokens=200)
+            error, draft = self._generate_with_fallback(
+                prompt=prompt,
+                max_tokens=200,
+                fallback_text=self._fallback_connection(profile, contact),
+            )
+            if error:
+                return error, []
             results.append((contact, draft))
 
         return None, results
@@ -128,6 +150,74 @@ class DraftService:
         }
         draft.update(extra)
         return self.drafts.add(draft)
+
+    def _generate_with_fallback(self, prompt: str, max_tokens: int, fallback_text: str) -> tuple[str | None, str]:
+        try:
+            draft = generate_with_ai(prompt, max_tokens=max_tokens)
+            return None, draft
+        except AIClientError as exc:
+            if not self._fallback_enabled():
+                return str(exc), ""
+            return None, fallback_text
+
+    def _fallback_enabled(self) -> bool:
+        value = os.environ.get("LINKEDIN_AI_FALLBACK_ENABLED", "1").strip().lower()
+        return value not in {"0", "false", "no", "off"}
+
+    def _first_name(self, contact: dict) -> str:
+        return str(contact.get("name", "")).strip().split(" ")[0] or "there"
+
+    def _fallback_connection(self, profile: ProfileDict, contact: dict) -> str:
+        first = self._first_name(contact)
+        me = profile.get("name", "I")
+        role = profile.get("target_role", "new opportunities")
+        company = contact.get("company", "your team")
+        msg = (
+            f"Hi {first} — I’m {me}. I’ve been following the work at {company} and I’d value connecting "
+            f"as I explore {role}. Thanks for considering."
+        )
+        return msg[:300]
+
+    def _fallback_message(self, profile: ProfileDict, contact: dict, context: str) -> str:
+        first = self._first_name(contact)
+        role = profile.get("target_role", "my next role")
+        extra = f" {context.strip()}" if context.strip() else ""
+        return (
+            f"Hi {first}, thanks again for connecting. I’m currently focused on {role} and would appreciate any "
+            f"advice on teams or opportunities that might be a fit.{extra} If helpful, I can send a concise summary."
+        )
+
+    def _fallback_intro_request(self, profile: ProfileDict, contact: dict, target: dict) -> str:
+        first = self._first_name(contact)
+        target_name = target.get("name", "this person")
+        role = profile.get("target_role", "new opportunities")
+        return (
+            f"Hi {first}, would you be open to introducing me to {target_name}? I’m exploring {role} opportunities "
+            f"and think a short conversation could be valuable. If useful, I can share a brief intro blurb to forward."
+        )
+
+    def _fallback_thank_you(self, profile: ProfileDict, contact: dict, context: str) -> str:
+        first = self._first_name(contact)
+        detail = context.strip() or "today"
+        return (
+            f"Hi {first}, thank you again for your time {detail}. I appreciated your perspective and took away a few "
+            f"clear next steps. I’ll keep you posted, and I’m happy to return the favor anytime."
+        )
+
+    def _fallback_follow_up(self, profile: ProfileDict, contact: dict, attempt: int) -> str:
+        first = self._first_name(contact)
+        role = profile.get("target_role", "my search")
+        if attempt >= 3:
+            return f"Hi {first}, closing the loop for now. If timing improves, I’d still value connecting around {role}."
+        if attempt == 2:
+            return (
+                f"Hi {first}, quick follow-up in case my last note got buried. If there’s a better person to speak with "
+                f"about {role}, I’d appreciate a pointer."
+            )
+        return (
+            f"Hi {first}, following up in case this was missed. I’m still very interested in conversations around {role} "
+            "and would appreciate any guidance."
+        )
 
     def _connection_prompt(self, profile: ProfileDict, contact: dict) -> str:
         return f"""Write a LinkedIn connection request message (max 300 characters) from me to this person.

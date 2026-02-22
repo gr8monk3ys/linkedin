@@ -1,6 +1,6 @@
 """AI profile optimizer service — headline, about, skills, experience improvements."""
 
-from linkedin.ai.client import generate_with_ai
+from linkedin.ai.client import AIClientError, generate_with_ai
 from linkedin.data.repository import ProfileRepo
 
 
@@ -31,7 +31,10 @@ Requirements:
 Format: Number. Headline text
 Just the headlines, no explanations."""
 
-        result = generate_with_ai(prompt, max_tokens=300)
+        try:
+            result = generate_with_ai(prompt, max_tokens=300)
+        except AIClientError as exc:
+            return str(exc), ""
         return None, result
 
     def optimize_about(self) -> tuple[str | None, str]:
@@ -61,7 +64,10 @@ Requirements:
 
 Just write the About section, no explanations."""
 
-        result = generate_with_ai(prompt, max_tokens=600)
+        try:
+            result = generate_with_ai(prompt, max_tokens=600)
+        except AIClientError as exc:
+            return str(exc), ""
         return None, result
 
     def optimize_skills(self) -> tuple[str | None, str]:
@@ -86,7 +92,10 @@ Provide:
 
 Be specific and actionable. Under 400 words."""
 
-        result = generate_with_ai(prompt, max_tokens=500)
+        try:
+            result = generate_with_ai(prompt, max_tokens=500)
+        except AIClientError as exc:
+            return str(exc), ""
         return None, result
 
     def optimize_full(self) -> tuple[str | None, str]:
@@ -115,5 +124,8 @@ Score each section (1-10) and provide specific improvement suggestions:
 
 Be specific and actionable. Under 500 words."""
 
-        result = generate_with_ai(prompt, max_tokens=700)
+        try:
+            result = generate_with_ai(prompt, max_tokens=700)
+        except AIClientError as exc:
+            return str(exc), ""
         return None, result

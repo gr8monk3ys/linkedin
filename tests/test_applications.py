@@ -1,15 +1,15 @@
 """Tests for ApplicationService."""
 
 import pytest
+
 import linkedin.data.json_store as js
 from linkedin.data.json_store import (
     JsonApplicationRepo,
-    JsonProfileRepo,
     JsonContactRepo,
-    JsonCompanyRepo,
+    JsonProfileRepo,
 )
 from linkedin.services.application_service import ApplicationService
-from tests.conftest import sample_application, sample_profile
+from tests.conftest import sample_profile
 
 
 @pytest.fixture

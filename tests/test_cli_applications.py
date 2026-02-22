@@ -27,6 +27,24 @@ def runner():
     return CliRunner()
 
 
+def _setup_profile_no_resume(runner):
+    """Set up a named profile without resume text."""
+    runner.invoke(
+        cli,
+        ["profile", "setup"],
+        input="Test User\nML Engineer\nML Engineer\nPython, ML\nexp\nunique\nTech\nSF\nn\n",
+    )
+
+
+def _setup_profile_with_resume(runner, resume="5 years Python experience"):
+    """Set up a profile with resume text (two blank lines terminate the paste)."""
+    runner.invoke(
+        cli,
+        ["profile", "setup"],
+        input=f"Test User\nML Engineer\nML Engineer\nPython, ML\nexp\nunique\nTech\nSF\ny\n{resume}\n\n\n",
+    )
+
+
 # --- applications ---
 
 def test_applications_add(runner):
@@ -145,3 +163,156 @@ def test_calendar_mark_posted(runner):
 def test_calendar_stats(runner):
     result = runner.invoke(cli, ["calendar", "stats"])
     assert result.exit_code == 0
+
+
+# --- applications AI commands ---
+
+
+def test_applications_tailor_resume_no_profile(runner):
+    """tailor-resume without a profile (no resume_text) should error."""
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["applications", "tailor-resume", "1"])
+    assert result.exit_code != 0
+
+
+def test_applications_tailor_resume_with_ai(runner, monkeypatch):
+    """tailor-resume with profile resume_text and mocked AI should succeed."""
+    monkeypatch.setattr(
+        "linkedin.services.application_service.generate_with_ai",
+        lambda prompt, max_tokens=800: "• Led ML pipeline optimization",
+    )
+    _setup_profile_with_resume(runner)
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["applications", "tailor-resume", "1"])
+    assert result.exit_code == 0
+    assert "ML pipeline" in result.output
+
+
+def test_applications_tailor_resume_file_not_found(runner):
+    """tailor-resume with a nonexistent --resume-file should error."""
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(
+        cli, ["applications", "tailor-resume", "1", "--resume-file", "/nonexistent/resume.txt"]
+    )
+    assert result.exit_code != 0
+
+
+def test_applications_cover_letter_no_profile(runner):
+    """cover-letter without a profile should error."""
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["applications", "cover-letter", "1"])
+    assert result.exit_code != 0
+
+
+def test_applications_cover_letter_with_ai(runner, monkeypatch):
+    """cover-letter with profile and mocked AI should succeed."""
+    monkeypatch.setattr(
+        "linkedin.services.application_service.generate_with_ai",
+        lambda prompt, max_tokens=800: "Dear Hiring Manager, I am thrilled to apply.",
+    )
+    _setup_profile_no_resume(runner)
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["applications", "cover-letter", "1"])
+    assert result.exit_code == 0
+    assert "Hiring Manager" in result.output
+
+
+def test_applications_skills_gap_no_jd(runner):
+    """skills-gap without a job description should error."""
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["applications", "skills-gap", "1"])
+    assert result.exit_code != 0
+
+
+def test_applications_skills_gap_with_ai(runner, monkeypatch):
+    """skills-gap with JD and mocked AI should succeed."""
+    monkeypatch.setattr(
+        "linkedin.services.application_service.generate_with_ai",
+        lambda prompt, max_tokens=600: "## Skills You Have\n- Python",
+    )
+    runner.invoke(
+        cli,
+        ["applications", "add", "--company", "Acme", "--title", "ML Engineer", "--jd", "Must know Python and ML"],
+    )
+    result = runner.invoke(cli, ["applications", "skills-gap", "1"])
+    assert result.exit_code == 0
+
+
+# --- applications validation ---
+
+
+def test_applications_advance_invalid_status(runner):
+    """advance with an invalid status string should error."""
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["applications", "advance", "1", "--status", "flying"])
+    assert result.exit_code != 0
+    assert "invalid" in result.output.lower() or "valid" in result.output.lower()
+
+
+# --- interview AI commands ---
+
+
+def test_interview_research_with_ai(runner, monkeypatch):
+    """interview research with mocked AI should succeed."""
+    monkeypatch.setattr(
+        "linkedin.services.interview_service.generate_with_ai",
+        lambda prompt, max_tokens=800: "## Company Overview\nAcme builds ML tools.",
+    )
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["interview", "research", "1"])
+    assert result.exit_code == 0
+
+
+def test_interview_star_with_ai(runner, monkeypatch):
+    """interview star with mocked AI should succeed."""
+    monkeypatch.setattr(
+        "linkedin.services.interview_service.generate_with_ai",
+        lambda prompt, max_tokens=1000: "**Question:** Tell me about a challenge\n**Situation:** [FILL IN]",
+    )
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["interview", "star", "1"])
+    assert result.exit_code == 0
+
+
+def test_interview_questions_with_ai(runner, monkeypatch):
+    """interview questions with mocked AI should succeed."""
+    monkeypatch.setattr(
+        "linkedin.services.interview_service.generate_with_ai",
+        lambda prompt, max_tokens=400: "1. What does success look like in 90 days?",
+    )
+    runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
+    result = runner.invoke(cli, ["interview", "questions", "1"])
+    assert result.exit_code == 0
+
+
+# --- conversations export ---
+
+
+def test_conversations_export(runner):
+    """conversations export should print logged messages as plain text."""
+    runner.invoke(
+        cli,
+        ["contacts", "add"],
+        input="Alice\nPM\nBeta\nhttps://linkedin.com/in/alice\n\n",
+    )
+    runner.invoke(cli, ["conversations", "log", "1", "--from", "me", "--text", "Hey Alice!"])
+    result = runner.invoke(cli, ["conversations", "export", "1"])
+    assert result.exit_code == 0
+    assert "Hey Alice" in result.output
+
+
+# --- calendar validation ---
+
+
+def test_calendar_mark_posted_not_found(runner):
+    """mark-posted with a nonexistent post ID should error."""
+    result = runner.invoke(cli, ["calendar", "mark-posted", "999"])
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+
+
+def test_calendar_list_week_filter(runner):
+    """calendar list --week should not show posts scheduled beyond 7 days."""
+    runner.invoke(cli, ["calendar", "add", "--title", "Far Future Post", "--date", "2026-04-30"])
+    result = runner.invoke(cli, ["calendar", "list", "--week"])
+    assert "Far Future Post" not in result.output

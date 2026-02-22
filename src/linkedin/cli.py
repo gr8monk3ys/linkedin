@@ -3767,6 +3767,10 @@ def automation_profile(linkedin_url):
         console.print("[red]Playwright not installed. Run: uv sync --extra automation[/red]")
         raise SystemExit(1)
 
+    existing = next(
+        (c for c in _contact_repo.list_all() if c.get("linkedin_url") == linkedin_url),
+        None,
+    )
     with BrowserManager() as browser:
         page = LinkedInPage(browser.page)
         if not page.is_logged_in():
@@ -3777,7 +3781,7 @@ def automation_profile(linkedin_url):
     if not contact:
         console.print("[red]Could not scrape profile. Check URL and login status.[/red]")
         raise SystemExit(1)
-    action = "Updated" if contact.get("linkedin_url") else "Added"
+    action = "Updated" if existing else "Added"
     console.print(f"[green]{action}:[/green] {contact['name']} — {contact.get('title', '')} at {contact.get('company', '')}")
 
 

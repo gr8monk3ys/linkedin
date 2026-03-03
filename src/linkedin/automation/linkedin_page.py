@@ -1,5 +1,7 @@
 """LinkedIn page object model using Playwright locators."""
 
+import time
+
 from playwright.sync_api import Page, expect
 
 
@@ -177,3 +179,132 @@ class LinkedInPage:
         except Exception:
             pass
         return results
+
+    # -------------------------------------------------------------------------
+    # Feed Engagement
+    # -------------------------------------------------------------------------
+
+    def get_feed_posts(self, max_posts: int = 10) -> list[dict]:
+        """Scroll feed and collect post data.
+
+        Returns list of dicts: {"author", "headline", "content", "element_index"}
+        """
+        posts: list[dict] = []
+        seen_authors: set[str] = set()
+
+        try:
+            self.goto_feed()
+            self.page.wait_for_load_state("networkidle", timeout=10000)
+
+            scroll_attempts = 0
+            max_scrolls = max_posts * 2  # Allow enough scrolling to find posts
+
+            while len(posts) < max_posts and scroll_attempts < max_scrolls:
+                cards = self.page.locator("div.feed-shared-update-v2")
+                count = cards.count()
+
+                for i in range(count):
+                    if len(posts) >= max_posts:
+                        break
+
+                    card = cards.nth(i)
+                    entry: dict[str, str | int] = {"element_index": i}
+
+                    # Extract author name
+                    author_el = card.locator(".update-components-actor__name span[aria-hidden='true']").first
+                    if author_el.count() > 0:
+                        entry["author"] = author_el.text_content().strip()
+                    else:
+                        entry["author"] = ""
+
+                    # Skip duplicates from re-scanning after scroll
+                    author_key = f"{entry['author']}_{i}"
+                    if author_key in seen_authors:
+                        continue
+                    seen_authors.add(author_key)
+
+                    # Extract headline
+                    headline_el = card.locator(".update-components-actor__description span[aria-hidden='true']").first
+                    if headline_el.count() > 0:
+                        entry["headline"] = headline_el.text_content().strip()
+                    else:
+                        entry["headline"] = ""
+
+                    # Extract post content
+                    content_el = card.locator(".feed-shared-update-v2__description, .update-components-text").first
+                    if content_el.count() > 0:
+                        text = content_el.text_content().strip()
+                        entry["content"] = text[:500]
+                    else:
+                        entry["content"] = ""
+
+                    posts.append(entry)
+
+                # Scroll down to load more posts
+                self.page.evaluate("window.scrollBy(0, 800)")
+                time.sleep(1)
+                scroll_attempts += 1
+
+        except Exception:
+            pass
+
+        return posts
+
+    def like_post(self, post_index: int) -> bool:
+        """Like a post by its index in the feed.
+
+        Skips if already liked. Returns True if liked successfully.
+        """
+        try:
+            cards = self.page.locator("div.feed-shared-update-v2")
+            if post_index >= cards.count():
+                return False
+
+            card = cards.nth(post_index)
+            like_btn = card.get_by_role("button", name="Like")
+
+            if like_btn.count() == 0:
+                return False
+
+            # Check if already liked
+            if like_btn.first.get_attribute("aria-pressed") == "true":
+                return False
+
+            like_btn.first.click()
+            return True
+        except Exception:
+            return False
+
+    def comment_on_post(self, post_index: int, comment_text: str) -> bool:
+        """Post a comment on a feed post by index.
+
+        Returns True if comment was posted successfully.
+        """
+        try:
+            cards = self.page.locator("div.feed-shared-update-v2")
+            if post_index >= cards.count():
+                return False
+
+            card = cards.nth(post_index)
+
+            # Click Comment button to open comment box
+            comment_btn = card.get_by_role("button", name="Comment")
+            if comment_btn.count() == 0:
+                return False
+            comment_btn.first.click()
+
+            # Fill the comment textbox
+            textbox = card.get_by_role("textbox", name="Add a comment")
+            textbox.wait_for(timeout=5000)
+            textbox.fill(comment_text)
+
+            # Submit via Post button
+            post_btn = card.get_by_role("button", name="Post")
+            if post_btn.count() > 0:
+                post_btn.first.click()
+            else:
+                textbox.press("Control+Enter")
+
+            return True
+        except Exception:
+            return False

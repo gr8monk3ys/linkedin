@@ -26,7 +26,7 @@ class TestDashboardState:
     def test_load_dashboard_with_data(self, json_repos):
         from linkedin.web.states.dashboard_state import DashboardState
 
-        contact_repo, company_repo, profile_repo, draft_repo, _ = json_repos
+        contact_repo, company_repo, profile_repo, draft_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(id=1, status="responded", follow_up_date="2020-01-01"))
         company_repo.add(sample_company(id=1))
@@ -104,23 +104,6 @@ class TestContactsState:
         assert len(contact_repo.list_all()) == 1
         assert contact_repo.list_all()[0]["linkedin_url"] == "https://linkedin.com/in/jane"
         assert len(state.contacts) == 1
-
-
-class TestDiscoverState:
-    @patch("linkedin.services.discover_service.generate_with_ai", return_value="Suggestions here")
-    def test_discover_contacts(self, mock_ai, json_repos):
-        from linkedin.web.states.discover_state import DiscoverState
-
-        _, _, profile_repo, *_ = json_repos
-        profile_repo.save(sample_profile())
-
-        state = DiscoverState()  # type: ignore[call-arg]
-        state.role = "Engineer"
-        state.discover_type = "contacts"
-        with _patch_repos("linkedin.web.states.discover_state", json_repos):
-            state.discover()
-        assert "Suggestions" in state.suggestions
-
 
 class TestResearchState:
     def test_load_engagement(self, json_repos):

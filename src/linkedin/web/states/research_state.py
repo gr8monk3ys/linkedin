@@ -21,7 +21,7 @@ class ResearchState(rx.State):
     @rx.event
     def load_engagement(self):
         """Load engagement strategies (static content)."""
-        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        _contact_repo, _company_repo, profile_repo, draft_repo, research_repo, *_ = create_repos()
         svc = ResearchService(profile_repo, research_repo, draft_repo)
         self.engagement_content = svc.get_engagement_strategies()
 
@@ -41,7 +41,7 @@ class ResearchState(rx.State):
     def generate_ideas(self):
         """Generate post ideas with AI."""
         self.loading = True
-        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        _contact_repo, _company_repo, profile_repo, draft_repo, research_repo, *_ = create_repos()
         svc = ResearchService(profile_repo, research_repo, draft_repo)
         _focus_topic, ideas = svc.generate_ideas(self.post_topic or None)
         self.post_ideas = ideas
@@ -51,7 +51,7 @@ class ResearchState(rx.State):
     def generate_draft_post(self):
         """Generate a draft post with AI."""
         self.loading = True
-        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        _contact_repo, _company_repo, profile_repo, draft_repo, research_repo, *_ = create_repos()
         svc = ResearchService(profile_repo, research_repo, draft_repo)
         self.post_draft = svc.generate_post_draft(self.post_topic, self.post_style)
         self.loading = False
@@ -60,7 +60,7 @@ class ResearchState(rx.State):
     def generate_hashtags(self):
         """Generate hashtags with AI."""
         self.loading = True
-        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        _contact_repo, _company_repo, profile_repo, draft_repo, research_repo, *_ = create_repos()
         svc = ResearchService(profile_repo, research_repo, draft_repo)
         self.hashtags = svc.generate_hashtags(self.post_topic or "professional networking")
         self.loading = False

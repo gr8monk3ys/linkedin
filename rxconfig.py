@@ -6,4 +6,5 @@ config = rx.Config(
     app_name="linkedin_web",
     frontend_port=3000,
     backend_port=8000,
+    disable_plugins=["reflex.plugins.sitemap.SitemapPlugin"],
 )

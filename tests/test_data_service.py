@@ -171,6 +171,7 @@ class TestDataService:
             zf.writestr("../escape.txt", "bad")
 
         assert data_svc.restore_backup(str(bad_zip)) is None
+        assert not (tmp_path.parent / "escape.txt").exists()
 
     def test_list_backups_empty(self, data_svc):
         assert data_svc.list_backups() == []

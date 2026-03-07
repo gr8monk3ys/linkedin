@@ -88,7 +88,8 @@ def company_detail_dialog() -> rx.Component:
                 rx.hstack(
                     rx.badge(c.get("priority", "medium"), variant="soft"),
                     rx.text(c.get("industry", ""), size="2"),
-                    rx.text(f"Size: {c.get('size', '')}", size="2"),
+                    rx.text("Size:", size="2"),
+                    rx.text(c.get("size", ""), size="2"),
                     spacing="2",
                 ),
                 rx.cond(
@@ -156,7 +157,12 @@ def companies_page() -> rx.Component:
     content = rx.vstack(
         # Toolbar
         rx.hstack(
-            rx.heading(f"{CompaniesState.companies.length()} Companies", size="4"),
+            rx.hstack(
+                rx.heading(CompaniesState.companies.length(), size="4"),
+                rx.text("Companies", size="4"),
+                spacing="2",
+                align="center",
+            ),
             rx.spacer(),
             add_company_modal(),
             width="100%",

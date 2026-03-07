@@ -5,7 +5,7 @@ import reflex as rx
 from linkedin.web.layout import page_template
 from linkedin.web.states.research_state import ResearchState
 
-POST_STYLES = ["professional", "storytelling", "educational", "thought_leadership"]
+POST_STYLES = ["story", "listicle", "contrarian", "how-to"]
 
 
 def tab_button(label: str, tab_id: str) -> rx.Component:

@@ -24,7 +24,6 @@ jobs:
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: ${{ matrix.python-version }}
-
       - name: Install uv
         uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
 
@@ -45,3 +44,30 @@ jobs:
           uv run linkedin-cli --version
           uv run linkedin-cli health --json --time 09:00
           uv run linkedin-cli run-daily --json --idempotency-key ci-smoke --retry-attempts 0 --retry-backoff-seconds 0
+
+  web-smoke:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.11"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
+
+      - name: Sync dependencies
+        run: uv sync --extra dev --extra web
+
+      - name: Reflex web smoke
+        run: uv run python -m linkedin.scripts.web_smoke

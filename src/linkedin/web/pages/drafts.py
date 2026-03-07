@@ -19,11 +19,6 @@ def draft_controls() -> rx.Component:
                 on_change=DraftsState.set_draft_type,
                 placeholder="Draft type",
             ),
-            rx.select(
-                DraftsState.contacts.to(list[str]),
-                placeholder="Select contact",
-                on_change=DraftsState.set_contact_id,
-            ),
             # Show contact dropdown as ID selector
             rx.cond(
                 DraftsState.contacts.length() > 0,
@@ -137,7 +132,7 @@ def saved_drafts_list() -> rx.Component:
                                 align="center",
                             ),
                             rx.text(
-                                d.get("content", "")[:100] + "...",
+                                d.get("content", ""),
                                 size="2",
                                 color=rx.color("gray", 11),
                             ),

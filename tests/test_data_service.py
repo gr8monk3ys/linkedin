@@ -1,6 +1,7 @@
 """Tests for data import/export/backup service."""
 
 import json
+import zipfile
 
 import pytest
 
@@ -131,6 +132,14 @@ class TestDataService:
         bad_file = tmp_path / "not_a_zip.txt"
         bad_file.write_text("not a zip")
         assert data_svc.restore_backup(str(bad_file)) is None
+
+    def test_restore_rejects_unsafe_backup_member(self, data_svc, tmp_path):
+        backup_path = tmp_path / "unsafe.zip"
+        with zipfile.ZipFile(backup_path, "w") as zipf:
+            zipf.writestr("../outside.json", "{}")
+
+        assert data_svc.restore_backup(str(backup_path)) is None
+        assert not (tmp_path.parent / "outside.json").exists()
 
     def test_list_backups_empty(self, data_svc):
         assert data_svc.list_backups() == []

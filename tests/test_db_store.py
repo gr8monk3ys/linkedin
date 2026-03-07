@@ -19,6 +19,7 @@ def engine():
     eng = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(eng)
     yield eng
+    eng.dispose()
     reset_engine()
 
 

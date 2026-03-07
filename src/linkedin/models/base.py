@@ -60,6 +60,8 @@ def create_tables(engine=None):
 def reset_engine():
     """Reset the cached engine (useful for testing)."""
     global _engine
+    if _engine is not None:
+        _engine.dispose()
     _engine = None
 
 

@@ -2,6 +2,7 @@
 
 import csv
 import json
+import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -20,6 +21,21 @@ from linkedin.data.json_store import (
 
 
 class DataService:
+    @staticmethod
+    def _allowed_backup_members() -> set[str]:
+        return {
+            PROFILE_FILE.name,
+            CONTACTS_FILE.name,
+            COMPANIES_FILE.name,
+            DRAFTS_FILE.name,
+            RESEARCH_FILE.name,
+        }
+
+    @classmethod
+    def _is_safe_backup_member(cls, filename: str) -> bool:
+        path = Path(filename)
+        return not path.is_absolute() and path.name == filename and filename in cls._allowed_backup_members()
+
     def export_contacts(self, output: str | None = None, fmt: str = "csv") -> tuple[int, str]:
         """Export contacts. Returns (count, output_file)."""
         contacts = load_json(CONTACTS_FILE)
@@ -160,8 +176,14 @@ class DataService:
         from linkedin.data.json_store import DATA_DIR
 
         with zipfile.ZipFile(backup_path, "r") as zipf:
-            for filename in zipf.namelist():
-                zipf.extract(filename, DATA_DIR)
+            members = zipf.infolist()
+            if any(info.is_dir() or not self._is_safe_backup_member(info.filename) for info in members):
+                return None
+
+            for info in members:
+                target_path = DATA_DIR / info.filename
+                with zipf.open(info, "r") as src, target_path.open("wb") as dst:
+                    shutil.copyfileobj(src, dst)
                 restored += 1
 
         return restored

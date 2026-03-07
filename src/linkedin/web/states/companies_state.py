@@ -27,11 +27,20 @@ class CompaniesState(rx.State):
         """Select a company for detail view."""
         contact_repo, company_repo, *_ = create_repos()
         svc = CompanyService(company_repo, contact_repo)
-        company = svc.get_company(company_id)
-        if company:
-            self.selected_company = company
-            self.company_contacts = svc.get_company_contacts(company_id)
-            self.show_detail = True
+        company_payload = svc.get_company(company_id)
+        company = company_payload.data if hasattr(company_payload, "data") else company_payload
+        if not company:
+            return
+
+        contacts_payload = svc.get_company_contacts(company_id)
+        if hasattr(contacts_payload, "ok"):
+            contacts = contacts_payload.data["contacts"] if contacts_payload.ok and contacts_payload.data else []
+        else:
+            _company, contacts = contacts_payload
+
+        self.selected_company = company
+        self.company_contacts = contacts
+        self.show_detail = True
 
     @rx.event
     def close_detail(self):
@@ -52,11 +61,10 @@ class CompaniesState(rx.State):
             name=form_data.get("name", ""),
             industry=form_data.get("industry", ""),
             size=form_data.get("size", "51-200"),
-            linkedin_url=form_data.get("linkedin_url", ""),
+            linkedin=form_data.get("linkedin_url", ""),
             website=form_data.get("website", ""),
-            why_target=form_data.get("why_target", ""),
+            why=form_data.get("why_target", ""),
             priority=form_data.get("priority", "medium"),
-            notes=form_data.get("notes", ""),
         )
         self.show_add_modal = False
         self.load_companies()

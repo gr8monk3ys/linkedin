@@ -32,6 +32,11 @@ def save_json(path: Path, data):
     path.write_text(json.dumps(data, indent=2, default=str))
 
 
+def next_id(items: list[dict]) -> int:
+    """Return the next available integer ID for a collection."""
+    return max((int(item.get("id", 0) or 0) for item in items), default=0) + 1
+
+
 class JsonContactRepo(ContactRepo):
     def list_all(self) -> list[ContactDict]:
         return load_json(CONTACTS_FILE)
@@ -62,8 +67,7 @@ class JsonContactRepo(ContactRepo):
         return True
 
     def next_id(self) -> int:
-        contacts = self.list_all()
-        return len(contacts) + 1
+        return next_id(self.list_all())
 
     def save_all(self, contacts: list[ContactDict]) -> None:
         save_json(CONTACTS_FILE, contacts)
@@ -99,8 +103,7 @@ class JsonCompanyRepo(CompanyRepo):
         return True
 
     def next_id(self) -> int:
-        companies = self.list_all()
-        return len(companies) + 1
+        return next_id(self.list_all())
 
 
 class JsonProfileRepo(ProfileRepo):
@@ -125,8 +128,7 @@ class JsonDraftRepo(DraftRepo):
         return draft
 
     def next_id(self) -> int:
-        drafts = self.list_all()
-        return len(drafts) + 1
+        return next_id(self.list_all())
 
 
 class JsonResearchRepo(ResearchRepo):

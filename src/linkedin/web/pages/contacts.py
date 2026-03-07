@@ -10,7 +10,7 @@ from linkedin.web.states.contacts_state import ContactsState
 def status_badge(status: str) -> rx.Component:
     """Colored badge for contact status."""
     return rx.badge(
-        status.replace("_", " ").title(),
+        status,
         variant="soft",
     )
 
@@ -22,7 +22,7 @@ def contact_row(contact: dict) -> rx.Component:
         rx.table.cell(contact.get("title", "")),
         rx.table.cell(contact.get("company", "")),
         rx.table.cell(status_badge(contact.get("status", "not_contacted"))),
-        rx.table.cell(contact.get("source", "").replace("_", " ")),
+        rx.table.cell(contact.get("source", "")),
         rx.table.cell(
             rx.button(
                 rx.icon("eye", size=14),

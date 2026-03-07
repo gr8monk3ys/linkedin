@@ -16,13 +16,13 @@ class ResearchState(rx.State):
     loading: bool = False
     active_tab: str = "engagement"
     post_topic: str = ""
-    post_style: str = "professional"
+    post_style: str = "story"
 
     @rx.event
     def load_engagement(self):
         """Load engagement strategies (static content)."""
-        _, _, profile_repo, _, research_repo = create_repos()
-        svc = ResearchService(research_repo, profile_repo)
+        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        svc = ResearchService(profile_repo, research_repo, draft_repo)
         self.engagement_content = svc.get_engagement_strategies()
 
     @rx.event
@@ -41,28 +41,26 @@ class ResearchState(rx.State):
     def generate_ideas(self):
         """Generate post ideas with AI."""
         self.loading = True
-        _, _, profile_repo, _, research_repo = create_repos()
-        svc = ResearchService(research_repo, profile_repo)
-        error, ideas = svc.generate_post_ideas()
-        self.post_ideas = ideas if not error else f"Error: {error}"
+        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        svc = ResearchService(profile_repo, research_repo, draft_repo)
+        _focus_topic, ideas = svc.generate_ideas(self.post_topic or None)
+        self.post_ideas = ideas
         self.loading = False
 
     @rx.event
     def generate_draft_post(self):
         """Generate a draft post with AI."""
         self.loading = True
-        _, _, profile_repo, _, research_repo = create_repos()
-        svc = ResearchService(research_repo, profile_repo)
-        error, draft = svc.generate_draft_post(self.post_topic, self.post_style)
-        self.post_draft = draft if not error else f"Error: {error}"
+        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        svc = ResearchService(profile_repo, research_repo, draft_repo)
+        self.post_draft = svc.generate_post_draft(self.post_topic, self.post_style)
         self.loading = False
 
     @rx.event
     def generate_hashtags(self):
         """Generate hashtags with AI."""
         self.loading = True
-        _, _, profile_repo, _, research_repo = create_repos()
-        svc = ResearchService(research_repo, profile_repo)
-        error, tags = svc.generate_hashtags()
-        self.hashtags = tags if not error else f"Error: {error}"
+        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        svc = ResearchService(profile_repo, research_repo, draft_repo)
+        self.hashtags = svc.generate_hashtags(self.post_topic or "professional networking")
         self.loading = False

@@ -75,7 +75,7 @@ class ContactsState(rx.State):
             name=form_data.get("name", ""),
             title=form_data.get("title", ""),
             company=form_data.get("company", ""),
-            linkedin_url=form_data.get("linkedin_url", ""),
+            linkedin=form_data.get("linkedin_url", ""),
             notes=form_data.get("notes", ""),
             source=form_data.get("source", "linkedin_search"),
         )
@@ -87,7 +87,7 @@ class ContactsState(rx.State):
         """Update a contact's status."""
         contact_repo, company_repo, *_ = create_repos()
         svc = ContactService(contact_repo, company_repo)
-        svc.update_contact(contact_id, new_status)
+        svc.update_contact(contact_id, status=new_status)
         self.load_contacts()
         if self.selected_contact and self.selected_contact.get("id") == contact_id:
             self.select_contact(contact_id)

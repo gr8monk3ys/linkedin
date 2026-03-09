@@ -47,6 +47,7 @@ dev = [
 
 [project.scripts]
 linkedin = "linkedin.cli:cli"
+linkedin-cli = "linkedin.cli:cli"
 linkedin-web = "linkedin.web.app:main"
 
 [build-system]

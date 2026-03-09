@@ -12,9 +12,13 @@ from linkedin.data.db_store import (
     DbTemplateRepo,
 )
 from linkedin.data.json_store import (
+    JsonApplicationRepo,
+    JsonCalendarRepo,
     JsonCompanyRepo,
     JsonContactRepo,
+    JsonConversationRepo,
     JsonDraftRepo,
+    JsonInterviewPrepRepo,
     JsonProfileRepo,
     JsonResearchRepo,
     JsonTemplateRepo,
@@ -36,13 +40,23 @@ def db_engine():
 
 @pytest.fixture
 def db_repos(db_engine):
-    """Full set of DB repos."""
+    """Full set of DB repos (new repos fall back to JSON stubs matching factory.py)."""
+    from linkedin.data.json_store import (
+        JsonApplicationRepo,
+        JsonCalendarRepo,
+        JsonConversationRepo,
+        JsonInterviewPrepRepo,
+    )
     return (
         DbContactRepo(db_engine),
         DbCompanyRepo(db_engine),
         DbProfileRepo(db_engine),
         DbDraftRepo(db_engine),
         DbResearchRepo(db_engine),
+        JsonApplicationRepo(),
+        JsonConversationRepo(),
+        JsonCalendarRepo(),
+        JsonInterviewPrepRepo(),
     )
 
 
@@ -58,7 +72,16 @@ def json_repos(tmp_path, monkeypatch):
     monkeypatch.setattr(js, "DRAFTS_FILE", tmp_path / "drafts.json")
     monkeypatch.setattr(js, "TEMPLATES_FILE", tmp_path / "templates.json")
     monkeypatch.setattr(js, "RESEARCH_FILE", tmp_path / "research.json")
+    monkeypatch.setattr(js, "TEMPLATES_FILE", tmp_path / "templates.json")
+    monkeypatch.setattr(js, "JOB_POSTINGS_FILE", tmp_path / "job_postings.json")
+    monkeypatch.setattr(js, "RUN_DAILY_STATE_FILE", tmp_path / "run_daily_state.json")
+    monkeypatch.setattr(js, "RUN_DAILY_LOG_FILE", tmp_path / "run_daily.log.jsonl")
+    monkeypatch.setattr(js, "RUN_DAILY_LOCK_FILE", tmp_path / "run_daily.lock")
     monkeypatch.setattr(js, "BACKUPS_DIR", tmp_path / "backups")
+    monkeypatch.setattr(js, "APPLICATIONS_FILE", tmp_path / "applications.json")
+    monkeypatch.setattr(js, "CONVERSATIONS_FILE", tmp_path / "conversations.json")
+    monkeypatch.setattr(js, "CALENDAR_FILE", tmp_path / "content_calendar.json")
+    monkeypatch.setattr(js, "INTERVIEW_PREP_FILE", tmp_path / "interview_prep.json")
 
     return (
         JsonContactRepo(),
@@ -66,6 +89,10 @@ def json_repos(tmp_path, monkeypatch):
         JsonProfileRepo(),
         JsonDraftRepo(),
         JsonResearchRepo(),
+        JsonApplicationRepo(),
+        JsonConversationRepo(),
+        JsonCalendarRepo(),
+        JsonInterviewPrepRepo(),
     )
 
 
@@ -133,6 +160,34 @@ def sample_profile(**overrides):
         "unique_value": "Full-stack with ML experience",
         "industries": "Technology, SaaS",
         "location": "San Francisco, CA",
+        "resume_text": "Experienced software engineer with 5 years building scalable web apps.",
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def sample_application(**overrides):
+    """Factory for sample application dicts."""
+    defaults = {
+        "company": "Acme Corp",
+        "title": "ML Engineer",
+        "url": "https://acme.com/jobs/123",
+        "jd_text": "We need Python, ML, and 3+ years experience.",
+        "status": "saved",
+        "notes": "",
+        "history": [],
+    }
+    defaults.update(overrides)
+    return defaults
+
+
+def sample_content_post(**overrides):
+    """Factory for sample content post dicts."""
+    defaults = {
+        "title": "Why I love Python",
+        "scheduled_date": "2026-03-01",
+        "status": "scheduled",
+        "platform": "linkedin",
     }
     defaults.update(overrides)
     return defaults

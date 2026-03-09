@@ -1,5 +1,6 @@
 """Shared helpers for service layer."""
 
+from linkedin.ai.client import AIClientError, generate_with_ai
 from linkedin.data.repository import ProfileRepo
 from linkedin.types import ProfileDict
 
@@ -22,3 +23,12 @@ def get_ai_text_or_error(text: str) -> tuple[str | None, str | None]:
             return None, text[1:-1]
         return None, text
     return text, None
+
+
+def generate_ai_text(prompt: str, max_tokens: int) -> tuple[str | None, str | None]:
+    """Run AI generation and normalize both raised and inline error shapes."""
+    try:
+        text = generate_with_ai(prompt, max_tokens=max_tokens)
+    except AIClientError as exc:
+        return None, str(exc)
+    return get_ai_text_or_error(text)

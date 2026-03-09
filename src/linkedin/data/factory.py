@@ -4,9 +4,13 @@ import os
 from pathlib import Path
 
 from linkedin.data.repository import (
+    ApplicationRepo,
+    CalendarRepo,
     CompanyRepo,
     ContactRepo,
+    ConversationRepo,
     DraftRepo,
+    InterviewPrepRepo,
     ProfileRepo,
     ResearchRepo,
     TemplateRepo,
@@ -20,12 +24,28 @@ def get_backend() -> str:
     return os.environ.get("LINKEDIN_BACKEND", "json").lower()
 
 
-def create_repos() -> tuple[ContactRepo, CompanyRepo, ProfileRepo, DraftRepo, ResearchRepo]:
-    """Create repository instances based on the configured backend."""
+def create_repos() -> tuple[
+    ContactRepo,
+    CompanyRepo,
+    ProfileRepo,
+    DraftRepo,
+    ResearchRepo,
+    ApplicationRepo,
+    ConversationRepo,
+    CalendarRepo,
+    InterviewPrepRepo,
+]:
     backend = get_backend()
 
     if backend == "twenty":
-        from linkedin.data.json_store import JsonProfileRepo, JsonResearchRepo
+        from linkedin.data.json_store import (
+            JsonApplicationRepo,
+            JsonCalendarRepo,
+            JsonConversationRepo,
+            JsonInterviewPrepRepo,
+            JsonProfileRepo,
+            JsonResearchRepo,
+        )
         from linkedin.data.twenty_client import TwentyClient
         from linkedin.data.twenty_setup import ensure_custom_fields
         from linkedin.data.twenty_store import TwentyCompanyRepo, TwentyContactRepo, TwentyDraftRepo, _IdMapper
@@ -44,6 +64,10 @@ def create_repos() -> tuple[ContactRepo, CompanyRepo, ProfileRepo, DraftRepo, Re
             JsonProfileRepo(),
             TwentyDraftRepo(client, id_mapper),
             JsonResearchRepo(),
+            JsonApplicationRepo(),
+            JsonConversationRepo(),
+            JsonCalendarRepo(),
+            JsonInterviewPrepRepo(),
         )
 
     if backend == "db":
@@ -57,18 +81,33 @@ def create_repos() -> tuple[ContactRepo, CompanyRepo, ProfileRepo, DraftRepo, Re
         from linkedin.models.base import create_tables
 
         create_tables()
+        from linkedin.data.json_store import (
+            JsonApplicationRepo,
+            JsonCalendarRepo,
+            JsonConversationRepo,
+            JsonInterviewPrepRepo,
+        )
+
         return (
             DbContactRepo(),
             DbCompanyRepo(),
             DbProfileRepo(),
             DbDraftRepo(),
             DbResearchRepo(),
+            JsonApplicationRepo(),
+            JsonConversationRepo(),
+            JsonCalendarRepo(),
+            JsonInterviewPrepRepo(),
         )
 
     from linkedin.data.json_store import (
+        JsonApplicationRepo,
+        JsonCalendarRepo,
         JsonCompanyRepo,
         JsonContactRepo,
+        JsonConversationRepo,
         JsonDraftRepo,
+        JsonInterviewPrepRepo,
         JsonProfileRepo,
         JsonResearchRepo,
     )
@@ -79,6 +118,10 @@ def create_repos() -> tuple[ContactRepo, CompanyRepo, ProfileRepo, DraftRepo, Re
         JsonProfileRepo(),
         JsonDraftRepo(),
         JsonResearchRepo(),
+        JsonApplicationRepo(),
+        JsonConversationRepo(),
+        JsonCalendarRepo(),
+        JsonInterviewPrepRepo(),
     )
 
 

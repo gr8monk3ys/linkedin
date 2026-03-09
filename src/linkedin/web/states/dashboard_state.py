@@ -21,7 +21,7 @@ class DashboardState(rx.State):
     @rx.event
     def load_dashboard(self):
         """Load dashboard data from services."""
-        contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
+        contact_repo, company_repo, profile_repo, draft_repo, *_ = create_repos()
         svc = DashboardService(profile_repo, contact_repo, company_repo, draft_repo)
         data = svc.get_dashboard_data()
         status_counts = data.get("status_counts", {})

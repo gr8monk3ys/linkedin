@@ -21,7 +21,7 @@ class DraftsState(rx.State):
     @rx.event
     def load_drafts(self):
         """Load all drafts and contacts for selection."""
-        contact_repo, company_repo, profile_repo, draft_repo, _ = create_repos()
+        contact_repo, company_repo, profile_repo, draft_repo, *_ = create_repos()
         svc = DraftService(draft_repo, contact_repo, profile_repo)
         self.drafts = svc.list_drafts()
         self.contacts = contact_repo.list_all()
@@ -49,7 +49,7 @@ class DraftsState(rx.State):
             return
 
         self.loading = True
-        contact_repo, company_repo, profile_repo, draft_repo, _ = create_repos()
+        contact_repo, company_repo, profile_repo, draft_repo, *_ = create_repos()
         svc = DraftService(draft_repo, contact_repo, profile_repo)
 
         error = None
@@ -79,7 +79,7 @@ class DraftsState(rx.State):
         if not self.generated_draft or self.generated_draft.startswith("Error:"):
             return
 
-        contact_repo, company_repo, profile_repo, draft_repo, _ = create_repos()
+        contact_repo, company_repo, profile_repo, draft_repo, *_ = create_repos()
         svc = DraftService(draft_repo, contact_repo, profile_repo)
         extra = {}
         if self.draft_type == "intro" and self.target_contact_id:

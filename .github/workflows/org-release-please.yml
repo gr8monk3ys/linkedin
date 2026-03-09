@@ -1,0 +1,18 @@
+name: org-release-please
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  release-please:
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    uses: gr8monk3ys/github/.github/workflows/reusable-release-please.yml@4a306a94d72d10b8d7835d697521a469fc6deab1

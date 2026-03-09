@@ -1,94 +1,74 @@
+permissions: read-all
+
 name: CI
 
 on:
   push:
     branches:
-      - main
-      - master
+      - "**"
   pull_request:
 
 jobs:
-  baseline-checks:
+  test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        if: ${{ hashFiles('package.json') != '' }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Install Node dependencies
-        if: ${{ hashFiles('package.json') != '' }}
-        run: |
-          if [ -f package-lock.json ]; then npm ci; \
-          elif [ -f yarn.lock ]; then yarn install --frozen-lockfile; \
-          elif [ -f pnpm-lock.yaml ]; then corepack enable && pnpm install --frozen-lockfile; \
-          else npm install; fi
-
-      - name: Run Node scripts
-        if: ${{ hashFiles('package.json') != '' }}
-        run: |
-          npm run lint --if-present
-          npm run test --if-present
-          npm run build --if-present
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Setup Python
-        if: ${{ hashFiles('requirements.txt', 'pyproject.toml') != '' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python-version }}
 
-      - name: Install Python dependencies
-        if: ${{ hashFiles('requirements.txt', 'pyproject.toml') != '' }}
-        run: |
-          python -m pip install --upgrade pip
-          if [ -f pyproject.toml ]; then pip install -e ".[dev]"; fi
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
 
-      - name: Run Python lint
-        if: ${{ hashFiles('requirements.txt', 'pyproject.toml') != '' }}
-        run: |
-          if [ -f pyproject.toml ]; then
-            ruff check .
-          else
-            echo "No pyproject.toml found; skipping ruff."
-          fi
+      - name: Sync dependencies
+        run: uv sync --extra dev
 
-      - name: Run Python tests
-        if: ${{ hashFiles('requirements.txt', 'pyproject.toml') != '' }}
+      - name: Ruff
+        run: uv run ruff check src tests
+
+      - name: Pytest
+        run: uv run pytest -q
+
+      - name: CLI smoke
+        env:
+          HOME: ${{ runner.temp }}/home
         run: |
-          if [ -d tests ] || [ -d test ]; then
-            pytest -q
-          else
-            echo "No Python tests found."
-          fi
+          mkdir -p "$HOME"
+          uv run linkedin-cli --version
+          uv run linkedin-cli health --json --time 09:00
+          uv run linkedin-cli run-daily --json --idempotency-key ci-smoke --retry-attempts 0 --retry-backoff-seconds 0
 
   web-smoke:
     runs-on: ubuntu-latest
-    needs: baseline-checks
-    timeout-minutes: 15
+    needs: test
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
-      - name: Install web smoke dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,web]"
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
 
-      - name: Run web smoke
-        run: python -m linkedin.scripts.web_smoke
+      - name: Install uv
+        uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a
+
+      - name: Sync dependencies
+        run: uv sync --extra dev --extra web
+
+      - name: Reflex web smoke
+        run: uv run python -m linkedin.scripts.web_smoke

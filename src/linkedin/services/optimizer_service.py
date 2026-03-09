@@ -1,8 +1,7 @@
 """AI profile optimizer service — headline, about, skills, experience improvements."""
 
-from linkedin.ai.client import generate_with_ai
 from linkedin.data.repository import ProfileRepo
-from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.services._helpers import generate_ai_text
 from linkedin.types import Result
 
 
@@ -33,8 +32,7 @@ Requirements:
 Format: Number. Headline text
 Just the headlines, no explanations."""
 
-        result = generate_with_ai(prompt, max_tokens=300)
-        content, error = get_ai_text_or_error(result)
+        content, error = generate_ai_text(prompt, max_tokens=300)
         return Result(error, content)
 
     def optimize_about(self) -> Result:
@@ -64,8 +62,7 @@ Requirements:
 
 Just write the About section, no explanations."""
 
-        result = generate_with_ai(prompt, max_tokens=600)
-        content, error = get_ai_text_or_error(result)
+        content, error = generate_ai_text(prompt, max_tokens=600)
         return Result(error, content)
 
     def optimize_skills(self) -> Result:
@@ -90,8 +87,7 @@ Provide:
 
 Be specific and actionable. Under 400 words."""
 
-        result = generate_with_ai(prompt, max_tokens=500)
-        content, error = get_ai_text_or_error(result)
+        content, error = generate_ai_text(prompt, max_tokens=500)
         return Result(error, content)
 
     def optimize_full(self) -> Result:
@@ -120,6 +116,5 @@ Score each section (1-10) and provide specific improvement suggestions:
 
 Be specific and actionable. Under 500 words."""
 
-        result = generate_with_ai(prompt, max_tokens=700)
-        content, error = get_ai_text_or_error(result)
+        content, error = generate_ai_text(prompt, max_tokens=700)
         return Result(error, content)

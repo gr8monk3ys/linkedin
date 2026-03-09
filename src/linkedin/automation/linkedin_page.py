@@ -180,6 +180,29 @@ class LinkedInPage:
             pass
         return results
 
+    def scrape_profile(self) -> dict[str, str]:
+        """Scrape basic profile info from the current profile page."""
+        data: dict[str, str] = {}
+        try:
+            name_el = self.page.locator("h1.text-heading-xlarge")
+            if name_el.count():
+                data["name"] = name_el.inner_text().strip()
+
+            headline_el = self.page.locator(".text-body-medium.break-words")
+            if headline_el.count():
+                data["headline"] = headline_el.first.inner_text().strip()
+
+            location_el = self.page.locator(".text-body-small.inline.t-black--light.break-words")
+            if location_el.count():
+                data["location"] = location_el.first.inner_text().strip()
+
+            about_el = self.page.locator("#about ~ div .visually-hidden")
+            if about_el.count():
+                data["about"] = about_el.inner_text().strip()
+        except (PlaywrightTimeoutError, PlaywrightError):
+            pass
+        return data
+
     # -------------------------------------------------------------------------
     # Feed Engagement
     # -------------------------------------------------------------------------

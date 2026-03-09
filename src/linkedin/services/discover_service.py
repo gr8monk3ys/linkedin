@@ -1,8 +1,7 @@
 """AI-powered networking discovery service."""
 
-from linkedin.ai.client import generate_with_ai
 from linkedin.data.repository import CompanyRepo, ContactRepo, ProfileRepo
-from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.services._helpers import generate_ai_text
 from linkedin.types import ProfileDict, Result
 
 
@@ -13,7 +12,6 @@ class DiscoverService:
         self.contacts = contact_repo
 
     def discover_contacts(self, company: str | None = None, role: str | None = None) -> Result:
-        """Returns Result(error, suggestions)."""
         profile = self.profiles.get()
         if not profile:
             return Result("Set up your profile first: linkedin profile setup")
@@ -23,16 +21,15 @@ class DiscoverService:
 
         companies_list = self.companies.list_all()
         all_contacts = self.contacts.list_all()
-        existing_titles = list(set([c["title"] for c in all_contacts]))[:10]
+        existing_titles = list({c["title"] for c in all_contacts if c.get("title")})[:10]
 
         if company:
             prompt = self._contact_by_company_prompt(profile, company, companies_list, existing_titles)
         else:
-            prompt = self._contact_by_role_prompt(profile, role, companies_list)
+            prompt = self._contact_by_role_prompt(profile, role or "", companies_list)
 
-        suggestions = generate_with_ai(prompt, max_tokens=800)
-        suggestion_text, error = get_ai_text_or_error(suggestions)
-        return Result(error, suggestion_text)
+        suggestions, error = generate_ai_text(prompt, max_tokens=800)
+        return Result(error, suggestions)
 
     def discover_companies(self) -> Result:
         profile = self.profiles.get()
@@ -40,14 +37,18 @@ class DiscoverService:
             return Result("Set up your profile first: linkedin profile setup")
 
         companies_list = self.companies.list_all()
-        existing_companies = [c["name"] for c in companies_list]
-
+        existing_companies = [company["name"] for company in companies_list if company.get("name")]
         prompt = self._company_discovery_prompt(profile, existing_companies)
-        suggestions = generate_with_ai(prompt, max_tokens=1000)
-        suggestion_text, error = get_ai_text_or_error(suggestions)
-        return Result(error, suggestion_text)
+        suggestions, error = generate_ai_text(prompt, max_tokens=1000)
+        return Result(error, suggestions)
 
-    def _contact_by_company_prompt(self, profile: ProfileDict, company: str, companies_list: list, existing_titles: list) -> str:
+    def _contact_by_company_prompt(
+        self,
+        profile: ProfileDict,
+        company: str,
+        companies_list: list,
+        existing_titles: list,
+    ) -> str:
         tracked_company = next((c for c in companies_list if company.lower() in c["name"].lower()), None)
         company_context = ""
         if tracked_company:
@@ -90,7 +91,7 @@ MY PROFILE:
 - Industries: {profile.get('industries', 'N/A')}
 
 COMPANIES I'M TRACKING:
-{', '.join([c['name'] for c in companies_list]) if companies_list else 'None yet'}
+{', '.join([company['name'] for company in companies_list]) if companies_list else 'None yet'}
 
 Provide:
 1. **LinkedIn search strategy** - exact search terms and filters

@@ -2,7 +2,6 @@
 
 import csv
 import json
-import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -13,8 +12,11 @@ from linkedin.data.json_store import (
     COMPANIES_FILE,
     CONTACTS_FILE,
     DRAFTS_FILE,
+    JOB_POSTINGS_FILE,
     PROFILE_FILE,
     RESEARCH_FILE,
+    RUN_DAILY_LOG_FILE,
+    RUN_DAILY_STATE_FILE,
     TEMPLATES_FILE,
     ensure_dirs,
 )
@@ -46,12 +48,10 @@ class DataService:
             DRAFTS_FILE.name,
             TEMPLATES_FILE.name,
             RESEARCH_FILE.name,
+            JOB_POSTINGS_FILE.name,
+            RUN_DAILY_STATE_FILE.name,
+            RUN_DAILY_LOG_FILE.name,
         }
-
-    @classmethod
-    def _is_safe_backup_member(cls, filename: str) -> bool:
-        path = Path(filename)
-        return not path.is_absolute() and path.name == filename and filename in cls._allowed_backup_members()
 
     def _clear_contacts(self) -> None:
         for contact in self.contacts.list_all():
@@ -73,11 +73,13 @@ class DataService:
         normalized = []
         for contact in contacts:
             entry = dict(contact)
-            if not entry.get("id"):
+            raw_id = entry.get("id")
+            if not raw_id:
                 next_id += 1
                 entry["id"] = next_id
             else:
-                next_id = max(next_id, int(entry["id"]))
+                next_id = max(next_id, int(raw_id))
+                entry["id"] = int(raw_id)
             normalized.append(entry)
         return normalized
 
@@ -89,11 +91,13 @@ class DataService:
         normalized = []
         for company in companies:
             entry = dict(company)
-            if not entry.get("id"):
+            raw_id = entry.get("id")
+            if not raw_id:
                 next_id += 1
                 entry["id"] = next_id
             else:
-                next_id = max(next_id, int(entry["id"]))
+                next_id = max(next_id, int(raw_id))
+                entry["id"] = int(raw_id)
             normalized.append(entry)
         return normalized
 
@@ -106,8 +110,18 @@ class DataService:
         if fmt == "csv":
             output_file = output or "contacts_export.csv"
             fieldnames = [
-                "id", "name", "title", "company", "linkedin_url", "email",
-                "status", "source", "notes", "follow_up_date", "created_at", "company_id",
+                "id",
+                "name",
+                "title",
+                "company",
+                "linkedin_url",
+                "email",
+                "status",
+                "source",
+                "notes",
+                "follow_up_date",
+                "created_at",
+                "company_id",
             ]
             with open(output_file, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -128,8 +142,16 @@ class DataService:
         if fmt == "csv":
             output_file = output or "companies_export.csv"
             fieldnames = [
-                "id", "name", "industry", "size", "linkedin_url", "website",
-                "why_target", "priority", "notes", "created_at",
+                "id",
+                "name",
+                "industry",
+                "size",
+                "linkedin_url",
+                "website",
+                "why_target",
+                "priority",
+                "notes",
+                "created_at",
             ]
             with open(output_file, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -151,9 +173,9 @@ class DataService:
                 reader = csv.DictReader(f)
                 imported = []
                 for row in reader:
-                    if "id" in row:
-                        row["id"] = int(row["id"]) if row["id"] else len(existing) + len(imported) + 1
-                    if "company_id" in row and row["company_id"]:
+                    if "id" in row and row["id"]:
+                        row["id"] = int(row["id"])
+                    if row.get("company_id"):
                         row["company_id"] = int(row["company_id"])
                     else:
                         row["company_id"] = None
@@ -164,15 +186,13 @@ class DataService:
         else:
             imported = json.loads(path.read_text())
 
+        max_existing_id = max([int(c["id"]) for c in existing if c.get("id")], default=0)
         if merge:
-            max_id = max([c["id"] for c in existing], default=0)
-            imported = [{**contact, "id": max_id + i + 1} for i, contact in enumerate(imported)]
+            imported = [{**contact, "id": max_existing_id + i + 1} for i, contact in enumerate(imported)]
         else:
             self._clear_contacts()
 
-        imported = self._normalize_contact_ids(imported, max([c["id"] for c in existing], default=0))
-
-        for contact in imported:
+        for contact in self._normalize_contact_ids(imported, max_existing_id):
             self.contacts.add(contact)
         return len(imported)
 
@@ -186,23 +206,21 @@ class DataService:
                 reader = csv.DictReader(f)
                 imported = []
                 for row in reader:
-                    if "id" in row:
-                        row["id"] = int(row["id"]) if row["id"] else len(existing) + len(imported) + 1
+                    if "id" in row and row["id"]:
+                        row["id"] = int(row["id"])
                     row.setdefault("key_people_to_find", [])
                     row.setdefault("created_at", datetime.now().isoformat())
                     imported.append(row)
         else:
             imported = json.loads(path.read_text())
 
+        max_existing_id = max([int(c["id"]) for c in existing if c.get("id")], default=0)
         if merge:
-            max_id = max([c["id"] for c in existing], default=0)
-            imported = [{**company, "id": max_id + i + 1} for i, company in enumerate(imported)]
+            imported = [{**company, "id": max_existing_id + i + 1} for i, company in enumerate(imported)]
         else:
             self._clear_companies()
 
-        imported = self._normalize_company_ids(imported, max([c["id"] for c in existing], default=0))
-
-        for company in imported:
+        for company in self._normalize_company_ids(imported, max_existing_id):
             self.companies.add(company)
         return len(imported)
 
@@ -213,8 +231,17 @@ class DataService:
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_name = output or str(BACKUPS_DIR / f"linkedin_cli_backup_{timestamp}.zip")
-
-        files_to_backup = [PROFILE_FILE, CONTACTS_FILE, COMPANIES_FILE, DRAFTS_FILE, TEMPLATES_FILE, RESEARCH_FILE]
+        files_to_backup = [
+            PROFILE_FILE,
+            CONTACTS_FILE,
+            COMPANIES_FILE,
+            DRAFTS_FILE,
+            TEMPLATES_FILE,
+            RESEARCH_FILE,
+            JOB_POSTINGS_FILE,
+            RUN_DAILY_STATE_FILE,
+            RUN_DAILY_LOG_FILE,
+        ]
 
         backed_up = 0
         with zipfile.ZipFile(backup_name, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -225,11 +252,69 @@ class DataService:
 
         return backup_name, backed_up
 
-    def restore_backup(self, backup_file: str) -> int | None:
+    def _validate_backup_member_path(self, member_name: str, data_dir: Path) -> Path | None:
+        member_path = Path(member_name)
+        if member_path.is_absolute() or ".." in member_path.parts:
+            return None
+        if member_path.name != member_name or member_name not in self._allowed_backup_members():
+            return None
+
+        target_path = (data_dir / member_path).resolve()
+        if target_path.parent != data_dir:
+            return None
+        return target_path
+
+    def verify_backup(self, backup_file: str) -> dict:
+        """Verify backup integrity, path safety, and JSON readability."""
+        backup_path = Path(backup_file)
+        result = {
+            "valid": False,
+            "files_checked": 0,
+            "json_files_checked": 0,
+            "errors": [],
+        }
+
+        if not zipfile.is_zipfile(backup_path):
+            result["errors"].append("Not a zip archive.")
+            return result
+
+        from linkedin.data.json_store import DATA_DIR
+
+        data_dir = DATA_DIR.resolve()
+        try:
+            with zipfile.ZipFile(backup_path, "r") as zipf:
+                for member in zipf.infolist():
+                    if member.is_dir():
+                        result["errors"].append(f"Directories are not allowed in backups: {member.filename}")
+                        return result
+
+                    target_path = self._validate_backup_member_path(member.filename, data_dir)
+                    if target_path is None:
+                        result["errors"].append(f"Unsafe path: {member.filename}")
+                        return result
+
+                    result["files_checked"] += 1
+                    content = zipf.read(member)
+                    suffix = target_path.suffix.lower()
+                    if suffix == ".json":
+                        json.loads(content.decode("utf-8"))
+                        result["json_files_checked"] += 1
+                    elif suffix == ".jsonl":
+                        for line in content.decode("utf-8").splitlines():
+                            if line.strip():
+                                json.loads(line)
+                        result["json_files_checked"] += 1
+        except Exception as exc:
+            result["errors"].append(str(exc))
+            return result
+
+        result["valid"] = result["files_checked"] > 0 and not result["errors"]
+        return result
+
+    def restore_backup(self, backup_file: str, dry_run: bool = False) -> int | None:
         """Restore from backup. Returns files_restored or None if invalid."""
         self._require_json_backend("restore")
         backup_path = Path(backup_file)
-
         if not zipfile.is_zipfile(backup_path):
             return None
 
@@ -238,15 +323,30 @@ class DataService:
         restored = 0
         from linkedin.data.json_store import DATA_DIR
 
+        data_dir = DATA_DIR.resolve()
         with zipfile.ZipFile(backup_path, "r") as zipf:
-            members = zipf.infolist()
-            if any(info.is_dir() or not self._is_safe_backup_member(info.filename) for info in members):
-                return None
+            for member in zipf.infolist():
+                if member.is_dir():
+                    return None
 
-            for info in members:
-                target_path = DATA_DIR / info.filename
-                with zipf.open(info, "r") as src, target_path.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                target_path = self._validate_backup_member_path(member.filename, data_dir)
+                if target_path is None:
+                    return None
+
+                with zipf.open(member, "r") as src:
+                    content = src.read()
+
+                if dry_run:
+                    suffix = target_path.suffix.lower()
+                    if suffix == ".json":
+                        json.loads(content.decode("utf-8"))
+                    elif suffix == ".jsonl":
+                        for line in content.decode("utf-8").splitlines():
+                            if line.strip():
+                                json.loads(line)
+                else:
+                    target_path.write_bytes(content)
+
                 restored += 1
 
         return restored
@@ -258,10 +358,7 @@ class DataService:
             return []
 
         backups = list(BACKUPS_DIR.glob("*.zip"))
-        if not backups:
-            return []
-
-        backups.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        backups.sort(key=lambda backup: backup.stat().st_mtime, reverse=True)
 
         result = []
         for backup in backups:

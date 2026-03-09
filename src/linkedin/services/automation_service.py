@@ -172,7 +172,10 @@ class AutomationService:
             return ""
 
         prompt = connection_request_prompt(profile, person_info)
-        note = generate_with_ai(prompt, max_tokens=200)
+        try:
+            note = generate_with_ai(prompt, max_tokens=200)
+        except Exception:
+            return ""
         note_text, error = get_ai_text_or_error(note)
         return "" if error else note_text or ""
 
@@ -360,14 +363,14 @@ Write a comment that:
 3. Sounds natural and conversational, not generic or salesy
 4. Is under 200 characters preferred
 
-Just write the comment, no explanations."""
+        Just write the comment, no explanations."""
 
         try:
             comment = generate_with_ai(prompt, max_tokens=150)
-            comment_text, error = get_ai_text_or_error(comment)
-            return "" if error else comment_text or ""
         except Exception:
             return ""
+        comment_text, error = get_ai_text_or_error(comment)
+        return "" if error else comment_text or ""
 
     def login(self, email: str | None = None, password: str | None = None) -> bool:
         """Login to LinkedIn and save session.

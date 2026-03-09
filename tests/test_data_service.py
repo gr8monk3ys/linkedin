@@ -19,6 +19,9 @@ def data_svc(json_repos, tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "DRAFTS_FILE", tmp_path / "drafts.json")
     monkeypatch.setattr(ds, "TEMPLATES_FILE", tmp_path / "templates.json")
     monkeypatch.setattr(ds, "RESEARCH_FILE", tmp_path / "research.json")
+    monkeypatch.setattr(ds, "JOB_POSTINGS_FILE", tmp_path / "job_postings.json")
+    monkeypatch.setattr(ds, "RUN_DAILY_STATE_FILE", tmp_path / "run_daily_state.json")
+    monkeypatch.setattr(ds, "RUN_DAILY_LOG_FILE", tmp_path / "run_daily.log.jsonl")
     monkeypatch.setattr(ds, "BACKUPS_DIR", tmp_path / "backups")
 
     return DataService()
@@ -129,6 +132,27 @@ class TestDataService:
         assert restored is not None
         assert restored >= 1
 
+    def test_restore_dry_run(self, data_svc, json_repos, tmp_path):
+        contact_repo = json_repos[0]
+        contact_repo.add({"id": 1, "name": "Alice", "status": "connected"})
+
+        backup_path = str(tmp_path / "backup_dry_run.zip")
+        data_svc.create_backup(output=backup_path)
+        restored = data_svc.restore_backup(backup_path, dry_run=True)
+        assert restored is not None
+        assert restored >= 1
+
+    def test_verify_backup(self, data_svc, json_repos, tmp_path):
+        contact_repo = json_repos[0]
+        contact_repo.add({"id": 1, "name": "Alice", "status": "connected"})
+
+        backup_path = str(tmp_path / "backup_verify.zip")
+        data_svc.create_backup(output=backup_path)
+        report = data_svc.verify_backup(backup_path)
+        assert report["valid"] is True
+        assert report["files_checked"] >= 1
+        assert report["json_files_checked"] >= 1
+
     def test_restore_invalid_backup(self, data_svc, tmp_path):
         bad_file = tmp_path / "not_a_zip.txt"
         bad_file.write_text("not a zip")
@@ -141,6 +165,21 @@ class TestDataService:
 
         assert data_svc.restore_backup(str(backup_path)) is None
         assert not (tmp_path.parent / "outside.json").exists()
+
+    def test_verify_invalid_backup(self, data_svc, tmp_path):
+        bad_file = tmp_path / "not_a_zip.txt"
+        bad_file.write_text("not a zip")
+        report = data_svc.verify_backup(str(bad_file))
+        assert report["valid"] is False
+        assert report["errors"]
+
+    def test_restore_rejects_path_traversal(self, data_svc, tmp_path):
+        bad_zip = tmp_path / "bad_backup.zip"
+        with zipfile.ZipFile(bad_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("../escape.txt", "bad")
+
+        assert data_svc.restore_backup(str(bad_zip)) is None
+        assert not (tmp_path.parent / "escape.txt").exists()
 
     def test_list_backups_empty(self, data_svc):
         assert data_svc.list_backups() == []

@@ -2,7 +2,18 @@
 
 from abc import ABC, abstractmethod
 
-from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict, TemplateDict
+from linkedin.types import (
+    ApplicationDict,
+    CompanyDict,
+    ContactDict,
+    ContentPostDict,
+    ConversationDict,
+    DraftDict,
+    InterviewPrepDict,
+    ProfileDict,
+    ResearchDict,
+    TemplateDict,
+)
 
 
 class ContactRepo(ABC):
@@ -119,3 +130,62 @@ class TemplateRepo(ABC):
     @abstractmethod
     def next_id(self) -> int:
         ...
+
+
+class ApplicationRepo(ABC):
+    @abstractmethod
+    def list_all(self) -> list[ApplicationDict]: ...
+
+    @abstractmethod
+    def get(self, application_id: int) -> ApplicationDict | None: ...
+
+    @abstractmethod
+    def add(self, application: ApplicationDict) -> ApplicationDict: ...
+
+    @abstractmethod
+    def update(self, application: ApplicationDict) -> None: ...
+
+    @abstractmethod
+    def delete(self, application_id: int) -> bool: ...
+
+    @abstractmethod
+    def next_id(self) -> int: ...
+
+
+class ConversationRepo(ABC):
+    @abstractmethod
+    def get_by_contact(self, contact_id: int) -> ConversationDict | None: ...
+
+    @abstractmethod
+    def upsert(self, conversation: ConversationDict) -> None: ...
+
+    @abstractmethod
+    def list_all(self) -> list[ConversationDict]: ...
+
+
+class CalendarRepo(ABC):
+    @abstractmethod
+    def list_all(self) -> list[ContentPostDict]: ...
+
+    @abstractmethod
+    def get(self, post_id: int) -> ContentPostDict | None: ...
+
+    @abstractmethod
+    def add(self, post: ContentPostDict) -> ContentPostDict: ...
+
+    @abstractmethod
+    def update(self, post: ContentPostDict) -> None: ...
+
+    @abstractmethod
+    def delete(self, post_id: int) -> bool: ...
+
+    @abstractmethod
+    def next_id(self) -> int: ...
+
+
+class InterviewPrepRepo(ABC):
+    @abstractmethod
+    def get_by_application(self, application_id: int) -> InterviewPrepDict | None: ...
+
+    @abstractmethod
+    def upsert(self, prep: InterviewPrepDict) -> None: ...

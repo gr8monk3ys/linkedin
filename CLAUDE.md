@@ -4,119 +4,107 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LinkedIn Job Hunt Assistant (v3.0.0) — a Python CLI + web dashboard combining a local CRM, AI-powered draft generation (via Claude API), analytics, market intelligence, profile optimization, smart templates, and content research for LinkedIn job searching. Supports JSON file storage (default), SQLModel/PostgreSQL database backend, or Twenty CRM. Includes Playwright-based browser automation.
+LinkedIn Job Hunt Assistant (v3.0.0) is a Python CLI plus Reflex web dashboard for running a LinkedIn-heavy job search. It combines a local CRM, AI-powered draft generation, company/contact discovery, analytics, market intelligence, profile optimization, smart templates, job application tracking, interview prep, content planning, and optional Playwright automation.
+
+Supported storage backends:
+- `json` (default)
+- `db` via SQLModel / SQLAlchemy
+- `twenty` for contacts, companies, and drafts, with local JSON fallbacks for profile/research and newer feature stores
 
 ## Commands
 
 ```bash
 # Install dependencies
 uv sync
+uv sync --extra dev
+uv sync --extra web
+uv sync --extra automation
 
-# Install optional deps
-uv sync --extra web          # Reflex web UI
-uv sync --extra automation   # Playwright + keyring
-
-# Run the CLI
+# CLI
 uv run linkedin <command>
+uv run linkedin-cli <command>
 
-# Run the web dashboard
+# Web UI
 uv run linkedin-web
 
-# Run tests
+# Tests
 uv run pytest
-
-# Run a single test
-uv run pytest tests/test_services.py::TestContactService::test_add_and_list
-
-# Run with coverage
-uv run pytest --cov=linkedin --cov-report=term-missing
+uv run pytest tests/test_application_service.py::test_add_and_list
 
 # Lint
-uv run ruff check src/ tests/
+uv run ruff check src tests
+uv run ruff check src tests --fix
 
-# Format
-uv run ruff format src/ tests/
-
-# Run Alembic migrations
+# Database migrations
 uv run alembic upgrade head
-
-# Generate new migration after model changes
 uv run alembic revision --autogenerate -m "description"
-
-# Migrate JSON data to database
-uv run python -m linkedin.scripts.migrate_json_to_db
 ```
 
 ## Architecture
 
-**Modular structure** — decomposed from a monolith into clean layers:
+Thin command/state layers call services, which depend on repositories, which depend on the selected storage backend.
 
-- `src/linkedin/cli/__init__.py` — CLI entry point and shared service wiring.
-- `src/linkedin/cli/*.py` — Click command groups + Rich formatting. Calls services, no business logic.
-- `src/linkedin/constants.py` — Enums (`ContactStatus`, `CompanyPriority`, etc.), emoji mappings, display tuples.
-- `src/linkedin/types.py` — TypedDicts: `ContactDict`, `CompanyDict`, `ProfileDict`, `DraftDict`, `ResearchDict`.
-- `src/linkedin/ai/client.py` — `generate_with_ai(prompt, max_tokens)` wrapping Anthropic API.
+Key modules:
+- `src/linkedin/cli/__init__.py` wires shared services for the package-based CLI entrypoint.
+- `src/linkedin/cli/*.py` defines Click command groups with Rich output.
+- `src/linkedin/web/states/*.py` defines Reflex state classes for the web UI.
+- `src/linkedin/services/*.py` contains business logic and returns plain dicts or `Result`.
+- `src/linkedin/data/repository.py` defines abstract repo interfaces.
+- `src/linkedin/data/json_store.py` implements JSON-backed repos.
+- `src/linkedin/data/db_store.py` implements SQLModel-backed repos.
+- `src/linkedin/data/twenty_store.py` implements Twenty-backed repos for the supported entities.
+- `src/linkedin/data/factory.py` selects repos from `LINKEDIN_BACKEND` and exposes `create_template_repo()`.
+- `src/linkedin/models/base.py` contains SQLModel models and engine/session helpers.
+- `src/linkedin/types.py` defines the TypedDict shapes for domain data.
+- `src/linkedin/ai/client.py` wraps Anthropic and raises `AIClientError` on failures.
 
-**Data layer:**
-- `src/linkedin/data/repository.py` — Abstract base classes: `ContactRepo`, `CompanyRepo`, `ProfileRepo`, `DraftRepo`, `ResearchRepo`.
-- `src/linkedin/data/json_store.py` — JSON file implementations. Default backend.
-- `src/linkedin/data/db_store.py` — SQLModel/SQLAlchemy implementations.
-- `src/linkedin/data/twenty_store.py` — Twenty CRM implementations for contacts, companies, and drafts.
-- `src/linkedin/data/factory.py` — backend selection helpers for repositories and template persistence via `LINKEDIN_BACKEND`.
-- `src/linkedin/models/base.py` — SQLModel table classes (`Profile`, `Company`, `Contact`, `Activity`, `Draft`, `Research`, `OutreachEvent`, `JobPosting`, `MarketInsight`, `ProfileSuggestion`, `Template`, `TemplateUsage`).
-- `src/linkedin/migrations/` — Alembic migration scripts.
+Core services:
+- `contact_service.py` handles CRM operations, reminders, next actions, dedupe, and outreach campaigns.
+- `draft_service.py` generates connection/message/follow-up drafts and supports deterministic fallback text.
+- `template_service.py` persists reusable templates, tracks usage, and computes A/B results.
+- `data_service.py` handles import/export plus JSON-only backup, verify, and restore flows.
+- `application_service.py`, `interview_service.py`, `conversation_service.py`, `calendar_service.py` support newer job-search workflows.
+- `discover_service.py`, `research_service.py`, `market_service.py`, `optimizer_service.py` handle AI suggestions and analysis.
 
-**Services** (`src/linkedin/services/`) — Business logic, accept/return plain data:
-- `contact_service.py`, `company_service.py`, `profile_service.py` — CRUD + pipeline management
-- `draft_service.py` — AI draft generation (connection, message, intro, thank you, follow-up, batch)
-- `discover_service.py` — AI-powered contact/company discovery
-- `research_service.py` — Content research, post ideas, hashtags
-- `data_service.py` — Import/export (CSV/JSON), backup/restore
-- `dashboard_service.py` — Overview aggregation
-- `analytics_service.py` — Pipeline conversion, response rates, outreach velocity, source effectiveness
-- `market_service.py` — AI salary estimates, hiring trends, job posting tracker
-- `optimizer_service.py` — AI headline/about/skills/full profile optimization
-- `template_service.py` — Reusable templates with `{{placeholders}}`, A/B testing, response tracking
+## Backend Notes
 
-**Web UI** (`src/linkedin/web/`) — Reflex SaaS dashboard:
-- `app.py` — App definition, page registration
-- `layout.py` — Sidebar + topbar navigation
-- `pages/` — dashboard, contacts, companies, drafts, discover, research, settings
-- `states/` — Reflex State subclasses per page
+- `LINKEDIN_BACKEND` selects `json`, `db`, or `twenty`.
+- `DATABASE_URL` configures the DB backend; default SQLite path is `~/.linkedin-cli/linkedin.db`.
+- `create_repos()` returns nine repos in a fixed order:
+  `contact, company, profile, draft, research, application, conversation, calendar, interview_prep`
+- Templates are created separately through `create_template_repo()`.
+- `linkedin data export` works against the active backend.
+- `linkedin data backup`, `restore`, and `backups` are intentionally limited to `LINKEDIN_BACKEND=json`.
 
-**Automation** (`src/linkedin/automation/`) — Playwright-based browser automation:
-- `browser.py` — BrowserManager with session persistence
-- `credentials.py` — Keyring-based secure credential storage
-- `rate_limiter.py` — Configurable delays with random jitter
-- `safety.py` — Conservative daily limits (20 connections, 25 messages)
-- `linkedin_page.py` — Page object model using accessible locators
-- `actions/` — login, connect, message, search modules
+## AI Patterns
 
-**Key patterns:**
-- Repository pattern with abstract base classes for data access.
-- Services injected with repos at module level in `src/linkedin/cli/__init__.py`.
-- `DATABASE_URL` env var configures DB (default: `sqlite:///~/.linkedin-cli/linkedin.db`).
-- `LINKEDIN_BACKEND` env var selects `json` (default), `db`, or `twenty`.
-- Mock patches target usage sites: `linkedin.services.<module>.generate_with_ai`.
-
-**Contact pipeline:** `not_contacted → connection_sent → connected → messaged → responded → call_scheduled → hired/rejected`.
+- `generate_with_ai()` raises `AIClientError` on real failures.
+- Service layers should normalize AI output into `Result` or `(error, data)` contracts.
+- Some tests still patch inline error strings like `[AI generation failed: ...]`, so helpers normalize both raised and inline error shapes.
+- Patch the usage site in tests, for example `linkedin.services.draft_service.generate_with_ai` or `linkedin.services.research_service.generate_ai_text`.
 
 ## Testing
 
-- `tests/conftest.py` — Shared fixtures: `db_engine`, `db_repos`, `json_repos`, factory functions (`sample_contact`, `sample_company`, `sample_profile`). The `json_repos` fixture monkeypatches all file path constants to temp dirs.
-- `tests/test_cli.py` — CLI integration tests using Click's `CliRunner`.
-- `tests/test_services.py` — Service unit tests for all original services.
-- `tests/test_analytics.py`, `test_market.py`, `test_optimizer.py`, `test_templates.py` — Phase 4 feature tests.
-- `tests/test_data_service.py` — Data import/export/backup tests (needs separate monkeypatching of `data_service` module constants).
-- `tests/test_db_store.py` — DB repository tests using in-memory SQLite.
-- `tests/test_factory.py` — Backend factory selection tests.
-- `tests/test_automation.py` — Config, rate limiter, safety limits tests.
+Important fixtures in `tests/conftest.py`:
+- `json_repos` monkeypatches `json_store` paths to a temp directory.
+- `db_engine` and `db_repos` provide in-memory SQLite coverage.
+- `json_template_repo` and `db_template_repo` cover template persistence paths.
+- `sample_contact`, `sample_company`, `sample_profile`, and `sample_application` are helper factories.
 
-When adding contacts via `repo.add()` directly in tests, include an `id` field. When using `ContactService.add_contact()`, the id is auto-generated.
+Notable test files:
+- `tests/test_cli.py` covers the CLI with `CliRunner`.
+- `tests/test_services.py` covers the core service layer.
+- `tests/test_application_service.py`, `tests/test_interview_service.py`, `tests/test_conversation_service.py`, and `tests/test_calendar_service.py` cover newer features.
+- `tests/test_data_service.py`, `tests/test_db_store.py`, `tests/test_json_store.py`, and `tests/test_factory.py` cover storage/backends.
+- `tests/test_web_states.py` smoke-tests Reflex state wiring.
 
 ## Code Style
 
-- Ruff with rules `E`, `F`, `I`, `W` enabled; `E501` ignored (long lines allowed for Rich formatting)
-- Line length: 120
-- Target: Python 3.10+
-- `src/linkedin/automation/` and `src/linkedin/migrations/versions/` excluded from lint
+- Python 3.10+.
+- Ruff rules: `E`, `F`, `I`, `W`; `E501` ignored.
+- Line length: 120.
+- `src/linkedin/automation/` and Alembic version files are excluded from Ruff.
+
+## CI
+
+GitHub Actions runs Ruff, pytest, CLI smoke checks, and a Reflex web smoke flow.

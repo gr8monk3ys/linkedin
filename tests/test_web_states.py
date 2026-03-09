@@ -1,13 +1,13 @@
 """Smoke tests for web state modules — verify service construction is correct."""
 
-import pytest
-
-pytest.importorskip("reflex")
-
 from unittest.mock import patch
+
+import pytest
 
 from linkedin.types import Result
 from tests.conftest import sample_company, sample_contact, sample_profile
+
+pytest.importorskip("reflex")
 
 
 def _patch_repos(module_path, json_repos):
@@ -27,7 +27,7 @@ class TestDashboardState:
     def test_load_dashboard_with_data(self, json_repos):
         from linkedin.web.states.dashboard_state import DashboardState
 
-        contact_repo, company_repo, profile_repo, draft_repo, _ = json_repos
+        contact_repo, company_repo, profile_repo, draft_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(id=1, status="responded", follow_up_date="2020-01-01"))
         company_repo.add(sample_company(id=1))
@@ -108,8 +108,8 @@ class TestContactsState:
 
 
 class TestDiscoverState:
-    @patch("linkedin.services.discover_service.generate_with_ai", return_value="Suggestions here")
-    def test_discover_contacts(self, mock_ai, json_repos):
+    @patch("linkedin.services.discover_service.generate_ai_text", return_value=("Suggestions here", None))
+    def test_discover_contacts(self, _mock_ai, json_repos):
         from linkedin.web.states.discover_state import DiscoverState
 
         _, _, profile_repo, *_ = json_repos

@@ -2,9 +2,8 @@
 
 from datetime import datetime
 
-from linkedin.ai.client import generate_with_ai
 from linkedin.data.repository import DraftRepo, ProfileRepo, ResearchRepo
-from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.services._helpers import generate_ai_text
 from linkedin.types import Result
 
 ENGAGEMENT_CONTENT = """
@@ -110,8 +109,7 @@ Focus on posts that:
 
 Format as a numbered list."""
 
-        ideas = generate_with_ai(prompt, max_tokens=800)
-        ideas_text, error = get_ai_text_or_error(ideas)
+        ideas_text, error = generate_ai_text(prompt, max_tokens=800)
         return Result(error, (focus, ideas_text) if ideas_text is not None else None)
 
     def save_ideas(self, topic: str, ideas: str) -> None:
@@ -149,8 +147,7 @@ Requirements:
 
 Write the post now:"""
 
-        draft = generate_with_ai(prompt, max_tokens=500)
-        draft_text, error = get_ai_text_or_error(draft)
+        draft_text, error = generate_ai_text(prompt, max_tokens=500)
         return Result(error, draft_text)
 
     def save_post_draft(self, topic: str, style: str, content: str) -> None:
@@ -176,6 +173,5 @@ For each, briefly explain why it's good.
 
 Format as a clean list."""
 
-        hashtags = generate_with_ai(prompt, max_tokens=300)
-        hashtag_text, error = get_ai_text_or_error(hashtags)
+        hashtag_text, error = generate_ai_text(prompt, max_tokens=300)
         return Result(error, hashtag_text)

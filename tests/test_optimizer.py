@@ -14,8 +14,11 @@ class TestOptimizerService:
         assert error is not None
         assert "profile" in error.lower()
 
-    @patch("linkedin.services.optimizer_service.generate_with_ai", return_value="1. Great headline\n2. Another headline")
-    def test_headline_generates(self, mock_ai, json_repos):
+    @patch(
+        "linkedin.services.optimizer_service.generate_ai_text",
+        return_value=("1. Great headline\n2. Another headline", None),
+    )
+    def test_headline_generates(self, _mock_ai, json_repos):
         _, _, profile_repo, *_ = json_repos
         svc = OptimizerService(profile_repo)
         profile_repo.save(sample_profile())
@@ -24,8 +27,8 @@ class TestOptimizerService:
         assert error is None
         assert "headline" in result.lower()
 
-    @patch("linkedin.services.optimizer_service.generate_with_ai", return_value="About section text")
-    def test_about_generates(self, mock_ai, json_repos):
+    @patch("linkedin.services.optimizer_service.generate_ai_text", return_value=("About section text", None))
+    def test_about_generates(self, _mock_ai, json_repos):
         _, _, profile_repo, *_ = json_repos
         svc = OptimizerService(profile_repo)
         profile_repo.save(sample_profile())
@@ -34,8 +37,8 @@ class TestOptimizerService:
         assert error is None
         assert len(result) > 0
 
-    @patch("linkedin.services.optimizer_service.generate_with_ai", return_value="Skills analysis")
-    def test_skills_generates(self, mock_ai, json_repos):
+    @patch("linkedin.services.optimizer_service.generate_ai_text", return_value=("Skills analysis", None))
+    def test_skills_generates(self, _mock_ai, json_repos):
         _, _, profile_repo, *_ = json_repos
         svc = OptimizerService(profile_repo)
         profile_repo.save(sample_profile())
@@ -44,8 +47,8 @@ class TestOptimizerService:
         assert error is None
         assert len(result) > 0
 
-    @patch("linkedin.services.optimizer_service.generate_with_ai", return_value="Full review")
-    def test_full_generates(self, mock_ai, json_repos):
+    @patch("linkedin.services.optimizer_service.generate_ai_text", return_value=("Full review", None))
+    def test_full_generates(self, _mock_ai, json_repos):
         _, _, profile_repo, *_ = json_repos
         svc = OptimizerService(profile_repo)
         profile_repo.save(sample_profile())

@@ -10,10 +10,12 @@ can be imported and tested without playwright installed.
 from __future__ import annotations
 
 from linkedin.ai.client import generate_with_ai
+from linkedin.ai.prompts import connection_request_prompt
 from linkedin.automation.config import AutomationConfig
 from linkedin.automation.rate_limiter import RateLimiter
 from linkedin.automation.safety import SafetyLimits
 from linkedin.data.repository import CompanyRepo, ProfileRepo
+from linkedin.services._helpers import get_ai_text_or_error
 from linkedin.services.contact_service import ContactService
 from linkedin.types import ProfileDict
 
@@ -169,30 +171,10 @@ class AutomationService:
         if not profile:
             return ""
 
-        prompt = f"""Write a LinkedIn connection request message (max 300 characters) from me to this person.
-
-MY PROFILE:
-- Name: {profile.get('name', 'N/A')}
-- Current Role: {profile.get('headline', 'N/A')}
-- Target Role: {profile.get('target_role', 'N/A')}
-- Key Skills: {profile.get('skills', 'N/A')}
-- What Makes Me Unique: {profile.get('unique_value', 'N/A')}
-
-THEIR PROFILE:
-- Name: {person_info.get('name', 'Unknown')}
-- Headline: {person_info.get('headline', 'N/A')}
-- Location: {person_info.get('location', 'N/A')}
-
-Write a warm, personalized connection request that:
-1. Shows I've looked at their profile
-2. Mentions something specific about their headline or role
-3. Briefly explains why connecting would be mutually valuable
-4. Is under 300 characters (LinkedIn limit)
-5. Sounds natural, not salesy
-
-Just write the message, no explanations."""
-
-        return generate_with_ai(prompt, max_tokens=200)
+        prompt = connection_request_prompt(profile, person_info)
+        note = generate_with_ai(prompt, max_tokens=200)
+        note_text, error = get_ai_text_or_error(note)
+        return "" if error else note_text or ""
 
     def _connect_to_person(self, linkedin, person, profile, safety, rate_limiter, dry_run):
         """Connect to a single person: scrape, add to CRM, generate note, send request."""
@@ -226,17 +208,17 @@ Just write the message, no explanations."""
             source="automation",
         )
 
-        # If add_contact returned an error string, skip
-        if isinstance(contact_result, str):
+        # If add_contact returned an error, skip
+        if not contact_result.ok:
             return {
                 "name": name,
                 "company": company,
                 "note": "",
                 "success": False,
-                "reason": contact_result,
+                "reason": contact_result.error,
             }
 
-        contact_id = contact_result["id"]
+        contact_id = contact_result.data["id"]
 
         # Generate personalized note
         note = self._generate_connection_note(profile, {
@@ -381,7 +363,9 @@ Write a comment that:
 Just write the comment, no explanations."""
 
         try:
-            return generate_with_ai(prompt, max_tokens=150)
+            comment = generate_with_ai(prompt, max_tokens=150)
+            comment_text, error = get_ai_text_or_error(comment)
+            return "" if error else comment_text or ""
         except Exception:
             return ""
 

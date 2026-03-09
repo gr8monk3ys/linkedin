@@ -1,6 +1,17 @@
 """TypedDict definitions for LinkedIn CLI data structures."""
 
-from typing import TypedDict
+from typing import Any, NamedTuple, TypedDict
+
+
+class Result(NamedTuple):
+    """Standardized service return type. Backward-compatible with tuple unpacking."""
+
+    error: str | None
+    data: Any = None
+
+    @property
+    def ok(self) -> bool:
+        return self.error is None
 
 
 class ActivityDict(TypedDict, total=False):
@@ -60,6 +71,17 @@ class DraftDict(TypedDict, total=False):
     type: str
     content: str
     topic: str
+    created_at: str
+
+
+class TemplateDict(TypedDict, total=False):
+    id: int
+    name: str
+    template_type: str
+    content: str
+    variant: str
+    usage_count: int
+    response_count: int
     created_at: str
 
 

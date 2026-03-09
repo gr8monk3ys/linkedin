@@ -4,6 +4,8 @@ from datetime import datetime
 
 from linkedin.ai.client import generate_with_ai
 from linkedin.data.repository import DraftRepo, ProfileRepo, ResearchRepo
+from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.types import Result
 
 ENGAGEMENT_CONTENT = """
 # LinkedIn Engagement Strategies
@@ -79,8 +81,8 @@ class ResearchService:
     def get_engagement_strategies(self) -> str:
         return ENGAGEMENT_CONTENT
 
-    def generate_ideas(self, topic: str | None = None) -> tuple[str, str]:
-        """Returns (focus_topic, ideas_text)."""
+    def generate_ideas(self, topic: str | None = None) -> Result:
+        """Returns Result(error, (focus_topic, ideas_text))."""
         profile = self.profiles.get()
 
         if topic:
@@ -109,7 +111,8 @@ Focus on posts that:
 Format as a numbered list."""
 
         ideas = generate_with_ai(prompt, max_tokens=800)
-        return focus, ideas
+        ideas_text, error = get_ai_text_or_error(ideas)
+        return Result(error, (focus, ideas_text) if ideas_text is not None else None)
 
     def save_ideas(self, topic: str, ideas: str) -> None:
         research_data = self.research.get()
@@ -122,7 +125,7 @@ Format as a numbered list."""
         })
         self.research.save(research_data)
 
-    def generate_post_draft(self, topic: str, style: str = "story") -> str:
+    def generate_post_draft(self, topic: str, style: str = "story") -> Result:
         profile = self.profiles.get()
         instruction = STYLE_INSTRUCTIONS.get(style, STYLE_INSTRUCTIONS["story"])
 
@@ -146,7 +149,9 @@ Requirements:
 
 Write the post now:"""
 
-        return generate_with_ai(prompt, max_tokens=500)
+        draft = generate_with_ai(prompt, max_tokens=500)
+        draft_text, error = get_ai_text_or_error(draft)
+        return Result(error, draft_text)
 
     def save_post_draft(self, topic: str, style: str, content: str) -> None:
         draft = {
@@ -159,7 +164,7 @@ Write the post now:"""
         }
         self.drafts.add(draft)
 
-    def generate_hashtags(self, topic: str) -> str:
+    def generate_hashtags(self, topic: str) -> Result:
         prompt = f"""Suggest the best LinkedIn hashtags for a post about: {topic}
 
 Provide:
@@ -171,4 +176,6 @@ For each, briefly explain why it's good.
 
 Format as a clean list."""
 
-        return generate_with_ai(prompt, max_tokens=300)
+        hashtags = generate_with_ai(prompt, max_tokens=300)
+        hashtag_text, error = get_ai_text_or_error(hashtags)
+        return Result(error, hashtag_text)

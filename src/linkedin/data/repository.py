@@ -2,7 +2,7 @@
 
 from abc import ABC, abstractmethod
 
-from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict
+from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict, TemplateDict
 
 
 class ContactRepo(ABC):
@@ -96,4 +96,26 @@ class ResearchRepo(ABC):
 
     @abstractmethod
     def save(self, data: ResearchDict) -> None:
+        ...
+
+
+class TemplateRepo(ABC):
+    @abstractmethod
+    def list_all(self) -> list[TemplateDict]:
+        ...
+
+    @abstractmethod
+    def get(self, template_id: int) -> TemplateDict | None:
+        ...
+
+    @abstractmethod
+    def add(self, template: TemplateDict) -> TemplateDict:
+        ...
+
+    @abstractmethod
+    def update(self, template: TemplateDict) -> None:
+        ...
+
+    @abstractmethod
+    def next_id(self) -> int:
         ...

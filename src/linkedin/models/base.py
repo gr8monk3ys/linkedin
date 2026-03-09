@@ -1,6 +1,7 @@
 """SQLModel table definitions and database engine setup."""
 
 import os
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 
@@ -37,9 +38,14 @@ def get_engine(url: str | None = None):
             @event.listens_for(engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
-                cursor.execute("PRAGMA journal_mode=WAL")
-                cursor.execute("PRAGMA foreign_keys=ON")
-                cursor.close()
+                try:
+                    try:
+                        cursor.execute("PRAGMA journal_mode=WAL")
+                    except sqlite3.OperationalError:
+                        pass
+                    cursor.execute("PRAGMA foreign_keys=ON")
+                finally:
+                    cursor.close()
 
         if url is None:
             _engine = engine

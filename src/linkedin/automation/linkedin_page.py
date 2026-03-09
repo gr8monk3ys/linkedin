@@ -2,7 +2,7 @@
 
 import time
 
-from playwright.sync_api import Page, expect
+from playwright.sync_api import Error as PlaywrightError, Page, TimeoutError as PlaywrightTimeoutError, expect
 
 
 class LinkedInPage:
@@ -51,7 +51,7 @@ class LinkedInPage:
         try:
             self.page.wait_for_url("**/feed/**", timeout=15000)
             return True
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             return False
 
     def is_logged_in(self) -> bool:
@@ -59,7 +59,7 @@ class LinkedInPage:
         try:
             self.page.goto(f"{self.LINKEDIN_URL}/feed/")
             return "/login" not in self.page.url
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             return False
 
     # -------------------------------------------------------------------------
@@ -98,7 +98,7 @@ class LinkedInPage:
                 send_btn.click()
                 return True
             return False
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             return False
 
     # -------------------------------------------------------------------------
@@ -124,7 +124,7 @@ class LinkedInPage:
             send_btn = self.page.get_by_role("button", name="Send")
             send_btn.click()
             return True
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             return False
 
     # -------------------------------------------------------------------------
@@ -146,7 +146,7 @@ class LinkedInPage:
             location_el = self.page.locator(".text-body-small.inline").first
             if location_el.count() > 0:
                 info["location"] = location_el.text_content().strip()
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             pass
         return info
 
@@ -176,7 +176,7 @@ class LinkedInPage:
 
                 if entry.get("name"):
                     results.append(entry)
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             pass
         return results
 
@@ -245,7 +245,7 @@ class LinkedInPage:
                 time.sleep(1)
                 scroll_attempts += 1
 
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             pass
 
         return posts
@@ -272,7 +272,7 @@ class LinkedInPage:
 
             like_btn.first.click()
             return True
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             return False
 
     def comment_on_post(self, post_index: int, comment_text: str) -> bool:
@@ -306,5 +306,5 @@ class LinkedInPage:
                 textbox.press("Control+Enter")
 
             return True
-        except Exception:
+        except (PlaywrightTimeoutError, PlaywrightError):
             return False

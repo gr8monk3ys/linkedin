@@ -3,33 +3,37 @@
 import math
 from datetime import datetime
 
-from linkedin.data.repository import ContactRepo, DraftRepo
+from linkedin.data.repository import ContactRepo, TemplateRepo
+from linkedin.types import TemplateDict
 
 
 class TemplateService:
-    def __init__(self, contact_repo: ContactRepo, draft_repo: DraftRepo):
+    def __init__(self, contact_repo: ContactRepo, template_repo: TemplateRepo):
         self.contacts = contact_repo
-        self.drafts = draft_repo
-        self._templates: list[dict] = []
+        self.templates = template_repo
 
     def list_templates(self) -> list[dict]:
         """List all templates with stats."""
-        for t in self._templates:
-            t["response_rate"] = self._calc_response_rate(t)
-        return self._templates
+        templates = []
+        for template in self.templates.list_all():
+            entry = dict(template)
+            entry["response_rate"] = self._calc_response_rate(entry)
+            templates.append(entry)
+        return templates
 
     def get_template(self, template_id: int) -> dict | None:
         """Get a template by ID."""
-        for t in self._templates:
-            if t.get("id") == template_id:
-                t["response_rate"] = self._calc_response_rate(t)
-                return t
-        return None
+        template = self.templates.get(template_id)
+        if not template:
+            return None
+        entry = dict(template)
+        entry["response_rate"] = self._calc_response_rate(entry)
+        return entry
 
     def save_template(self, name: str, template_type: str, content: str, variant: str = "A") -> dict:
         """Save a draft as a reusable template."""
-        template = {
-            "id": len(self._templates) + 1,
+        template: TemplateDict = {
+            "id": self.templates.next_id(),
             "name": name,
             "template_type": template_type,
             "content": content,
@@ -38,15 +42,14 @@ class TemplateService:
             "response_count": 0,
             "created_at": datetime.now().isoformat(),
         }
-        self._templates.append(template)
-        return template
+        return self.templates.add(template)
 
     def use_template(self, template_id: int, contact_id: int) -> str | None:
         """Apply a template with contact-specific placeholders.
 
         Returns the rendered message or None if template not found.
         """
-        template = self.get_template(template_id)
+        template = self.templates.get(template_id)
         if not template:
             return None
 
@@ -68,19 +71,21 @@ class TemplateService:
 
         # Increment usage
         template["usage_count"] = template.get("usage_count", 0) + 1
+        self.templates.update(template)
         return content
 
     def record_response(self, template_id: int) -> None:
         """Record that a template got a response."""
-        template = self.get_template(template_id)
+        template = self.templates.get(template_id)
         if template:
             template["response_count"] = template.get("response_count", 0) + 1
+            self.templates.update(template)
 
     def get_ab_results(self) -> list[dict]:
         """Get A/B test results comparing variants."""
         # Group templates by name
         groups: dict[str, list[dict]] = {}
-        for t in self._templates:
+        for t in self.templates.list_all():
             name = t["name"]
             if name not in groups:
                 groups[name] = []
@@ -118,7 +123,10 @@ class TemplateService:
 
     def suggest_best(self, template_type: str) -> dict | None:
         """Suggest the best-performing template for a given type."""
-        matching = [t for t in self._templates if t.get("template_type") == template_type and t.get("usage_count", 0) > 0]
+        matching = [
+            t for t in self.templates.list_all()
+            if t.get("template_type") == template_type and t.get("usage_count", 0) > 0
+        ]
         if not matching:
             return None
         return max(matching, key=lambda t: self._response_rate_float(t))

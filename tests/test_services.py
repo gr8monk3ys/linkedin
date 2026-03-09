@@ -58,18 +58,18 @@ class TestContactService:
 
     def test_update_nonexistent(self, json_repos):
         svc = self._svc(json_repos)
-        assert svc.update_contact(999, status="connected") is None
+        assert not svc.update_contact(999, status="connected").ok
 
     def test_view_contact(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
         view = svc.view_contact(1)
-        assert view is not None
-        assert view["name"] == "Alice"
+        assert view.ok
+        assert view.data["name"] == "Alice"
 
     def test_view_contact_not_found(self, json_repos):
         svc = self._svc(json_repos)
-        assert svc.view_contact(999) is None
+        assert not svc.view_contact(999).ok
 
     def test_view_contact_with_company_link(self, json_repos):
         from linkedin.services.company_service import CompanyService
@@ -80,20 +80,22 @@ class TestContactService:
         co_svc.add_company(name="Acme", industry="Tech")
         svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="", company_id=1)
         view = svc.view_contact(1)
-        assert view["linked_company"] is not None
-        assert view["linked_company"]["name"] == "Acme"
+        assert view.ok
+        assert view.data["linked_company"] is not None
+        assert view.data["linked_company"]["name"] == "Acme"
 
     def test_get_activities(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
         svc.update_contact(1, status="connected")
-        activities = svc.get_activities(1)
-        assert len(activities) == 1
-        assert activities[0]["type"] == "connected"
+        result = svc.get_activities(1)
+        assert result.ok
+        assert len(result.data) == 1
+        assert result.data[0]["type"] == "connected"
 
     def test_get_activities_not_found(self, json_repos):
         svc = self._svc(json_repos)
-        assert svc.get_activities(999) is None
+        assert not svc.get_activities(999).ok
 
     def test_link_company(self, json_repos):
         from linkedin.services.company_service import CompanyService
@@ -102,8 +104,8 @@ class TestContactService:
         svc = self._svc(json_repos)
         CompanyService(company_repo, contact_repo).add_company(name="Acme", industry="Tech")
         svc.add_contact(name="Alice", title="Engineer", company="Other", linkedin="")
-        error = svc.link_company(1, 1)
-        assert error is None
+        result = svc.link_company(1, 1)
+        assert result.ok
         contact = svc.get_contact(1)
         assert contact["company"] == "Acme"
         assert contact["company_id"] == 1
@@ -111,14 +113,14 @@ class TestContactService:
     def test_link_company_not_found(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
-        assert svc.link_company(1, 999) is not None
-        assert svc.link_company(999, 1) is not None
+        assert not svc.link_company(1, 999).ok
+        assert not svc.link_company(999, 1).ok
 
     def test_set_reminder(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
         result = svc.set_reminder(1, days=7)
-        assert result is not None
+        assert result.ok
         contact = svc.get_contact(1)
         assert contact["follow_up_date"] is not None
 
@@ -126,11 +128,11 @@ class TestContactService:
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
         result = svc.set_reminder(1, date="2025-06-15")
-        assert result == "2025-06-15"
+        assert result.data == "2025-06-15"
 
     def test_set_reminder_not_found(self, json_repos):
         svc = self._svc(json_repos)
-        assert svc.set_reminder(999, days=7) is None
+        assert not svc.set_reminder(999, days=7).ok
 
     def test_get_due_contacts_empty(self, json_repos):
         svc = self._svc(json_repos)
@@ -169,23 +171,23 @@ class TestContactService:
         svc = self._svc(json_repos)
         CompanyService(company_repo, contact_repo).add_company(name="Acme", industry="Tech")
         result = svc.add_contact(name="Alice", title="Engineer", company="", linkedin="", company_id=1)
-        assert result["company"] == "Acme"
+        assert result.data["company"] == "Acme"
 
     def test_add_contact_invalid_company_id(self, json_repos):
         svc = self._svc(json_repos)
         result = svc.add_contact(name="Alice", title="Engineer", company="", linkedin="", company_id=999)
-        assert isinstance(result, str)  # error message
+        assert not result.ok
 
     def test_add_contact_with_referral(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
         result = svc.add_contact(name="Bob", title="Designer", company="TestCo", linkedin="", referral_id=1)
-        assert result["referral_contact_id"] == 1
+        assert result.data["referral_contact_id"] == 1
 
     def test_add_contact_invalid_referral(self, json_repos):
         svc = self._svc(json_repos)
         result = svc.add_contact(name="Bob", title="Designer", company="TestCo", linkedin="", referral_id=999)
-        assert isinstance(result, str)  # error message
+        assert not result.ok
 
 
 class TestCompanyService:
@@ -206,42 +208,42 @@ class TestCompanyService:
     def test_delete(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_company(name="Acme Corp", industry="Tech")
-        assert svc.delete_company(1) is not None
+        assert svc.delete_company(1).ok
         assert svc.list_companies() == []
 
     def test_delete_nonexistent(self, json_repos):
         svc = self._svc(json_repos)
-        assert svc.delete_company(999) is None
+        assert not svc.delete_company(999).ok
 
     def test_get_company(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_company(name="Acme Corp", industry="Tech")
-        company = svc.get_company(1)
-        assert company is not None
-        assert company["name"] == "Acme Corp"
-        assert "contacts" in company
+        result = svc.get_company(1)
+        assert result.ok
+        assert result.data["name"] == "Acme Corp"
+        assert "contacts" in result.data
 
     def test_get_company_not_found(self, json_repos):
         svc = self._svc(json_repos)
-        assert svc.get_company(999) is None
+        assert not svc.get_company(999).ok
 
     def test_update_company(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_company(name="Acme Corp", industry="Tech")
-        updated = svc.update_company(1, priority="high", notes="Top target")
-        assert updated is not None
-        assert updated["priority"] == "high"
-        assert "Top target" in updated["notes"]
+        result = svc.update_company(1, priority="high", notes="Top target")
+        assert result.ok
+        assert result.data["priority"] == "high"
+        assert "Top target" in result.data["notes"]
 
     def test_update_add_role(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_company(name="Acme Corp", industry="Tech")
-        updated = svc.update_company(1, add_role="Senior Engineer")
-        assert "Senior Engineer" in updated["key_people_to_find"]
+        result = svc.update_company(1, add_role="Senior Engineer")
+        assert "Senior Engineer" in result.data["key_people_to_find"]
 
     def test_update_nonexistent(self, json_repos):
         svc = self._svc(json_repos)
-        assert svc.update_company(999, priority="high") is None
+        assert not svc.update_company(999, priority="high").ok
 
     def test_list_filter_priority(self, json_repos):
         svc = self._svc(json_repos)
@@ -266,9 +268,10 @@ class TestCompanyService:
         c_svc = ContactService(contact_repo, company_repo)
         svc.add_company(name="Acme", industry="Tech")
         c_svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="", company_id=1)
-        company, contacts = svc.get_company_contacts(1)
-        assert company is not None
-        assert len(contacts) == 1
+        result = svc.get_company_contacts(1)
+        assert result.ok
+        assert result.data["company"] is not None
+        assert len(result.data["contacts"]) == 1
 
 
 class TestProfileService:
@@ -300,6 +303,17 @@ class TestDraftService:
         error, draft = svc.generate_connection(1)
         assert error is None
         assert draft == "Hi Alice!"
+
+    @patch("linkedin.services.draft_service.generate_with_ai", return_value="[AI generation failed: boom]")
+    def test_generate_connection_ai_error(self, mock_ai, json_repos):
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+
+        error, draft = svc.generate_connection(1)
+        assert error is not None
+        assert draft is None
 
     def test_generate_connection_no_profile(self, json_repos):
         svc = self._svc(json_repos)
@@ -486,19 +500,24 @@ class TestResearchService:
         _, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
 
-        topic, ideas = svc.generate_ideas()
+        error, payload = svc.generate_ideas()
+        assert error is None
+        topic, ideas = payload
         assert "idea" in ideas.lower()
 
     @patch("linkedin.services.research_service.generate_with_ai", return_value="Ideas about AI")
     def test_generate_ideas_with_topic(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
-        topic, ideas = svc.generate_ideas(topic="AI")
+        error, payload = svc.generate_ideas(topic="AI")
+        assert error is None
+        topic, ideas = payload
         assert topic == "AI"
 
     @patch("linkedin.services.research_service.generate_with_ai", return_value="A great post about tech")
     def test_generate_post_draft(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
-        content = svc.generate_post_draft("AI trends", style="story")
+        error, content = svc.generate_post_draft("AI trends", style="story")
+        assert error is None
         assert len(content) > 0
 
     def test_save_ideas(self, json_repos):
@@ -521,8 +540,16 @@ class TestResearchService:
     @patch("linkedin.services.research_service.generate_with_ai", return_value="#AI #ML #Tech")
     def test_generate_hashtags(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
-        result = svc.generate_hashtags("artificial intelligence")
+        error, result = svc.generate_hashtags("artificial intelligence")
+        assert error is None
         assert "#" in result
+
+    @patch("linkedin.services.research_service.generate_with_ai", return_value="[AI generation failed: timeout]")
+    def test_generate_ideas_ai_error(self, mock_ai, json_repos):
+        svc = self._svc(json_repos)
+        error, payload = svc.generate_ideas(topic="AI")
+        assert error is not None
+        assert payload is None
 
 
 class TestDashboardService:

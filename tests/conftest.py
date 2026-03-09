@@ -9,6 +9,7 @@ from linkedin.data.db_store import (
     DbDraftRepo,
     DbProfileRepo,
     DbResearchRepo,
+    DbTemplateRepo,
 )
 from linkedin.data.json_store import (
     JsonCompanyRepo,
@@ -16,7 +17,10 @@ from linkedin.data.json_store import (
     JsonDraftRepo,
     JsonProfileRepo,
     JsonResearchRepo,
+    JsonTemplateRepo,
 )
+from linkedin.data.twenty_client import TwentyClient
+from linkedin.data.twenty_store import TwentyCompanyRepo, TwentyContactRepo, TwentyDraftRepo, _IdMapper
 from linkedin.models.base import SQLModel, reset_engine
 
 
@@ -26,6 +30,7 @@ def db_engine():
     eng = create_engine("sqlite:///:memory:")
     SQLModel.metadata.create_all(eng)
     yield eng
+    eng.dispose()
     reset_engine()
 
 
@@ -51,6 +56,7 @@ def json_repos(tmp_path, monkeypatch):
     monkeypatch.setattr(js, "CONTACTS_FILE", tmp_path / "contacts.json")
     monkeypatch.setattr(js, "COMPANIES_FILE", tmp_path / "companies.json")
     monkeypatch.setattr(js, "DRAFTS_FILE", tmp_path / "drafts.json")
+    monkeypatch.setattr(js, "TEMPLATES_FILE", tmp_path / "templates.json")
     monkeypatch.setattr(js, "RESEARCH_FILE", tmp_path / "research.json")
     monkeypatch.setattr(js, "BACKUPS_DIR", tmp_path / "backups")
 
@@ -61,6 +67,32 @@ def json_repos(tmp_path, monkeypatch):
         JsonDraftRepo(),
         JsonResearchRepo(),
     )
+
+
+@pytest.fixture
+def twenty_repos(tmp_path):
+    """Full set of Twenty repos with mocked client."""
+    client = TwentyClient(base_url="http://test:3000", api_key="test-key")
+    mapper = _IdMapper(tmp_path / "twenty_id_map.json")
+    return (
+        TwentyContactRepo(client, mapper),
+        TwentyCompanyRepo(client, mapper),
+        TwentyDraftRepo(client, mapper),
+        client,
+        mapper,
+    )
+
+
+@pytest.fixture
+def db_template_repo(db_engine):
+    """DB template repo using the shared in-memory engine."""
+    return DbTemplateRepo(db_engine)
+
+
+@pytest.fixture
+def json_template_repo(json_repos):
+    """JSON template repo using the patched temp directory."""
+    return JsonTemplateRepo()
 
 
 def sample_contact(**overrides):

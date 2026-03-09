@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LinkedIn Job Hunt Assistant (v2.0.0) — a Python CLI + web dashboard combining a local CRM, AI-powered draft generation (via Claude API), analytics, market intelligence, profile optimization, smart templates, and content research for LinkedIn job searching. Supports JSON file storage (default) or SQLModel/PostgreSQL database backend. Includes Playwright-based browser automation.
+LinkedIn Job Hunt Assistant (v3.0.0) — a Python CLI + web dashboard combining a local CRM, AI-powered draft generation (via Claude API), analytics, market intelligence, profile optimization, smart templates, and content research for LinkedIn job searching. Supports JSON file storage (default), SQLModel/PostgreSQL database backend, or Twenty CRM. Includes Playwright-based browser automation.
 
 ## Commands
 
@@ -51,7 +51,8 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 
 **Modular structure** — decomposed from a monolith into clean layers:
 
-- `src/linkedin/cli.py` — Thin CLI layer: Click groups + Rich formatting. Calls services, no business logic.
+- `src/linkedin/cli/__init__.py` — CLI entry point and shared service wiring.
+- `src/linkedin/cli/*.py` — Click command groups + Rich formatting. Calls services, no business logic.
 - `src/linkedin/constants.py` — Enums (`ContactStatus`, `CompanyPriority`, etc.), emoji mappings, display tuples.
 - `src/linkedin/types.py` — TypedDicts: `ContactDict`, `CompanyDict`, `ProfileDict`, `DraftDict`, `ResearchDict`.
 - `src/linkedin/ai/client.py` — `generate_with_ai(prompt, max_tokens)` wrapping Anthropic API.
@@ -60,7 +61,8 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 - `src/linkedin/data/repository.py` — Abstract base classes: `ContactRepo`, `CompanyRepo`, `ProfileRepo`, `DraftRepo`, `ResearchRepo`.
 - `src/linkedin/data/json_store.py` — JSON file implementations. Default backend.
 - `src/linkedin/data/db_store.py` — SQLModel/SQLAlchemy implementations.
-- `src/linkedin/data/factory.py` — `create_repos()` selects backend via `LINKEDIN_BACKEND` env var (`json` or `db`).
+- `src/linkedin/data/twenty_store.py` — Twenty CRM implementations for contacts, companies, and drafts.
+- `src/linkedin/data/factory.py` — backend selection helpers for repositories and template persistence via `LINKEDIN_BACKEND`.
 - `src/linkedin/models/base.py` — SQLModel table classes (`Profile`, `Company`, `Contact`, `Activity`, `Draft`, `Research`, `OutreachEvent`, `JobPosting`, `MarketInsight`, `ProfileSuggestion`, `Template`, `TemplateUsage`).
 - `src/linkedin/migrations/` — Alembic migration scripts.
 
@@ -92,9 +94,9 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 
 **Key patterns:**
 - Repository pattern with abstract base classes for data access.
-- Services injected with repos at module level in `cli.py`.
+- Services injected with repos at module level in `src/linkedin/cli/__init__.py`.
 - `DATABASE_URL` env var configures DB (default: `sqlite:///~/.linkedin-cli/linkedin.db`).
-- `LINKEDIN_BACKEND` env var selects `json` (default) or `db` backend.
+- `LINKEDIN_BACKEND` env var selects `json` (default), `db`, or `twenty`.
 - Mock patches target usage sites: `linkedin.services.<module>.generate_with_ai`.
 
 **Contact pipeline:** `not_contacted → connection_sent → connected → messaged → responded → call_scheduled → hired/rejected`.

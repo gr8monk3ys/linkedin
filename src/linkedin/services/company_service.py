@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from linkedin.data.repository import CompanyRepo, ContactRepo
-from linkedin.types import CompanyDict
+from linkedin.types import CompanyDict, Result
 
 
 class CompanyService:
@@ -32,15 +32,15 @@ class CompanyService:
 
         return result
 
-    def get_company(self, company_id: int) -> dict | None:
+    def get_company(self, company_id: int) -> Result:
         company = self.companies.get(company_id)
         if not company:
-            return None
+            return Result("Company not found")
 
         contacts = [c for c in self.contacts.list_all() if c.get("company_id") == company_id]
         result = dict(company)
         result["contacts"] = contacts
-        return result
+        return Result(None, result)
 
     def add_company(
         self,
@@ -75,10 +75,10 @@ class CompanyService:
         add_role: str | None = None,
         linkedin: str | None = None,
         website: str | None = None,
-    ) -> CompanyDict | None:
+    ) -> Result:
         company = self.companies.get(company_id)
         if not company:
-            return None
+            return Result("Company not found")
 
         if priority:
             company["priority"] = priority
@@ -94,21 +94,21 @@ class CompanyService:
             company["website"] = website
 
         self.companies.update(company)
-        return company
+        return Result(None, company)
 
-    def delete_company(self, company_id: int) -> CompanyDict | None:
+    def delete_company(self, company_id: int) -> Result:
         company = self.companies.get(company_id)
         if not company:
-            return None
+            return Result("Company not found")
         self.companies.delete(company_id)
-        return company
+        return Result(None, company)
 
-    def get_company_contacts(self, company_id: int) -> tuple[CompanyDict | None, list]:
+    def get_company_contacts(self, company_id: int) -> Result:
         company = self.companies.get(company_id)
         if not company:
-            return None, []
+            return Result("Company not found")
         contacts = [c for c in self.contacts.list_all() if c.get("company_id") == company_id]
-        return company, contacts
+        return Result(None, {"company": company, "contacts": contacts})
 
     def _get_contact_counts(self) -> dict[int, int]:
         contacts = self.contacts.list_all()

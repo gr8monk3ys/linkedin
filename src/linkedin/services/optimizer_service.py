@@ -2,17 +2,19 @@
 
 from linkedin.ai.client import generate_with_ai
 from linkedin.data.repository import ProfileRepo
+from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.types import Result
 
 
 class OptimizerService:
     def __init__(self, profile_repo: ProfileRepo):
         self.profiles = profile_repo
 
-    def optimize_headline(self) -> tuple[str | None, str]:
+    def optimize_headline(self) -> Result:
         """Generate headline variants."""
         profile = self.profiles.get()
         if not profile or not profile.get("name"):
-            return "Set up your profile first.", ""
+            return Result("Set up your profile first.")
 
         prompt = f"""Generate 5 LinkedIn headline variants for this professional:
 
@@ -32,13 +34,14 @@ Format: Number. Headline text
 Just the headlines, no explanations."""
 
         result = generate_with_ai(prompt, max_tokens=300)
-        return None, result
+        content, error = get_ai_text_or_error(result)
+        return Result(error, content)
 
-    def optimize_about(self) -> tuple[str | None, str]:
+    def optimize_about(self) -> Result:
         """Generate an optimized About section."""
         profile = self.profiles.get()
         if not profile or not profile.get("name"):
-            return "Set up your profile first.", ""
+            return Result("Set up your profile first.")
 
         prompt = f"""Write an optimized LinkedIn About section for this professional:
 
@@ -62,13 +65,14 @@ Requirements:
 Just write the About section, no explanations."""
 
         result = generate_with_ai(prompt, max_tokens=600)
-        return None, result
+        content, error = get_ai_text_or_error(result)
+        return Result(error, content)
 
-    def optimize_skills(self) -> tuple[str | None, str]:
+    def optimize_skills(self) -> Result:
         """Analyze skills and suggest improvements."""
         profile = self.profiles.get()
         if not profile or not profile.get("name"):
-            return "Set up your profile first.", ""
+            return Result("Set up your profile first.")
 
         prompt = f"""Analyze and optimize the LinkedIn skills for this professional:
 
@@ -87,13 +91,14 @@ Provide:
 Be specific and actionable. Under 400 words."""
 
         result = generate_with_ai(prompt, max_tokens=500)
-        return None, result
+        content, error = get_ai_text_or_error(result)
+        return Result(error, content)
 
-    def optimize_full(self) -> tuple[str | None, str]:
+    def optimize_full(self) -> Result:
         """Full profile optimization review."""
         profile = self.profiles.get()
         if not profile or not profile.get("name"):
-            return "Set up your profile first.", ""
+            return Result("Set up your profile first.")
 
         prompt = f"""Provide a complete LinkedIn profile optimization review:
 
@@ -116,4 +121,5 @@ Score each section (1-10) and provide specific improvement suggestions:
 Be specific and actionable. Under 500 words."""
 
         result = generate_with_ai(prompt, max_tokens=700)
-        return None, result
+        content, error = get_ai_text_or_error(result)
+        return Result(error, content)

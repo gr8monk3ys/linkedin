@@ -4,7 +4,7 @@ import datetime as dt
 from datetime import datetime
 
 from linkedin.data.repository import CompanyRepo, ContactRepo
-from linkedin.types import ContactDict
+from linkedin.types import ContactDict, Result
 
 
 class ContactService:
@@ -44,17 +44,17 @@ class ContactService:
         email: str = "",
         source: str = "linkedin_search",
         referral_id: int | None = None,
-    ) -> ContactDict | str:
+    ) -> Result:
         if company_id:
             company_obj = self.companies.get(company_id)
             if not company_obj:
-                return f"Company #{company_id} not found."
+                return Result(f"Company #{company_id} not found.")
             company = company_obj["name"]
 
         if referral_id:
             referrer = self.contacts.get(referral_id)
             if not referrer:
-                return f"Referral contact #{referral_id} not found."
+                return Result(f"Referral contact #{referral_id} not found.")
 
         contact: ContactDict = {
             "id": self.contacts.next_id(),
@@ -74,7 +74,7 @@ class ContactService:
             "activities": [],
         }
 
-        return self.contacts.add(contact)
+        return Result(None, self.contacts.add(contact))
 
     def update_contact(
         self,
@@ -83,10 +83,10 @@ class ContactService:
         notes: str | None = None,
         follow_up: str | None = None,
         email: str | None = None,
-    ) -> ContactDict | None:
+    ) -> Result:
         contact = self.contacts.get(contact_id)
         if not contact:
-            return None
+            return Result("Contact not found")
 
         if "activities" not in contact:
             contact["activities"] = []
@@ -113,12 +113,12 @@ class ContactService:
             contact["email"] = email
 
         self.contacts.update(contact)
-        return contact
+        return Result(None, contact)
 
-    def view_contact(self, contact_id: int) -> dict | None:
+    def view_contact(self, contact_id: int) -> Result:
         contact = self.contacts.get(contact_id)
         if not contact:
-            return None
+            return Result("Contact not found")
 
         result = dict(contact)
 
@@ -130,7 +130,7 @@ class ContactService:
             referrer = self.contacts.get(contact["referral_contact_id"])
             result["referrer"] = referrer
 
-        return result
+        return Result(None, result)
 
     def get_stats(self) -> dict:
         contacts = self.contacts.list_all()
@@ -144,25 +144,25 @@ class ContactService:
 
         return {"total": len(contacts), "status_counts": status_counts}
 
-    def get_activities(self, contact_id: int) -> list[dict] | None:
+    def get_activities(self, contact_id: int) -> Result:
         contact = self.contacts.get(contact_id)
         if not contact:
-            return None
-        return contact.get("activities", [])
+            return Result("Contact not found")
+        return Result(None, contact.get("activities", []))
 
-    def link_company(self, contact_id: int, company_id: int) -> str | None:
+    def link_company(self, contact_id: int, company_id: int) -> Result:
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found"
+            return Result(f"Contact #{contact_id} not found")
 
         company = self.companies.get(company_id)
         if not company:
-            return f"Company #{company_id} not found"
+            return Result(f"Company #{company_id} not found")
 
         contact["company_id"] = company_id
         contact["company"] = company["name"]
         self.contacts.update(contact)
-        return None
+        return Result(None)
 
     def get_due_contacts(self, days: int = 0) -> dict:
         all_contacts = self.contacts.list_all()
@@ -212,10 +212,10 @@ class ContactService:
             "stale": stale_connections,
         }
 
-    def set_reminder(self, contact_id: int, days: int | None = None, date: str | None = None) -> str | None:
+    def set_reminder(self, contact_id: int, days: int | None = None, date: str | None = None) -> Result:
         contact = self.contacts.get(contact_id)
         if not contact:
-            return None
+            return Result("Contact not found")
 
         if date:
             follow_up_date = date
@@ -224,4 +224,4 @@ class ContactService:
 
         contact["follow_up_date"] = follow_up_date
         self.contacts.update(contact)
-        return follow_up_date
+        return Result(None, follow_up_date)

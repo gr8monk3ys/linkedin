@@ -3,8 +3,10 @@
 from datetime import datetime
 
 from linkedin.ai.client import generate_with_ai
+from linkedin.ai.prompts import connection_request_prompt
 from linkedin.data.repository import ContactRepo, DraftRepo, ProfileRepo
-from linkedin.types import DraftDict, ProfileDict
+from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.types import DraftDict, ProfileDict, Result
 
 FOLLOW_UP_GUIDANCE = {
     1: "This is a gentle first follow-up. Be casual and add value if possible.",
@@ -33,90 +35,98 @@ class DraftService:
     def get_draft(self, draft_id: int) -> DraftDict | None:
         return self.drafts.get(draft_id)
 
-    def generate_connection(self, contact_id: int) -> tuple[str | None, str]:
-        """Returns (error_message, draft_text). error_message is None on success."""
+    def generate_connection(self, contact_id: int) -> Result:
+        """Returns Result(error, draft_text)."""
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return Result("Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return Result(f"Contact #{contact_id} not found")
 
         prompt = self._connection_prompt(profile, contact)
         draft = generate_with_ai(prompt, max_tokens=200)
-        return None, draft
+        draft_text, error = get_ai_text_or_error(draft)
+        return Result(error, draft_text)
 
-    def generate_message(self, contact_id: int, context: str = "") -> tuple[str | None, str]:
+    def generate_message(self, contact_id: int, context: str = "") -> Result:
         profile = self.profiles.get()
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return Result(f"Contact #{contact_id} not found")
 
         prompt = self._message_prompt(profile, contact, context)
         draft = generate_with_ai(prompt, max_tokens=400)
-        return None, draft
+        draft_text, error = get_ai_text_or_error(draft)
+        return Result(error, draft_text)
 
-    def generate_intro_request(self, contact_id: int, target_id: int) -> tuple[str | None, str]:
+    def generate_intro_request(self, contact_id: int, target_id: int) -> Result:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return Result("Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return Result(f"Contact #{contact_id} not found")
 
         target = self.contacts.get(target_id)
         if not target:
-            return f"Target contact #{target_id} not found", ""
+            return Result(f"Target contact #{target_id} not found")
 
         prompt = self._intro_request_prompt(profile, contact, target)
         draft = generate_with_ai(prompt, max_tokens=400)
-        return None, draft
+        draft_text, error = get_ai_text_or_error(draft)
+        return Result(error, draft_text)
 
-    def generate_thank_you(self, contact_id: int, context: str = "") -> tuple[str | None, str]:
+    def generate_thank_you(self, contact_id: int, context: str = "") -> Result:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return Result("Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return Result(f"Contact #{contact_id} not found")
 
         prompt = self._thank_you_prompt(profile, contact, context)
         draft = generate_with_ai(prompt, max_tokens=250)
-        return None, draft
+        draft_text, error = get_ai_text_or_error(draft)
+        return Result(error, draft_text)
 
-    def generate_follow_up(self, contact_id: int, attempt: int = 1) -> tuple[str | None, str]:
+    def generate_follow_up(self, contact_id: int, attempt: int = 1) -> Result:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return Result("Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return Result(f"Contact #{contact_id} not found")
 
         prompt = self._follow_up_prompt(profile, contact, attempt)
         draft = generate_with_ai(prompt, max_tokens=200)
-        return None, draft
+        draft_text, error = get_ai_text_or_error(draft)
+        return Result(error, draft_text)
 
-    def generate_batch_connections(self, limit: int = 5) -> tuple[str | None, list[tuple[dict, str]]]:
+    def generate_batch_connections(self, limit: int = 5) -> Result:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", []
+            return Result("Set up your profile first: linkedin profile setup")
 
         all_contacts = self.contacts.list_all()
         not_contacted = [c for c in all_contacts if c["status"] == "not_contacted"]
         if not not_contacted:
-            return None, []
+            return Result(None, [])
 
         results = []
         for contact in not_contacted[:limit]:
             prompt = self._connection_prompt(profile, contact)
             draft = generate_with_ai(prompt, max_tokens=200)
-            results.append((contact, draft))
+            draft_text, error = get_ai_text_or_error(draft)
+            if error:
+                return Result(error)
+            results.append((contact, draft_text))
 
-        return None, results
+        return Result(None, results)
 
     def save_draft(self, contact_id: int | None, draft_type: str, content: str, **extra) -> DraftDict:
         draft: DraftDict = {
@@ -130,29 +140,7 @@ class DraftService:
         return self.drafts.add(draft)
 
     def _connection_prompt(self, profile: ProfileDict, contact: dict) -> str:
-        return f"""Write a LinkedIn connection request message (max 300 characters) from me to this person.
-
-MY PROFILE:
-- Name: {profile.get('name', 'N/A')}
-- Current Role: {profile.get('headline', 'N/A')}
-- Target Role: {profile.get('target_role', 'N/A')}
-- Key Skills: {profile.get('skills', 'N/A')}
-- What Makes Me Unique: {profile.get('unique_value', 'N/A')}
-
-THEIR PROFILE:
-- Name: {contact['name']}
-- Title: {contact['title']}
-- Company: {contact['company']}
-- Why I want to connect: {contact.get('notes', 'Interested in their work')}
-
-Write a warm, personalized connection request that:
-1. Shows I've looked at their profile
-2. Mentions something specific about them or their company
-3. Briefly explains why connecting would be mutually valuable
-4. Is under 300 characters (LinkedIn limit)
-5. Sounds natural, not salesy
-
-Just write the message, no explanations."""
+        return connection_request_prompt(profile, contact)
 
     def _message_prompt(self, profile: ProfileDict, contact: dict, context: str) -> str:
         return f"""Write a LinkedIn message from me to this person we're already connected with.

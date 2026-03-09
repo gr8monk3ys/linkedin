@@ -9,6 +9,7 @@ from linkedin.data.db_store import (
     DbDraftRepo,
     DbProfileRepo,
     DbResearchRepo,
+    DbTemplateRepo,
 )
 from linkedin.models.base import SQLModel, reset_engine
 
@@ -46,6 +47,11 @@ def draft_repo(engine):
 @pytest.fixture
 def research_repo(engine):
     return DbResearchRepo(engine)
+
+
+@pytest.fixture
+def template_repo(engine):
+    return DbTemplateRepo(engine)
 
 
 class TestDbContactRepo:
@@ -242,3 +248,18 @@ class TestDbResearchRepo:
         research_repo.save({"ideas": ["New"]})
         data = research_repo.get()
         assert data["ideas"] == ["New"]
+
+
+class TestDbTemplateRepo:
+    def test_add_and_get(self, template_repo):
+        template = template_repo.add({"name": "Intro", "template_type": "connection", "content": "Hi"})
+        assert template["id"] is not None
+        fetched = template_repo.get(template["id"])
+        assert fetched["name"] == "Intro"
+
+    def test_update(self, template_repo):
+        template = template_repo.add({"name": "Intro", "template_type": "connection", "content": "Hi"})
+        template_repo.update({"id": template["id"], "usage_count": 3, "response_count": 1})
+        fetched = template_repo.get(template["id"])
+        assert fetched["usage_count"] == 3
+        assert fetched["response_count"] == 1

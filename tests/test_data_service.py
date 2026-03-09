@@ -17,6 +17,7 @@ def data_svc(json_repos, tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "CONTACTS_FILE", tmp_path / "contacts.json")
     monkeypatch.setattr(ds, "COMPANIES_FILE", tmp_path / "companies.json")
     monkeypatch.setattr(ds, "DRAFTS_FILE", tmp_path / "drafts.json")
+    monkeypatch.setattr(ds, "TEMPLATES_FILE", tmp_path / "templates.json")
     monkeypatch.setattr(ds, "RESEARCH_FILE", tmp_path / "research.json")
     monkeypatch.setattr(ds, "BACKUPS_DIR", tmp_path / "backups")
 
@@ -153,3 +154,19 @@ class TestDataService:
         assert len(backups) >= 1
         assert "name" in backups[0]
         assert "size_kb" in backups[0]
+
+    def test_export_contacts_uses_active_backend_repos(self, db_repos, tmp_path):
+        contact_repo, company_repo, *_ = db_repos
+        contact_repo.add({"name": "Alice", "title": "Engineer", "company": "Acme"})
+        svc = DataService(contact_repo, company_repo, backend="db")
+
+        output = str(tmp_path / "db_contacts.json")
+        count, path = svc.export_contacts(output=output, fmt="json")
+        assert count == 1
+        assert path == output
+
+    def test_backup_requires_json_backend(self, db_repos):
+        contact_repo, company_repo, *_ = db_repos
+        svc = DataService(contact_repo, company_repo, backend="db")
+        with pytest.raises(RuntimeError, match="LINKEDIN_BACKEND=json"):
+            svc.create_backup()

@@ -37,12 +37,12 @@ class DiscoverState(rx.State):
         """Run AI-powered discovery."""
         self.loading = True
         contact_repo, company_repo, profile_repo, *_ = create_repos()
-        svc = DiscoverService(contact_repo, company_repo, profile_repo)
+        svc = DiscoverService(profile_repo, company_repo, contact_repo)
 
         if self.discover_type == "contacts":
-            error, result = svc.discover_contacts(role=self.role, company=self.company, industry=self.industry)
+            error, result = svc.discover_contacts(role=self.role, company=self.company)
         else:
-            error, result = svc.discover_companies(industry=self.industry)
+            error, result = svc.discover_companies()
 
         if error:
             self.suggestions = f"Error: {error}"

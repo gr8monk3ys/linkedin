@@ -4,6 +4,8 @@ from datetime import datetime
 
 from linkedin.ai.client import generate_with_ai
 from linkedin.data.repository import ProfileRepo
+from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.types import Result
 
 
 class MarketService:
@@ -12,14 +14,14 @@ class MarketService:
         self._postings: list[dict] = []
         self._insights: list[dict] = []
 
-    def analyze_market(self, role: str = "", industry: str = "") -> tuple[str | None, str]:
+    def analyze_market(self, role: str = "", industry: str = "") -> Result:
         """Get AI market analysis for a role/industry."""
         profile = self.profiles.get()
         target_role = role or profile.get("target_role", "")
         target_industry = industry or profile.get("industries", "")
 
         if not target_role:
-            return "Set a target role in your profile or provide one.", ""
+            return Result("Set a target role in your profile or provide one.")
 
         prompt = f"""Provide a concise job market analysis for the following:
 
@@ -37,16 +39,17 @@ Include:
 Keep it actionable and under 400 words."""
 
         result = generate_with_ai(prompt, max_tokens=600)
-        return None, result
+        content, error = get_ai_text_or_error(result)
+        return Result(error, content)
 
-    def estimate_salary(self, role: str = "", location: str = "") -> tuple[str | None, str]:
+    def estimate_salary(self, role: str = "", location: str = "") -> Result:
         """Get AI salary estimate."""
         profile = self.profiles.get()
         target_role = role or profile.get("target_role", "")
         loc = location or profile.get("location", "US")
 
         if not target_role:
-            return "Set a target role in your profile or provide one.", ""
+            return Result("Set a target role in your profile or provide one.")
 
         prompt = f"""Estimate the salary range for:
 
@@ -64,15 +67,16 @@ Provide:
 Be specific with numbers. Keep under 300 words."""
 
         result = generate_with_ai(prompt, max_tokens=500)
-        return None, result
+        content, error = get_ai_text_or_error(result)
+        return Result(error, content)
 
-    def analyze_trends(self, industry: str = "") -> tuple[str | None, str]:
+    def analyze_trends(self, industry: str = "") -> Result:
         """Get AI hiring trend analysis."""
         profile = self.profiles.get()
         target_industry = industry or profile.get("industries", "")
 
         if not target_industry:
-            return "Set target industries in your profile or provide one.", ""
+            return Result("Set target industries in your profile or provide one.")
 
         prompt = f"""Analyze current hiring trends for:
 
@@ -89,7 +93,8 @@ Include:
 Keep it actionable and under 350 words."""
 
         result = generate_with_ai(prompt, max_tokens=500)
-        return None, result
+        content, error = get_ai_text_or_error(result)
+        return Result(error, content)
 
     def add_posting(self, posting: dict) -> dict:
         """Add a manually tracked job posting."""

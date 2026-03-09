@@ -6,6 +6,7 @@ pytest.importorskip("reflex")
 
 from unittest.mock import patch
 
+from linkedin.types import Result
 from tests.conftest import sample_company, sample_contact, sample_profile
 
 
@@ -137,7 +138,10 @@ class TestResearchState:
         state = ResearchState()  # type: ignore[call-arg]
         with (
             _patch_repos("linkedin.web.states.research_state", json_repos),
-            patch("linkedin.services.research_service.ResearchService.generate_ideas", return_value=("AI roles", "Idea list")),
+            patch(
+                "linkedin.services.research_service.ResearchService.generate_ideas",
+                return_value=Result(None, ("AI roles", "Idea list")),
+            ),
         ):
             state.generate_ideas()
 
@@ -151,7 +155,10 @@ class TestResearchState:
         state.post_topic = "Networking lessons"
         with (
             _patch_repos("linkedin.web.states.research_state", json_repos),
-            patch("linkedin.services.research_service.ResearchService.generate_post_draft", return_value="Draft post"),
+            patch(
+                "linkedin.services.research_service.ResearchService.generate_post_draft",
+                return_value=Result(None, "Draft post"),
+            ),
         ):
             state.generate_draft_post()
 
@@ -164,7 +171,10 @@ class TestResearchState:
         state = ResearchState()  # type: ignore[call-arg]
         with (
             _patch_repos("linkedin.web.states.research_state", json_repos),
-            patch("linkedin.services.research_service.ResearchService.generate_hashtags", return_value="#python #ai"),
+            patch(
+                "linkedin.services.research_service.ResearchService.generate_hashtags",
+                return_value=Result(None, "#python #ai"),
+            ),
         ):
             state.generate_hashtags()
 

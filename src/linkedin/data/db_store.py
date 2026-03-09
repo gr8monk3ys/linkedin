@@ -5,9 +5,9 @@ from datetime import datetime
 
 from sqlmodel import Session, select
 
-from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo, ResearchRepo
-from linkedin.models.base import Activity, Company, Contact, Draft, Profile, Research, get_session
-from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict
+from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo, ResearchRepo, TemplateRepo
+from linkedin.models.base import Activity, Company, Contact, Draft, Profile, Research, Template, get_session
+from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict, TemplateDict
 
 
 def _contact_to_dict(contact: Contact) -> ContactDict:
@@ -84,6 +84,20 @@ def _profile_to_dict(profile: Profile) -> ProfileDict:
         "industries": profile.industries,
         "location": profile.location,
         "updated_at": profile.updated_at.isoformat() if profile.updated_at else "",
+    }
+
+
+def _template_to_dict(template: Template) -> TemplateDict:
+    """Convert a Template model to a TemplateDict."""
+    return {
+        "id": template.id,
+        "name": template.name,
+        "template_type": template.template_type,
+        "content": template.content,
+        "variant": template.variant,
+        "usage_count": template.usage_count,
+        "response_count": template.response_count,
+        "created_at": template.created_at.isoformat() if template.created_at else "",
     }
 
 
@@ -362,3 +376,56 @@ class DbResearchRepo(ResearchRepo):
             research.data_json = json.dumps(data, default=str)
             research.updated_at = datetime.now()
             session.commit()
+
+
+class DbTemplateRepo(TemplateRepo):
+    def __init__(self, engine=None):
+        self._engine = engine
+
+    def _session(self) -> Session:
+        return get_session(self._engine)
+
+    def list_all(self) -> list[TemplateDict]:
+        with self._session() as session:
+            templates = session.exec(select(Template)).all()
+            return [_template_to_dict(template) for template in templates]
+
+    def get(self, template_id: int) -> TemplateDict | None:
+        with self._session() as session:
+            template = session.get(Template, template_id)
+            if not template:
+                return None
+            return _template_to_dict(template)
+
+    def add(self, template: TemplateDict) -> TemplateDict:
+        with self._session() as session:
+            db_template = Template(
+                name=template.get("name", ""),
+                template_type=template.get("template_type", ""),
+                content=template.get("content", ""),
+                variant=template.get("variant", "A"),
+                usage_count=template.get("usage_count", 0),
+                response_count=template.get("response_count", 0),
+            )
+            session.add(db_template)
+            session.commit()
+            session.refresh(db_template)
+            return _template_to_dict(db_template)
+
+    def update(self, template: TemplateDict) -> None:
+        with self._session() as session:
+            db_template = session.get(Template, template["id"])
+            if not db_template:
+                return
+            db_template.name = template.get("name", db_template.name)
+            db_template.template_type = template.get("template_type", db_template.template_type)
+            db_template.content = template.get("content", db_template.content)
+            db_template.variant = template.get("variant", db_template.variant)
+            db_template.usage_count = template.get("usage_count", db_template.usage_count)
+            db_template.response_count = template.get("response_count", db_template.response_count)
+            session.commit()
+
+    def next_id(self) -> int:
+        with self._session() as session:
+            templates = session.exec(select(Template)).all()
+            return len(templates) + 1

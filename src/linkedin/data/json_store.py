@@ -3,14 +3,15 @@
 import json
 from pathlib import Path
 
-from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo, ResearchRepo
-from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict
+from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo, ResearchRepo, TemplateRepo
+from linkedin.types import CompanyDict, ContactDict, DraftDict, ProfileDict, ResearchDict, TemplateDict
 
 DATA_DIR = Path.home() / ".linkedin-cli"
 PROFILE_FILE = DATA_DIR / "my_profile.json"
 CONTACTS_FILE = DATA_DIR / "contacts.json"
 COMPANIES_FILE = DATA_DIR / "companies.json"
 DRAFTS_FILE = DATA_DIR / "drafts.json"
+TEMPLATES_FILE = DATA_DIR / "templates.json"
 RESEARCH_FILE = DATA_DIR / "research.json"
 BACKUPS_DIR = DATA_DIR / "backups"
 
@@ -137,3 +138,28 @@ class JsonResearchRepo(ResearchRepo):
 
     def save(self, data: ResearchDict) -> None:
         save_json(RESEARCH_FILE, data)
+
+
+class JsonTemplateRepo(TemplateRepo):
+    def list_all(self) -> list[TemplateDict]:
+        return load_json(TEMPLATES_FILE)
+
+    def get(self, template_id: int) -> TemplateDict | None:
+        return next((t for t in self.list_all() if t["id"] == template_id), None)
+
+    def add(self, template: TemplateDict) -> TemplateDict:
+        templates = self.list_all()
+        templates.append(template)
+        save_json(TEMPLATES_FILE, templates)
+        return template
+
+    def update(self, template: TemplateDict) -> None:
+        templates = self.list_all()
+        for i, existing in enumerate(templates):
+            if existing["id"] == template["id"]:
+                templates[i] = template
+                break
+        save_json(TEMPLATES_FILE, templates)
+
+    def next_id(self) -> int:
+        return next_id(self.list_all())

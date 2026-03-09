@@ -43,8 +43,8 @@ class ResearchState(rx.State):
         self.loading = True
         contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
         svc = ResearchService(profile_repo, research_repo, draft_repo)
-        _focus_topic, ideas = svc.generate_ideas(self.post_topic or None)
-        self.post_ideas = ideas
+        error, payload = svc.generate_ideas(self.post_topic or None)
+        self.post_ideas = f"Error: {error}" if error else payload[1]
         self.loading = False
 
     @rx.event
@@ -53,7 +53,8 @@ class ResearchState(rx.State):
         self.loading = True
         contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
         svc = ResearchService(profile_repo, research_repo, draft_repo)
-        self.post_draft = svc.generate_post_draft(self.post_topic, self.post_style)
+        error, draft = svc.generate_post_draft(self.post_topic, self.post_style)
+        self.post_draft = f"Error: {error}" if error else draft
         self.loading = False
 
     @rx.event
@@ -62,5 +63,6 @@ class ResearchState(rx.State):
         self.loading = True
         contact_repo, company_repo, profile_repo, draft_repo, research_repo = create_repos()
         svc = ResearchService(profile_repo, research_repo, draft_repo)
-        self.hashtags = svc.generate_hashtags(self.post_topic or "professional networking")
+        error, hashtags = svc.generate_hashtags(self.post_topic or "professional networking")
+        self.hashtags = f"Error: {error}" if error else hashtags
         self.loading = False

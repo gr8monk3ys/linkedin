@@ -2,7 +2,8 @@
 
 from linkedin.ai.client import generate_with_ai
 from linkedin.data.repository import CompanyRepo, ContactRepo, ProfileRepo
-from linkedin.types import ProfileDict
+from linkedin.services._helpers import get_ai_text_or_error
+from linkedin.types import ProfileDict, Result
 
 
 class DiscoverService:
@@ -11,14 +12,14 @@ class DiscoverService:
         self.companies = company_repo
         self.contacts = contact_repo
 
-    def discover_contacts(self, company: str | None = None, role: str | None = None) -> tuple[str | None, str]:
-        """Returns (error_message, suggestions). error_message is None on success."""
+    def discover_contacts(self, company: str | None = None, role: str | None = None) -> Result:
+        """Returns Result(error, suggestions)."""
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return Result("Set up your profile first: linkedin profile setup")
 
         if not company and not role:
-            return "Specify --company or --role to get suggestions", ""
+            return Result("Specify --company or --role to get suggestions")
 
         companies_list = self.companies.list_all()
         all_contacts = self.contacts.list_all()
@@ -30,19 +31,21 @@ class DiscoverService:
             prompt = self._contact_by_role_prompt(profile, role, companies_list)
 
         suggestions = generate_with_ai(prompt, max_tokens=800)
-        return None, suggestions
+        suggestion_text, error = get_ai_text_or_error(suggestions)
+        return Result(error, suggestion_text)
 
-    def discover_companies(self) -> tuple[str | None, str]:
+    def discover_companies(self) -> Result:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return Result("Set up your profile first: linkedin profile setup")
 
         companies_list = self.companies.list_all()
         existing_companies = [c["name"] for c in companies_list]
 
         prompt = self._company_discovery_prompt(profile, existing_companies)
         suggestions = generate_with_ai(prompt, max_tokens=1000)
-        return None, suggestions
+        suggestion_text, error = get_ai_text_or_error(suggestions)
+        return Result(error, suggestion_text)
 
     def _contact_by_company_prompt(self, profile: ProfileDict, company: str, companies_list: list, existing_titles: list) -> str:
         tracked_company = next((c for c in companies_list if company.lower() in c["name"].lower()), None)

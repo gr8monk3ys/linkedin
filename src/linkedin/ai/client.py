@@ -5,7 +5,10 @@ def generate_with_ai(prompt: str, max_tokens: int = 500) -> str:
     """Generate text using Claude API."""
     try:
         import anthropic
+    except ImportError:
+        return "[AI generation failed: anthropic package not installed. Run: pip install anthropic]"
 
+    try:
         client = anthropic.Anthropic()  # Uses ANTHROPIC_API_KEY env var
 
         message = client.messages.create(

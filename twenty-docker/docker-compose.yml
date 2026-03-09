@@ -1,0 +1,44 @@
+services:
+  twenty-db:
+    image: twentycrm/twenty-postgres:latest
+    volumes:
+      - twenty-db-data:/bitnami/postgresql
+    environment:
+      POSTGRESQL_USERNAME: twenty
+      POSTGRESQL_PASSWORD: twenty-secret
+      POSTGRESQL_DATABASE: default
+
+  twenty-redis:
+    image: redis:7-alpine
+    volumes:
+      - twenty-redis-data:/data
+
+  twenty-server:
+    image: twentycrm/twenty:latest
+    ports:
+      - "3030:3000"
+    environment:
+      PORT: 3000
+      PG_DATABASE_URL: postgres://twenty:twenty-secret@twenty-db:5432/default
+      REDIS_URL: redis://twenty-redis:6379
+      SERVER_URL: http://localhost:3030
+      FRONT_AUTH_PROVIDER_GOOGLE_ENABLED: "false"
+      IS_SIGN_UP_DISABLED: "false"
+      ACCESS_TOKEN_SECRET: RDJ+ujIAxY4UgWlmioyk01aCEvYjuIoQcgdbnA/39Hs=
+      LOGIN_TOKEN_SECRET: cPPx+xywhvDLthkTv/oXBgR4zTaMd3GmztzzxQqF8Kc=
+      REFRESH_TOKEN_SECRET: RDJ+ujIAxY4UgWlmioyk01aCEvYjuIoQcgdbnA/39Hs=
+      FILE_TOKEN_SECRET: cPPx+xywhvDLthkTv/oXBgR4zTaMd3GmztzzxQqF8Kc=
+    depends_on:
+      - twenty-db
+      - twenty-redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 90s
+
+volumes:
+  twenty-db-data:
+  twenty-redis-data:

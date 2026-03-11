@@ -9,15 +9,20 @@ can be imported and tested without playwright installed.
 
 from __future__ import annotations
 
+from datetime import date
+
 from linkedin.ai.client import generate_with_ai
 from linkedin.ai.prompts import connection_request_prompt
 from linkedin.automation.config import AutomationConfig
 from linkedin.automation.rate_limiter import RateLimiter
 from linkedin.automation.safety import SafetyLimits
+from linkedin.data import json_store
 from linkedin.data.repository import CompanyRepo, ProfileRepo
 from linkedin.services._helpers import get_ai_text_or_error
 from linkedin.services.contact_service import ContactService
 from linkedin.types import ProfileDict
+
+AUTOMATION_SAFETY_STATE_FILE = json_store.DATA_DIR / "automation_safety_state.json"
 
 
 class AutomationService:
@@ -34,6 +39,53 @@ class AutomationService:
         self.companies = company_repo
         self.profiles = profile_repo
         self.config = config or AutomationConfig()
+        self._safety_day, self.safety = self._load_safety_state()
+
+    def _build_safety(self, state: dict | None = None) -> SafetyLimits:
+        """Create a safety tracker using configured caps and optional persisted counts."""
+        state = state if isinstance(state, dict) else {}
+        return SafetyLimits(
+            connections_sent=int(state.get("connections_sent", 0)),
+            messages_sent=int(state.get("messages_sent", 0)),
+            profile_views=int(state.get("profile_views", 0)),
+            searches=int(state.get("searches", 0)),
+            likes_given=int(state.get("likes_given", 0)),
+            comments_posted=int(state.get("comments_posted", 0)),
+            max_connections_per_day=self.config.max_connections_per_day,
+            max_messages_per_day=self.config.max_messages_per_day,
+        )
+
+    def _load_safety_state(self) -> tuple[str, SafetyLimits]:
+        """Load today's safety counters from disk, resetting automatically each day."""
+        today = date.today().isoformat()
+        state = json_store.load_json(AUTOMATION_SAFETY_STATE_FILE, {})
+        if not isinstance(state, dict) or state.get("day") != today:
+            return today, self._build_safety()
+        return today, self._build_safety(state)
+
+    def _current_safety(self) -> SafetyLimits:
+        """Return the active safety tracker, resetting counts on day rollover."""
+        today = date.today().isoformat()
+        if self._safety_day != today:
+            self._safety_day = today
+            self.safety = self._build_safety()
+            self._save_safety_state()
+        return self.safety
+
+    def _save_safety_state(self) -> None:
+        """Persist the current daily automation counters for later status checks."""
+        json_store.save_json(
+            AUTOMATION_SAFETY_STATE_FILE,
+            {
+                "day": self._safety_day,
+                "connections_sent": self.safety.connections_sent,
+                "messages_sent": self.safety.messages_sent,
+                "profile_views": self.safety.profile_views,
+                "searches": self.safety.searches,
+                "likes_given": self.safety.likes_given,
+                "comments_posted": self.safety.comments_posted,
+            },
+        )
 
     def run_connect(
         self,
@@ -50,42 +102,45 @@ class AutomationService:
         from linkedin.automation.browser import BrowserManager
         from linkedin.automation.linkedin_page import LinkedInPage
 
-        safety = SafetyLimits()
+        safety = self._current_safety()
         rate_limiter = RateLimiter(
             min_delay=self.config.min_delay_seconds,
             max_delay=self.config.max_delay_seconds,
         )
 
-        with BrowserManager(self.config) as browser:
-            # Step 1: Login
-            if not login_action(browser):
-                return [{"name": "", "company": "", "note": "", "success": False, "reason": "Login failed"}]
+        try:
+            with BrowserManager(self.config) as browser:
+                # Step 1: Login
+                if not login_action(browser):
+                    return [{"name": "", "company": "", "note": "", "success": False, "reason": "Login failed"}]
 
-            linkedin = LinkedInPage(browser.page)
+                linkedin = LinkedInPage(browser.page)
 
-            # Step 2: Build search queries
-            queries = self._build_search_queries()
-            if extra_queries:
-                for q in extra_queries:
-                    queries.append({"query": q, "network": "", "priority": 4})
+                # Step 2: Build search queries
+                queries = self._build_search_queries()
+                if extra_queries:
+                    for q in extra_queries:
+                        queries.append({"query": q, "network": "", "priority": 4})
 
-            # Step 3+4: Search and deduplicate
-            candidates = self._search_and_collect(linkedin, queries, safety, rate_limiter)
+                # Step 3+4: Search and deduplicate
+                candidates = self._search_and_collect(linkedin, queries, safety, rate_limiter)
 
-            # Step 5: Connect to each candidate
-            results = []
-            profile = self.profiles.get()
+                # Step 5: Connect to each candidate
+                results = []
+                profile = self.profiles.get()
 
-            for person in candidates[:limit]:
-                if not safety.can_send_connection():
-                    break
+                for person in candidates[:limit]:
+                    if not safety.can_send_connection():
+                        break
 
-                result = self._connect_to_person(
-                    linkedin, person, profile, safety, rate_limiter, dry_run
-                )
-                results.append(result)
+                    result = self._connect_to_person(
+                        linkedin, person, profile, safety, rate_limiter, dry_run
+                    )
+                    results.append(result)
 
-            return results
+                return results
+        finally:
+            self._save_safety_state()
 
     def _build_search_queries(self) -> list[dict]:
         """Generate search queries from CRM data.
@@ -277,67 +332,70 @@ class AutomationService:
         from linkedin.automation.browser import BrowserManager
         from linkedin.automation.linkedin_page import LinkedInPage
 
-        safety = SafetyLimits()
+        safety = self._current_safety()
         rate_limiter = RateLimiter(
             min_delay=self.config.min_delay_seconds,
             max_delay=self.config.max_delay_seconds,
         )
 
-        with BrowserManager(self.config) as browser:
-            if not login_action(browser):
-                return [{"author": "", "content_preview": "", "liked": False, "commented": False, "comment_text": "", "reason": "Login failed"}]
+        try:
+            with BrowserManager(self.config) as browser:
+                if not login_action(browser):
+                    return [{"author": "", "content_preview": "", "liked": False, "commented": False, "comment_text": "", "reason": "Login failed"}]
 
-            linkedin = LinkedInPage(browser.page)
+                linkedin = LinkedInPage(browser.page)
 
-            # Browse feed and collect posts
-            posts = linkedin.get_feed_posts(max_posts=limit)
-            if not posts:
-                return []
+                # Browse feed and collect posts
+                posts = linkedin.get_feed_posts(max_posts=limit)
+                if not posts:
+                    return []
 
-            profile = self.profiles.get()
-            comments_left = comment_count
-            results = []
+                profile = self.profiles.get()
+                comments_left = comment_count
+                results = []
 
-            for post in posts:
-                if not safety.can_like():
-                    break
+                for post in posts:
+                    if not safety.can_like():
+                        break
 
-                # Like the post
-                liked = like_post(
-                    linkedin,
-                    post["element_index"],
-                    rate_limiter=rate_limiter,
-                    safety=safety,
-                    dry_run=dry_run,
-                )
+                    # Like the post
+                    liked = like_post(
+                        linkedin,
+                        post["element_index"],
+                        rate_limiter=rate_limiter,
+                        safety=safety,
+                        dry_run=dry_run,
+                    )
 
-                # Comment if budget remains and post has text content
-                commented = False
-                comment_text = ""
-                if comments_left > 0 and post.get("content") and safety.can_comment():
-                    comment_text = self._generate_feed_comment(profile, post)
-                    if comment_text:
-                        commented = comment_on_post(
-                            linkedin,
-                            post["element_index"],
-                            comment_text,
-                            rate_limiter=rate_limiter,
-                            safety=safety,
-                            dry_run=dry_run,
-                        )
-                        if commented:
-                            comments_left -= 1
+                    # Comment if budget remains and post has text content
+                    commented = False
+                    comment_text = ""
+                    if comments_left > 0 and post.get("content") and safety.can_comment():
+                        comment_text = self._generate_feed_comment(profile, post)
+                        if comment_text:
+                            commented = comment_on_post(
+                                linkedin,
+                                post["element_index"],
+                                comment_text,
+                                rate_limiter=rate_limiter,
+                                safety=safety,
+                                dry_run=dry_run,
+                            )
+                            if commented:
+                                comments_left -= 1
 
-                content = post.get("content", "")
-                results.append({
-                    "author": post.get("author", ""),
-                    "content_preview": (content[:47] + "...") if len(content) > 50 else content,
-                    "liked": liked,
-                    "commented": commented,
-                    "comment_text": comment_text,
-                })
+                    content = post.get("content", "")
+                    results.append({
+                        "author": post.get("author", ""),
+                        "content_preview": (content[:47] + "...") if len(content) > 50 else content,
+                        "liked": liked,
+                        "commented": commented,
+                        "comment_text": comment_text,
+                    })
 
-            return results
+                return results
+        finally:
+            self._save_safety_state()
 
     def _generate_feed_comment(self, profile: ProfileDict | None, post: dict) -> str:
         """Generate an AI-personalized comment for a feed post."""
@@ -389,5 +447,4 @@ Write a comment that:
 
     def get_status(self) -> dict:
         """Return current safety limits summary."""
-        safety = SafetyLimits()
-        return safety.summary()
+        return self._current_safety().summary()

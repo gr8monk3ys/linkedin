@@ -24,24 +24,30 @@ class SafetyLimits:
     searches: int = 0
     likes_given: int = 0
     comments_posted: int = 0
+    max_connections_per_day: int = MAX_CONNECTIONS_PER_DAY
+    max_messages_per_day: int = MAX_MESSAGES_PER_DAY
+    max_profile_views_per_day: int = MAX_PROFILE_VIEWS_PER_DAY
+    max_searches_per_day: int = MAX_SEARCHES_PER_DAY
+    max_likes_per_day: int = MAX_LIKES_PER_DAY
+    max_comments_per_day: int = MAX_COMMENTS_PER_DAY
 
     def can_send_connection(self) -> bool:
-        return self.connections_sent < MAX_CONNECTIONS_PER_DAY
+        return self.connections_sent < self.max_connections_per_day
 
     def can_send_message(self) -> bool:
-        return self.messages_sent < MAX_MESSAGES_PER_DAY
+        return self.messages_sent < self.max_messages_per_day
 
     def can_view_profile(self) -> bool:
-        return self.profile_views < MAX_PROFILE_VIEWS_PER_DAY
+        return self.profile_views < self.max_profile_views_per_day
 
     def can_search(self) -> bool:
-        return self.searches < MAX_SEARCHES_PER_DAY
+        return self.searches < self.max_searches_per_day
 
     def can_like(self) -> bool:
-        return self.likes_given < MAX_LIKES_PER_DAY
+        return self.likes_given < self.max_likes_per_day
 
     def can_comment(self) -> bool:
-        return self.comments_posted < MAX_COMMENTS_PER_DAY
+        return self.comments_posted < self.max_comments_per_day
 
     def record_connection(self) -> None:
         self.connections_sent += 1
@@ -62,16 +68,16 @@ class SafetyLimits:
         self.comments_posted += 1
 
     def remaining_connections(self) -> int:
-        return max(0, MAX_CONNECTIONS_PER_DAY - self.connections_sent)
+        return max(0, self.max_connections_per_day - self.connections_sent)
 
     def remaining_messages(self) -> int:
-        return max(0, MAX_MESSAGES_PER_DAY - self.messages_sent)
+        return max(0, self.max_messages_per_day - self.messages_sent)
 
     def remaining_likes(self) -> int:
-        return max(0, MAX_LIKES_PER_DAY - self.likes_given)
+        return max(0, self.max_likes_per_day - self.likes_given)
 
     def remaining_comments(self) -> int:
-        return max(0, MAX_COMMENTS_PER_DAY - self.comments_posted)
+        return max(0, self.max_comments_per_day - self.comments_posted)
 
     def summary(self) -> dict[str, int]:
         return {

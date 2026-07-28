@@ -1,5 +1,9 @@
 # LinkedIn Job Hunt Assistant
 
+<p align="center">
+  <img src="docs/assets/hero.png" alt="linkedin preview" width="640">
+</p>
+
 A local CRM + AI-powered tool to accelerate your job search on LinkedIn.
 
 ## What It Does

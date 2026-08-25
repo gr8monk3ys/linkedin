@@ -65,6 +65,60 @@ def like_feed_posts(
     return liked
 
 
+def like_post_by_index(
+    linkedin: LinkedInPage,
+    post_index: int,
+    rate_limiter: RateLimiter | None = None,
+    safety: SafetyLimits | None = None,
+    dry_run: bool = False,
+) -> bool:
+    """Like a single feed post by index. Returns True on success."""
+    if safety and not safety.can_react():
+        return False
+
+    if rate_limiter:
+        rate_limiter.wait()
+
+    if dry_run:
+        if safety:
+            safety.record_reaction()
+        return True
+
+    success = linkedin.like_post(post_index)
+    if success and safety:
+        safety.record_reaction()
+    return success
+
+
+def comment_on_post(
+    linkedin: LinkedInPage,
+    post_index: int,
+    comment_text: str,
+    rate_limiter: RateLimiter | None = None,
+    safety: SafetyLimits | None = None,
+    dry_run: bool = False,
+) -> bool:
+    """Post a comment on a feed post by index. Returns True on success."""
+    if not comment_text.strip():
+        return False
+
+    if safety and not safety.can_comment():
+        return False
+
+    if rate_limiter:
+        rate_limiter.wait()
+
+    if dry_run:
+        if safety:
+            safety.record_comment()
+        return True
+
+    success = linkedin.comment_on_post(post_index, comment_text)
+    if success and safety:
+        safety.record_comment()
+    return success
+
+
 def _clamp_to_budget(count: int, safety: SafetyLimits | None) -> int:
     if safety is None:
         return count

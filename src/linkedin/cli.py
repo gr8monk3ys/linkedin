@@ -48,6 +48,7 @@ from linkedin.constants import (
 from linkedin.data.factory import create_repos
 from linkedin.services.analytics_service import AnalyticsService
 from linkedin.services.application_service import ApplicationService
+from linkedin.services.automation_service import AutomationService
 from linkedin.services.calendar_service import ContentCalendarService
 from linkedin.services.company_service import CompanyService
 from linkedin.services.contact_service import ContactService
@@ -112,6 +113,7 @@ _application_svc = ApplicationService(_application_repo, _profile_repo, _contact
 _interview_svc = InterviewService(_application_repo, _interview_prep_repo, _profile_repo)
 _conversation_svc = ConversationService(_conversation_repo, _contact_repo)
 _calendar_svc = ContentCalendarService(_calendar_repo)
+_automation_svc = AutomationService(_profile_repo)
 
 NEXT_ACTION_LABELS = {
     "follow_up_overdue": "Follow up (overdue)",
@@ -4793,6 +4795,7 @@ def automate_limits():
     table.add_row("Messages", str(summary["messages_sent"]), str(summary["messages_remaining"]))
     table.add_row("Posts", str(summary["posts_created"]), str(summary["posts_remaining"]))
     table.add_row("Reactions", str(summary["reactions"]), str(summary["reactions_remaining"]))
+    table.add_row("Comments", str(summary["comments_posted"]), str(summary["comments_remaining"]))
     table.add_row("Easy Applies", str(summary["easy_applies"]), str(summary["easy_applies_remaining"]))
     table.add_row("Profile views", str(summary["profile_views"]), "—")
     table.add_row("Searches", str(summary["searches"]), "—")
@@ -5012,12 +5015,20 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
 @click.option("--contact-id", "contact_ids", type=int, multiple=True, help="Like recent posts of this contact (repeatable)")
 @click.option("--feed", is_flag=True, help="Like posts on your home feed instead")
 @click.option("--likes", default=2, help="Likes per target (default 2)")
+@click.option("--comments", default=0, help="With --feed: also leave up to N AI-personalized comments")
 @click.option("--dry-run", is_flag=True, help="Navigate but do not click Like")
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
-def automate_engage(contact_ids, feed, likes, dry_run, headless):
-    """Warm up target contacts by liking their recent posts (or engage your feed)."""
+def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
+    """Warm up target contacts by liking their recent posts (or engage your feed).
+
+    With --feed --comments N, browses the feed and leaves short AI-generated
+    comments tailored to each post and your profile, on top of liking.
+    """
     if not contact_ids and not feed:
         console.print("[red]Pass --contact-id (repeatable) and/or --feed.[/red]")
+        raise SystemExit(1)
+    if comments and not feed:
+        console.print("[red]--comments requires --feed (comments run on the feed pipeline).[/red]")
         raise SystemExit(1)
     targets = []
     for cid in contact_ids:
@@ -5041,7 +5052,25 @@ def automate_engage(contact_ids, feed, likes, dry_run, headless):
             )
             total += liked
             console.print(f"  {contact['name']}: {'would like' if dry_run else 'liked'} {liked} post(s)")
-        if feed:
+        if feed and comments:
+            results = _automation_svc.engage_feed(
+                linkedin_page,
+                limit=max(likes, comments),
+                comment_count=comments,
+                safety=safety,
+                rate_limiter=limiter,
+                dry_run=dry_run,
+            )
+            liked = sum(1 for r in results if r["liked"])
+            commented = sum(1 for r in results if r["commented"])
+            total += liked
+            for r in results:
+                marks = ("👍" if r["liked"] else "—") + (" 💬" if r["commented"] else "")
+                console.print(f"  {marks} {r['author']}: {r['content_preview']}")
+                if r["comment_text"]:
+                    console.print(f"      [dim]{r['comment_text']}[/dim]")
+            console.print(f"  Feed: {'would like' if dry_run else 'liked'} {liked}, {'would comment' if dry_run else 'commented'} {commented}")
+        elif feed:
             liked = auto["engage"].like_feed_posts(linkedin_page, count=likes, rate_limiter=limiter, safety=safety, dry_run=dry_run)
             total += liked
             console.print(f"  Feed: {'would like' if dry_run else 'liked'} {liked} post(s)")

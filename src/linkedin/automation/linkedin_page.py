@@ -242,6 +242,104 @@ class LinkedInPage:
         return liked
 
     # -------------------------------------------------------------------------
+    # Feed posts (index-addressed, for like + comment flows)
+    # -------------------------------------------------------------------------
+
+    FEED_CARD_SELECTOR = "div.feed-shared-update-v2"
+
+    def get_feed_posts(self, max_posts: int = 10) -> list[dict]:
+        """Scroll the feed and collect post data.
+
+        Returns list of dicts: {"author", "headline", "content", "element_index"}.
+        element_index addresses the card for like_post/comment_on_post.
+        """
+        posts: list[dict] = []
+        seen: set[str] = set()
+
+        try:
+            self.goto_feed()
+            self.page.wait_for_load_state("networkidle", timeout=10000)
+
+            scroll_attempts = 0
+            max_scrolls = max_posts * 2
+            while len(posts) < max_posts and scroll_attempts < max_scrolls:
+                cards = self.page.locator(self.FEED_CARD_SELECTOR)
+                for i in range(cards.count()):
+                    if len(posts) >= max_posts:
+                        break
+                    card = cards.nth(i)
+                    entry: dict = {"element_index": i, "author": "", "headline": "", "content": ""}
+
+                    author_el = card.locator(".update-components-actor__name span[aria-hidden='true']").first
+                    if author_el.count() > 0:
+                        entry["author"] = (author_el.text_content() or "").strip()
+
+                    key = f"{entry['author']}_{i}"
+                    if key in seen:
+                        continue
+                    seen.add(key)
+
+                    headline_el = card.locator(".update-components-actor__description span[aria-hidden='true']").first
+                    if headline_el.count() > 0:
+                        entry["headline"] = (headline_el.text_content() or "").strip()
+
+                    content_el = card.locator(".feed-shared-update-v2__description, .update-components-text").first
+                    if content_el.count() > 0:
+                        entry["content"] = (content_el.text_content() or "").strip()[:500]
+
+                    posts.append(entry)
+
+                self.page.evaluate("window.scrollBy(0, 800)")
+                self.page.wait_for_timeout(1000)
+                scroll_attempts += 1
+        except Exception:
+            pass
+        return posts
+
+    def like_post(self, post_index: int) -> bool:
+        """Like a feed post by index. Skips already-liked posts. Returns True on success."""
+        try:
+            cards = self.page.locator(self.FEED_CARD_SELECTOR)
+            if post_index >= cards.count():
+                return False
+            card = cards.nth(post_index)
+            like_btn = card.get_by_role("button", name=re.compile(r"^React Like|^Like\b", re.I))
+            if like_btn.count() == 0:
+                return False
+            if like_btn.first.get_attribute("aria-pressed") == "true":
+                return False
+            like_btn.first.click()
+            return True
+        except Exception:
+            return False
+
+    def comment_on_post(self, post_index: int, comment_text: str) -> bool:
+        """Post a comment on a feed post by index. Returns True on success."""
+        try:
+            cards = self.page.locator(self.FEED_CARD_SELECTOR)
+            if post_index >= cards.count():
+                return False
+            card = cards.nth(post_index)
+
+            comment_btn = card.get_by_role("button", name=re.compile(r"^Comment\b", re.I))
+            if comment_btn.count() == 0:
+                return False
+            comment_btn.first.click()
+
+            textbox = card.get_by_role("textbox", name=re.compile("Add a comment", re.I))
+            textbox.wait_for(timeout=5000)
+            textbox.fill(comment_text)
+
+            post_btn = card.get_by_role("button", name=re.compile(r"^Post\b", re.I))
+            if post_btn.count() == 0:
+                return False
+            post_btn.first.click()
+            self.page.wait_for_timeout(1000)
+            return True
+        except Exception:
+            return False
+
+    # -------------------------------------------------------------------------
     # Profile editing (own profile)
     # -------------------------------------------------------------------------
 

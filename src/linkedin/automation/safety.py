@@ -17,6 +17,7 @@ MAX_PROFILE_VIEWS_PER_DAY = 50
 MAX_SEARCHES_PER_DAY = 30
 MAX_POSTS_PER_DAY = 3
 MAX_REACTIONS_PER_DAY = 30
+MAX_COMMENTS_PER_DAY = 15
 MAX_EASY_APPLIES_PER_DAY = 15
 MAX_SESSION_MINUTES = 30
 MIN_DELAY_SECONDS = 3.0
@@ -36,6 +37,7 @@ class SafetyLimits:
     searches: int = 0
     posts_created: int = 0
     reactions: int = 0
+    comments_posted: int = 0
     easy_applies: int = 0
 
     def can_send_connection(self) -> bool:
@@ -55,6 +57,9 @@ class SafetyLimits:
 
     def can_react(self) -> bool:
         return self.reactions < MAX_REACTIONS_PER_DAY
+
+    def can_comment(self) -> bool:
+        return self.comments_posted < MAX_COMMENTS_PER_DAY
 
     def can_easy_apply(self) -> bool:
         return self.easy_applies < MAX_EASY_APPLIES_PER_DAY
@@ -83,6 +88,10 @@ class SafetyLimits:
         self.reactions += 1
         self._persist()
 
+    def record_comment(self) -> None:
+        self.comments_posted += 1
+        self._persist()
+
     def record_easy_apply(self) -> None:
         self.easy_applies += 1
         self._persist()
@@ -102,6 +111,9 @@ class SafetyLimits:
     def remaining_reactions(self) -> int:
         return max(0, MAX_REACTIONS_PER_DAY - self.reactions)
 
+    def remaining_comments(self) -> int:
+        return max(0, MAX_COMMENTS_PER_DAY - self.comments_posted)
+
     def remaining_easy_applies(self) -> int:
         return max(0, MAX_EASY_APPLIES_PER_DAY - self.easy_applies)
 
@@ -117,6 +129,8 @@ class SafetyLimits:
             "posts_remaining": self.remaining_posts(),
             "reactions": self.reactions,
             "reactions_remaining": self.remaining_reactions(),
+            "comments_posted": self.comments_posted,
+            "comments_remaining": self.remaining_comments(),
             "easy_applies": self.easy_applies,
             "easy_applies_remaining": self.remaining_easy_applies(),
         }
@@ -129,6 +143,7 @@ _COUNTER_FIELDS = (
     "searches",
     "posts_created",
     "reactions",
+    "comments_posted",
     "easy_applies",
 )
 

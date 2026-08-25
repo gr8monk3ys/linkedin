@@ -209,6 +209,7 @@ linkedin-cli automate post --calendar-id 1            # Publish a scheduled post
 linkedin-cli automate post --text "Shipped a thing"   # Ad-hoc post (asks for confirmation)
 linkedin-cli automate engage --contact-id 1 --contact-id 2 --likes 2  # Warm up targets
 linkedin-cli automate engage --feed --likes 5         # Like posts on your feed
+linkedin-cli automate engage --feed --likes 5 --comments 2  # ...and leave AI-personalized comments
 
 # Profile appearance
 linkedin-cli automate sync-profile --headline-from-profile          # Push local profile headline
@@ -220,7 +221,7 @@ linkedin-cli automate easy-apply 1 --submit     # Actually submit, with the atta
 ```
 
 Daily safety caps (persisted across runs in `~/.linkedin-cli/automation_usage.json`):
-20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies.
+20 connections, 25 messages, 3 posts, 30 reactions, 15 comments, 15 Easy Applies.
 
 ### Resume Repo Integration
 

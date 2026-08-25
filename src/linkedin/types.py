@@ -108,6 +108,10 @@ class ApplicationDict(TypedDict, total=False):
     notes: str
     created_at: str
     history: list[ApplicationEventDict]
+    resume_variant: str
+    resume_path: str
+    cover_letter_path: str
+    source: str          # manual|autoapply|linkedin_easy_apply
 
 
 class MessageDict(TypedDict, total=False):

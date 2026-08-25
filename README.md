@@ -4,14 +4,22 @@ A local CRM + AI-powered tool to accelerate your job search on LinkedIn.
 
 ## What It Does
 
-**100% legal, no LinkedIn automation** - This is a personal productivity tool that:
+A personal productivity tool with an optional browser-automation layer:
 
 1. **Companies** - Track target companies for networking
 2. **CRM** - Track people you want to connect with, their status, follow-ups
 3. **AI Drafts** - Generate personalized connection requests, messages, intro requests, and more
 4. **Discovery** - AI-powered suggestions for who to connect with
 5. **Content Research** - Get post ideas, engagement strategies, and draft posts
-6. **Data Management** - Import, export, and backup your data
+6. **Applications** - Track job applications, linked to resume variants from your resume repo
+7. **Browser Automation** (optional) - Drive your own LinkedIn session: search, connect, message, post, like, sync your profile, Easy Apply
+8. **Data Management** - Import, export, and backup your data
+
+> ⚠️ The `automate` commands drive a real browser against your own LinkedIn
+> account. Browser automation violates LinkedIn's User Agreement and can get
+> an account restricted. Conservative daily limits, human-like delays, and
+> confirmation prompts are built in, but use it deliberately and at your own
+> risk. Everything else in this tool is plain local CRM + AI drafting.
 
 ## Quick Start
 
@@ -179,12 +187,61 @@ linkedin-cli calendar mark-posted 1 [--date 2026-03-02]
 linkedin-cli calendar stats
 ```
 
-### LinkedIn Auto-Import (requires `uv sync --extra automation`)
+### Browser Automation (requires `uv sync --extra automation` + `uv run playwright install chromium`)
 ```bash
-linkedin-cli automate search --query "ML Engineer at Stripe" --limit 20       # Preview results
+# One-time setup
+linkedin-cli automate setup                 # Store credentials in the system keyring
+linkedin-cli automate login                 # Log in (headful; handles 2FA) and save the session
+linkedin-cli automate limits                # Today's usage vs daily safety caps
+
+# Import people into the CRM
+linkedin-cli automate search --query "ML Engineer at Stripe" --limit 20         # Preview results
 linkedin-cli automate import-search --query "ML Engineer at Stripe" --limit 20  # Import to CRM
 linkedin-cli automate profile https://linkedin.com/in/username                  # Import single profile
+
+# Outreach (uses the contact's linkedin_url; updates pipeline status on success)
+linkedin-cli automate connect 1 --draft-id 3          # Send connection request w/ AI draft as note
+linkedin-cli automate connect 1 --note "Hi!" --dry-run
+linkedin-cli automate message 1 --draft-id 4          # Message a connected contact
+
+# Content + engagement
+linkedin-cli automate post --calendar-id 1            # Publish a scheduled post, mark it posted
+linkedin-cli automate post --text "Shipped a thing"   # Ad-hoc post (asks for confirmation)
+linkedin-cli automate engage --contact-id 1 --contact-id 2 --likes 2  # Warm up targets
+linkedin-cli automate engage --feed --likes 5         # Like posts on your feed
+
+# Profile appearance
+linkedin-cli automate sync-profile --headline-from-profile          # Push local profile headline
+linkedin-cli automate sync-profile --about-file about.txt --dry-run # Push a new About section
+
+# Applying (see Resume Repo Integration below)
+linkedin-cli automate easy-apply 1              # Walk Easy Apply, stop at review step
+linkedin-cli automate easy-apply 1 --submit     # Actually submit, with the attached resume PDF
 ```
+
+Daily safety caps (persisted across runs in `~/.linkedin-cli/automation_usage.json`):
+20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies.
+
+### Resume Repo Integration
+
+Job applications link to resume variants built by your resume repository
+(the repo with `variants/<slug>/`, `output/<slug>-resume.pdf`, and the
+`autoapply` pipeline). Point the CLI at your local checkout:
+
+```bash
+export LINKEDIN_RESUME_REPO=~/resume    # or pass --resume-repo per command
+
+linkedin-cli applications suggest-resume 1     # Rank variants against the JD (skills.tex vs jd_text)
+linkedin-cli applications attach-resume 1      # Attach best-matching variant + built PDFs
+linkedin-cli applications attach-resume 1 --variant ai-engineer
+linkedin-cli applications import-autoapply     # Pull submitted/interview/offer apps from autoapply's state.db
+linkedin-cli applications import-autoapply --include-queued
+```
+
+The division of labor: the resume repo owns resume artifacts and broad ATS
+auto-apply (Greenhouse/Lever/Ashby); this repo owns networking, LinkedIn-side
+automation (including Easy Apply with the right variant PDF), and unified
+application tracking.
 
 ### Data Management
 ```bash
@@ -200,6 +257,18 @@ linkedin-cli data backups           # List available backups
 linkedin-cli data verify-backup backup.zip  # Verify an existing backup archive
 linkedin-cli data restore backup.zip  # Restore from backup
 linkedin-cli data restore backup.zip --dry-run  # Validate restore without writing files
+```
+
+### Analytics & Profile Optimization
+```bash
+linkedin-cli analytics summary       # Response rates, velocity, source effectiveness
+linkedin-cli analytics conversion    # Pipeline conversion funnel
+linkedin-cli analytics velocity      # Weekly outreach velocity
+linkedin-cli optimize headline       # AI headline suggestions
+linkedin-cli optimize about          # AI About-section rewrite
+linkedin-cli optimize skills         # AI skills-list suggestions
+linkedin-cli optimize full           # Full profile optimization report
+# Then push the result live: linkedin-cli automate sync-profile --headline "..." --about-file about.txt
 ```
 
 ### Dashboard
@@ -318,6 +387,12 @@ Everything is stored locally in `~/.linkedin-cli/`:
 ├── templates.json    # Reusable templates + experiment stats
 ├── research.json     # Saved ideas
 ├── job_postings.json # Tracked opportunities + profile match scores
+├── applications.json # Job application tracking
+├── conversations.json # Message threads per contact
+├── content_calendar.json # Scheduled posts
+├── interview_prep.json # Saved interview prep
+├── automation_usage.json # Daily browser-automation counters
+├── li_session.json   # Saved LinkedIn browser session (cookies)
 ├── run_daily_state.json # Completed idempotency keys
 ├── run_daily.log.jsonl  # Structured run history
 ├── run_daily.lock    # Active run lock (ephemeral)

@@ -7,10 +7,14 @@ from datetime import datetime
 from pathlib import Path
 
 from linkedin.data.json_store import (
+    APPLICATIONS_FILE,
     BACKUPS_DIR,
+    CALENDAR_FILE,
     COMPANIES_FILE,
     CONTACTS_FILE,
+    CONVERSATIONS_FILE,
     DRAFTS_FILE,
+    INTERVIEW_PREP_FILE,
     JOB_POSTINGS_FILE,
     PROFILE_FILE,
     RESEARCH_FILE,
@@ -78,8 +82,10 @@ class DataService:
                 reader = csv.DictReader(f)
                 imported = []
                 for row in reader:
-                    if "id" in row:
-                        row["id"] = int(row["id"]) if row["id"] else len(existing) + len(imported) + 1
+                    if row.get("id"):
+                        row["id"] = int(row["id"])
+                    else:
+                        row["id"] = len(existing) + len(imported) + 1
                     if "company_id" in row and row["company_id"]:
                         row["company_id"] = int(row["company_id"])
                     else:
@@ -113,8 +119,10 @@ class DataService:
                 reader = csv.DictReader(f)
                 imported = []
                 for row in reader:
-                    if "id" in row:
-                        row["id"] = int(row["id"]) if row["id"] else len(existing) + len(imported) + 1
+                    if row.get("id"):
+                        row["id"] = int(row["id"])
+                    else:
+                        row["id"] = len(existing) + len(imported) + 1
                     row.setdefault("key_people_to_find", [])
                     row.setdefault("created_at", datetime.now().isoformat())
                     imported.append(row)
@@ -148,6 +156,10 @@ class DataService:
             RESEARCH_FILE,
             TEMPLATES_FILE,
             JOB_POSTINGS_FILE,
+            APPLICATIONS_FILE,
+            CONVERSATIONS_FILE,
+            CALENDAR_FILE,
+            INTERVIEW_PREP_FILE,
             RUN_DAILY_STATE_FILE,
             RUN_DAILY_LOG_FILE,
         ]

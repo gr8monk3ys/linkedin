@@ -6,6 +6,16 @@ from datetime import datetime, timedelta
 from linkedin.data.repository import ContactRepo, DraftRepo
 
 
+def _parse_created_at(value: str) -> datetime | None:
+    """Parse a created_at timestamp defensively (imported data may carry 'Z' or offsets)."""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    # Normalize to naive local-style timestamps so comparisons with now() work
+    return parsed.replace(tzinfo=None)
+
+
 class AnalyticsService:
     def __init__(self, contact_repo: ContactRepo, draft_repo: DraftRepo):
         self.contacts = contact_repo
@@ -40,10 +50,11 @@ class AnalyticsService:
         # Outreach velocity — contacts added per week
         now = datetime.now()
         week_ago = now - timedelta(days=7)
-        recent = sum(
-            1 for c in contacts
-            if c.get("created_at") and datetime.fromisoformat(c["created_at"]) > week_ago
-        )
+        recent = 0
+        for c in contacts:
+            created = _parse_created_at(c.get("created_at") or "")
+            if created and created > week_ago:
+                recent += 1
         velocity = f"{recent}/week"
 
         # Source effectiveness
@@ -110,11 +121,11 @@ class AnalyticsService:
         for i in range(weeks - 1, -1, -1):
             week_start = now - timedelta(weeks=i + 1)
             week_end = now - timedelta(weeks=i)
-            count = sum(
-                1 for c in contacts
-                if c.get("created_at")
-                and week_start < datetime.fromisoformat(c["created_at"]) <= week_end
-            )
+            count = 0
+            for c in contacts:
+                created = _parse_created_at(c.get("created_at") or "")
+                if created and week_start < created <= week_end:
+                    count += 1
             label = week_end.strftime("%b %d")
             velocity.append({"week": label, "contacts": count})
 

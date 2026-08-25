@@ -94,6 +94,25 @@ class ApplicationService:
         self.applications.update(app)
         return None, app
 
+    def attach_resume(
+        self,
+        application_id: int,
+        variant: str,
+        resume_path: str = "",
+        cover_letter_path: str = "",
+    ) -> tuple[str | None, ApplicationDict | None]:
+        """Record which resume variant/PDF backs this application."""
+        app = self.applications.get(application_id)
+        if not app:
+            return f"Application #{application_id} not found.", None
+        app["resume_variant"] = variant
+        if resume_path:
+            app["resume_path"] = resume_path
+        if cover_letter_path:
+            app["cover_letter_path"] = cover_letter_path
+        self.applications.update(app)
+        return None, app
+
     def delete(self, application_id: int) -> bool:
         return self.applications.delete(application_id)
 

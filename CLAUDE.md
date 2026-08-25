@@ -56,7 +56,7 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 **Services** (`src/linkedin/services/`) — All business logic. Accept/return plain dicts:
 - `contact_service.py` — CRUD, pipeline advancement, next-actions, outreach campaign management, duplicate detection + merge
 - `company_service.py`, `profile_service.py` — CRUD
-- `draft_service.py` — AI draft generation with offline fallback templates (connection, message, intro, thank you, follow-up, batch). Fallback controlled by `LINKEDIN_DRAFT_FALLBACK` env var.
+- `draft_service.py` — AI draft generation with offline fallback templates (connection, message, intro, thank you, follow-up, batch). Fallback controlled by `LINKEDIN_AI_FALLBACK_ENABLED` env var.
 - `application_service.py` — Job application lifecycle, AI tailor-resume / cover-letter / skills-gap
 - `interview_service.py` — AI prep (questions+STAR), company research briefing, STAR scaffolds, questions-to-ask
 - `conversation_service.py` — Per-contact message thread logging + plain-text export
@@ -67,11 +67,12 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 - `optimizer_service.py` — AI headline/about/skills/full profile optimization
 - `template_service.py` — `{{placeholder}}` templates, A/B testing, response tracking, auto-outcome recording
 - `data_service.py` — CSV/JSON import/export, backup create/verify/restore (with path-traversal protection)
+- `resume_service.py` — Bridge to the resume repo checkout (`LINKEDIN_RESUME_REPO` env var): variant discovery, `skills.tex` parsing, JD→variant matching, built-PDF resolution, autoapply `state.db` import. Stdlib only — never imports resume repo code.
 - `dashboard_service.py`, `analytics_service.py` — Overview aggregation, pipeline conversion, response rates
 
 **Web UI** (`src/linkedin/web/`) — Reflex SaaS dashboard. Pages under `pages/`, Reflex State subclasses under `states/`.
 
-**Automation** (`src/linkedin/automation/`) — Playwright-based browser automation with session persistence, keyring credentials, rate limiting, and daily safety limits (20 connections, 25 messages).
+**Automation** (`src/linkedin/automation/`) — Playwright-based browser automation with session persistence, keyring credentials, rate limiting, and per-day safety limits persisted to `~/.linkedin-cli/automation_usage.json` (20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies). Actions live in `actions/` (connect, message, scrape, search, post, engage, profile_sync, easy_apply) and must stay importable **without** Playwright installed — import `LinkedInPage` only under `TYPE_CHECKING` (CI installs only `--extra dev`). The CLI `automate` group lazy-imports the stack via `_require_automation()`; CLI tests patch `_require_automation`/`_open_linkedin_session` in `linkedin.cli`.
 
 **Key patterns:**
 - Services are instantiated with their repos at module level in `cli.py` and reused across commands.
@@ -96,6 +97,9 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 - `test_db_store.py`, `test_json_store.py`, `test_factory.py` — Storage layer tests.
 - `test_analytics.py`, `test_market.py`, `test_optimizer.py`, `test_templates.py` — Feature-specific tests.
 - `test_automation.py`, `test_automation_scrape.py` — Automation config and action tests.
+- `test_automation_actions.py` — Post/engage/profile-sync/easy-apply actions + persistent safety limits (MagicMock page objects, no Playwright).
+- `test_resume_service.py` — Resume repo bridge (builds a fake checkout + autoapply SQLite db in tmp_path).
+- `test_cli_automate.py` — CLI tests for the `automate` group and resume-repo application commands.
 
 **Notes:**
 - When adding records via `repo.add()` directly, include an `id` field. When using service methods (e.g. `add_contact()`), id is auto-generated.

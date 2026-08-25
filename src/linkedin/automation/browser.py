@@ -34,8 +34,10 @@ class BrowserManager:
             ),
         }
 
-        if self.config.user_data_dir:
-            context_kwargs["storage_state"] = self._load_storage_state()
+        if self.config.cookies_path:
+            storage_state = self._load_storage_state()
+            if storage_state:
+                context_kwargs["storage_state"] = storage_state
 
         self._context = self._browser.new_context(**context_kwargs)
         self._context.set_default_timeout(self.config.page_timeout_ms)

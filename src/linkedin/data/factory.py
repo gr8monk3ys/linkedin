@@ -1,7 +1,22 @@
-"""Factory for selecting data backend (JSON or Database)."""
+"""Factory for constructing the repository set.
 
-import os
+Storage is JSON files under ~/.linkedin-cli. A SQLModel/Postgres backend existed
+behind LINKEDIN_BACKEND=db until 2026-08-29 and was removed: it was last used in
+February, and four of its nine repositories silently fell back to JSON, so
+enabling it split the dataset across two stores.
+"""
 
+from linkedin.data.json_store import (
+    JsonApplicationRepo,
+    JsonCalendarRepo,
+    JsonCompanyRepo,
+    JsonContactRepo,
+    JsonConversationRepo,
+    JsonDraftRepo,
+    JsonInterviewPrepRepo,
+    JsonProfileRepo,
+    JsonResearchRepo,
+)
 from linkedin.data.repository import (
     ApplicationRepo,
     CalendarRepo,
@@ -15,10 +30,6 @@ from linkedin.data.repository import (
 )
 
 
-def get_backend() -> str:
-    return os.environ.get("LINKEDIN_BACKEND", "json").lower()
-
-
 def create_repos() -> tuple[
     ContactRepo,
     CompanyRepo,
@@ -30,50 +41,6 @@ def create_repos() -> tuple[
     CalendarRepo,
     InterviewPrepRepo,
 ]:
-    backend = get_backend()
-
-    if backend == "db":
-        from linkedin.data.db_store import (
-            DbCompanyRepo,
-            DbContactRepo,
-            DbDraftRepo,
-            DbProfileRepo,
-            DbResearchRepo,
-        )
-        from linkedin.models.base import create_tables
-
-        create_tables()
-        # DB store stubs for new repos — fall back to JSON for now
-        from linkedin.data.json_store import (
-            JsonApplicationRepo,
-            JsonCalendarRepo,
-            JsonConversationRepo,
-            JsonInterviewPrepRepo,
-        )
-        return (
-            DbContactRepo(),
-            DbCompanyRepo(),
-            DbProfileRepo(),
-            DbDraftRepo(),
-            DbResearchRepo(),
-            JsonApplicationRepo(),
-            JsonConversationRepo(),
-            JsonCalendarRepo(),
-            JsonInterviewPrepRepo(),
-        )
-
-    from linkedin.data.json_store import (
-        JsonApplicationRepo,
-        JsonCalendarRepo,
-        JsonCompanyRepo,
-        JsonContactRepo,
-        JsonConversationRepo,
-        JsonDraftRepo,
-        JsonInterviewPrepRepo,
-        JsonProfileRepo,
-        JsonResearchRepo,
-    )
-
     return (
         JsonContactRepo(),
         JsonCompanyRepo(),

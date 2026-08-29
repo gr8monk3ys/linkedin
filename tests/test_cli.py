@@ -509,6 +509,55 @@ class TestDashboard:
         payload = json.loads(result.output)
         assert payload["status"] == "skipped_locked"
 
+    def test_run_daily_reports_no_actions_when_pipeline_is_stalled(self, runner, temp_data_dir):
+        """A planner that finds nothing while contacts are in play must not report success.
+
+        This is the exact shape of the 136 consecutive green runs that produced
+        zero drafts: contacts present, actions empty, status "success", exit 0.
+        """
+        runner.invoke(cli, ["contacts", "add"], input="John Doe\nEngineer\nTestCo\nurl\nNotes\n")
+        # Strip every date so no rule can fire, reproducing the stalled state.
+        contacts_file = temp_data_dir / "contacts.json"
+        rows = json.loads(contacts_file.read_text())
+        for row in rows:
+            row["status"] = "messaged"
+            row["created_at"] = None
+            row["last_contact"] = None
+            row["follow_up_date"] = None
+        contacts_file.write_text(json.dumps(rows))
+
+        with patch("linkedin.cli._contact_svc.get_next_actions", return_value=[]):
+            result = runner.invoke(cli, ["run-daily", "--json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.output)
+        assert payload["status"] == "no_actions"
+        assert "no follow-up date" in payload["reason"]
+        assert payload["stalled_contact_ids"] == [1]
+
+    def test_run_daily_succeeds_with_an_empty_pipeline(self, runner, temp_data_dir):
+        """No contacts at all is a legitimately quiet day, not a stall."""
+        result = runner.invoke(cli, ["run-daily", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output)["status"] == "success"
+
+    def test_run_daily_succeeds_when_everything_is_scheduled_ahead(self, runner, temp_data_dir):
+        """Contacts all due in the future is quiet, not stalled — it must not alarm."""
+        runner.invoke(cli, ["contacts", "add"], input="John Doe\nEngineer\nTestCo\nurl\nNotes\n")
+        future = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
+        runner.invoke(cli, ["contacts", "remind", "1", "--date", future])
+        contacts_file = temp_data_dir / "contacts.json"
+        rows = json.loads(contacts_file.read_text())
+        rows[0]["status"] = "messaged"
+        rows[0]["last_contact"] = datetime.now().isoformat()
+        contacts_file.write_text(json.dumps(rows))
+
+        result = runner.invoke(cli, ["run-daily", "--json"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["status"] == "success"
+        assert payload["actions"] == []
+
     @patch("urllib.request.urlopen")
     @patch("linkedin.cli._run_daily_cycle", side_effect=RuntimeError("boom"))
     def test_run_daily_failure_triggers_webhook(self, _mock_run_daily_cycle, mock_urlopen, runner, temp_data_dir):
@@ -521,7 +570,7 @@ class TestDashboard:
             cli,
             ["run-daily", "--json", "--notify-webhook", "https://example.com/hook"],
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["status"] == "failed"
         mock_urlopen.assert_called_once()
@@ -554,7 +603,7 @@ class TestDashboard:
                 "3",
             ],
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["status"] == "failed"
         assert payload["failure_streak"] == 3
@@ -634,7 +683,7 @@ class TestDashboard:
             cli,
             ["run-daily", "--json", "--retry-attempts", "2", "--retry-backoff-seconds", "0"],
         )
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["status"] == "failed"
         assert payload["attempts"] == 3
@@ -1049,6 +1098,34 @@ class TestEnhancedContacts:
         result = runner.invoke(cli, ["contacts", "activity", "1"])
         assert result.exit_code == 0
         assert "No activities" in result.output
+
+    def test_contacts_repair_backfills_dates(self, runner, temp_data_dir):
+        """contacts repair should make timestampless contacts actionable again."""
+        runner.invoke(cli, ["contacts", "add"], input="John Doe\nEngineer\nTestCo\nurl\nNotes\n")
+        contacts_file = temp_data_dir / "contacts.json"
+        rows = json.loads(contacts_file.read_text())
+        for row in rows:
+            row["status"] = "connected"
+            row["created_at"] = None
+            row["last_contact"] = None
+            row["follow_up_date"] = None
+        contacts_file.write_text(json.dumps(rows))
+
+        dry = runner.invoke(cli, ["contacts", "repair", "--dry-run"])
+        assert dry.exit_code == 0
+        assert "Would repair" in dry.output
+        assert json.loads(contacts_file.read_text())[0]["created_at"] is None
+
+        result = runner.invoke(cli, ["contacts", "repair"])
+        assert result.exit_code == 0
+        repaired = json.loads(contacts_file.read_text())[0]
+        assert repaired["created_at"] and repaired["follow_up_date"]
+
+    def test_contacts_repair_reports_clean_data(self, runner, temp_data_dir):
+        runner.invoke(cli, ["contacts", "add"], input="John Doe\nEngineer\nTestCo\nurl\nNotes\n")
+        result = runner.invoke(cli, ["contacts", "repair"])
+        assert result.exit_code == 0
+        assert "already have timestamps" in result.output
 
     def test_contacts_next_actions(self, runner, temp_data_dir):
         """contacts next-actions should show prioritized follow-ups."""

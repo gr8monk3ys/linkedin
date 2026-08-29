@@ -1,15 +1,7 @@
 """Shared test fixtures."""
 
 import pytest
-from sqlmodel import create_engine
 
-from linkedin.data.db_store import (
-    DbCompanyRepo,
-    DbContactRepo,
-    DbDraftRepo,
-    DbProfileRepo,
-    DbResearchRepo,
-)
 from linkedin.data.json_store import (
     JsonApplicationRepo,
     JsonCalendarRepo,
@@ -21,38 +13,6 @@ from linkedin.data.json_store import (
     JsonProfileRepo,
     JsonResearchRepo,
 )
-from linkedin.models.base import SQLModel, reset_engine
-
-
-@pytest.fixture
-def db_engine():
-    """In-memory SQLite engine for testing."""
-    eng = create_engine("sqlite:///:memory:")
-    SQLModel.metadata.create_all(eng)
-    yield eng
-    reset_engine()
-
-
-@pytest.fixture
-def db_repos(db_engine):
-    """Full set of DB repos (new repos fall back to JSON stubs matching factory.py)."""
-    from linkedin.data.json_store import (
-        JsonApplicationRepo,
-        JsonCalendarRepo,
-        JsonConversationRepo,
-        JsonInterviewPrepRepo,
-    )
-    return (
-        DbContactRepo(db_engine),
-        DbCompanyRepo(db_engine),
-        DbProfileRepo(db_engine),
-        DbDraftRepo(db_engine),
-        DbResearchRepo(db_engine),
-        JsonApplicationRepo(),
-        JsonConversationRepo(),
-        JsonCalendarRepo(),
-        JsonInterviewPrepRepo(),
-    )
 
 
 @pytest.fixture

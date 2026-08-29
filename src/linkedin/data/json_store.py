@@ -1,6 +1,8 @@
 """JSON file-based implementation of repository interfaces."""
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from linkedin.data.repository import (
@@ -57,8 +59,27 @@ def load_json(path: Path, default=None):
 
 
 def save_json(path: Path, data):
-    ensure_dirs()
-    path.write_text(json.dumps(data, indent=2, default=str))
+    """Write `data` to `path` atomically.
+
+    Every mutation rewrites the whole file, so a plain write that is interrupted
+    (crash, Ctrl-C, full disk) leaves a truncated file and loses every record.
+    Serialize first, write to a sibling temp file, fsync, then rename — on POSIX
+    the rename is atomic, so readers see either the old file or the new one.
+    """
+    payload = json.dumps(data, indent=2, default=str)
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _next_id(items: list[dict]) -> int:

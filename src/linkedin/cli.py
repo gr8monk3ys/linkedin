@@ -440,6 +440,20 @@ def _run_daily_cycle(
     return data
 
 
+def _daily_run_status(data: dict) -> str:
+    """Classify a completed cycle.
+
+    Planning nothing is only a success when every active contact is scheduled for
+    a future date — a genuinely quiet day. If a contact is due, overdue, or has no
+    follow-up date at all and the planner still produced nothing, the planner is
+    broken. That is how this job logged 136 consecutive green runs while
+    generating zero drafts.
+    """
+    if data.get("actions"):
+        return "success"
+    return "no_actions" if _contact_svc.stalled_contacts() else "success"
+
+
 def _parse_schedule_time(schedule_time: str) -> tuple[int, int]:
     parts = schedule_time.split(":", maxsplit=1)
     if len(parts) != 2:
@@ -1204,15 +1218,23 @@ def _run_daily_with_reliability(
     history_before_success = _load_run_history_entries()
     prior_failure_streak = _failure_streak(history_before_success)
     finished_at = datetime.now()
-    data["status"] = "success"
+    data["status"] = _daily_run_status(data)
     data["run_id"] = run_id
     data["trigger"] = trigger
     data["idempotency_key"] = effective_key
     data["started_at"] = started_at.isoformat(timespec="seconds")
     data["finished_at"] = finished_at.isoformat(timespec="seconds")
 
+    if data["status"] == "no_actions":
+        stalled = _contact_svc.stalled_contacts()
+        data["stalled_contact_ids"] = [c["id"] for c in stalled]
+        data["reason"] = (
+            f"{len(stalled)} contact(s) are due or have no follow-up date, "
+            "but the planner produced no actions."
+        )
+
     log_entry = {
-        "status": "success",
+        "status": data["status"],
         "run_id": run_id,
         "trigger": trigger,
         "idempotency_key": effective_key,
@@ -1263,6 +1285,10 @@ def _emit_run_status(result: dict, as_json: bool) -> None:
         return
     if status == "skipped_locked":
         console.print(f"[yellow]{result.get('reason', 'Run skipped due to lock.')}[/yellow]")
+        return
+    if status == "no_actions":
+        console.print(f"[red]run-daily planned nothing: {result.get('reason', '')}[/red]")
+        console.print("[yellow]Try `linkedin-cli contacts repair`, then `contacts next-actions`.[/yellow]")
         return
     if status == "failed":
         console.print(f"[red]run-daily failed: {result.get('error', 'Unknown error')}[/red]")
@@ -1964,6 +1990,34 @@ def contacts_remind(contact_id, days, date):
 
     contact = _contact_svc.get_contact(contact_id)
     console.print(f"[green]✓ Reminder set for {contact['name']}: {follow_up_date}[/green]")
+
+
+@contacts.command("repair")
+@click.option("--dry-run", is_flag=True, help="Show what would be fixed without writing")
+def contacts_repair(dry_run):
+    """Backfill missing timestamps and follow-up dates so contacts become actionable."""
+    result = _contact_svc.repair_contacts(dry_run=dry_run)
+    if not result["total"]:
+        console.print("[green]All contacts already have timestamps and follow-up dates.[/green]")
+        return
+
+    table = Table(title=f"{'Would repair' if dry_run else 'Repaired'} {result['total']} contact(s)")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Status")
+    table.add_column("Fixed")
+    table.add_column("Follow-up")
+    for row in result["repaired"]:
+        table.add_row(
+            str(row["contact_id"]),
+            row["name"],
+            row["status"].replace("_", " "),
+            ", ".join(row["fixes"]),
+            row["follow_up_date"] or "-",
+        )
+    console.print(table)
+    if dry_run:
+        console.print("[yellow]Dry run — nothing written. Re-run without --dry-run to apply.[/yellow]")
 
 
 # =============================================================================
@@ -2773,8 +2827,12 @@ def run_daily(
             )
             if result.get("status") == "success":
                 _emit_daily_run_output(result, as_json=as_json)
-            else:
-                _emit_run_status(result, as_json=as_json)
+                return
+            _emit_run_status(result, as_json=as_json)
+            # A stalled planner and a crashed run must both be visible to whatever
+            # scheduled us. Reporting exit 0 is how five months of empty runs hid.
+            if result.get("status") in ("no_actions", "failed"):
+                raise SystemExit(1)
             return
 
         try:
@@ -5011,18 +5069,36 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
         console.print(f"Calendar entry #{calendar_id} marked posted.")
 
 
+def _review_feed_comment(post: dict, comment_text: str) -> bool:
+    """Show a generated comment and ask before publishing it under the user's name."""
+    author = post.get("author") or "Unknown"
+    content = str(post.get("content", ""))
+    preview = content if len(content) <= 280 else content[:277] + "..."
+
+    console.print(f"\n[bold]Post by {author}[/bold]")
+    console.print(f"[dim]{preview}[/dim]")
+    console.print(f"[cyan]Proposed comment:[/cyan] {comment_text}")
+    return click.confirm("Publish this comment?", default=False)
+
+
 @automate.command("engage")
 @click.option("--contact-id", "contact_ids", type=int, multiple=True, help="Like recent posts of this contact (repeatable)")
 @click.option("--feed", is_flag=True, help="Like posts on your home feed instead")
 @click.option("--likes", default=2, help="Likes per target (default 2)")
 @click.option("--comments", default=0, help="With --feed: also leave up to N AI-personalized comments")
 @click.option("--dry-run", is_flag=True, help="Navigate but do not click Like")
+@click.option("--yes", "-y", is_flag=True, help="Publish AI comments without reviewing each one (not recommended)")
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
-def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
+def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
     """Warm up target contacts by liking their recent posts (or engage your feed).
 
     With --feed --comments N, browses the feed and leaves short AI-generated
     comments tailored to each post and your profile, on top of liking.
+
+    \b
+    Every AI comment is shown for approval before it is published, because the
+    text is generated from a stranger's post and goes out under your own name.
+    Pass --yes to skip the review (it will not prompt, and it will post).
     """
     if not contact_ids and not feed:
         console.print("[red]Pass --contact-id (repeatable) and/or --feed.[/red]")
@@ -5030,6 +5106,8 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
     if comments and not feed:
         console.print("[red]--comments requires --feed (comments run on the feed pipeline).[/red]")
         raise SystemExit(1)
+    if comments and yes and not dry_run:
+        console.print("[yellow]--yes: AI comments will be published unreviewed under your name.[/yellow]")
     targets = []
     for cid in contact_ids:
         contact = _contact_repo.get(cid)
@@ -5060,6 +5138,7 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
                 safety=safety,
                 rate_limiter=limiter,
                 dry_run=dry_run,
+                approve_comment=None if yes else _review_feed_comment,
             )
             liked = sum(1 for r in results if r["liked"])
             commented = sum(1 for r in results if r["commented"])
@@ -5069,6 +5148,8 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
                 console.print(f"  {marks} {r['author']}: {r['content_preview']}")
                 if r["comment_text"]:
                     console.print(f"      [dim]{r['comment_text']}[/dim]")
+                elif r.get("skipped_reason"):
+                    console.print(f"      [dim]no comment — {r['skipped_reason']}[/dim]")
             console.print(f"  Feed: {'would like' if dry_run else 'liked'} {liked}, {'would comment' if dry_run else 'commented'} {commented}")
         elif feed:
             liked = auto["engage"].like_feed_posts(linkedin_page, count=likes, rate_limiter=limiter, safety=safety, dry_run=dry_run)

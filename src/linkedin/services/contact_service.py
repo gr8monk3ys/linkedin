@@ -8,6 +8,21 @@ from difflib import SequenceMatcher
 from linkedin.data.repository import CompanyRepo, ContactRepo
 from linkedin.types import ContactDict
 
+# Statuses that end the pipeline; they carry no follow-up and generate no actions.
+TERMINAL_STATUSES = frozenset({"hired", "rejected"})
+
+# How long to wait in each pipeline status before the contact is due for a nudge.
+# Advancing a contact's status seeds `follow_up_date` from this table, so every
+# active contact always has a next date and the planner can never come up empty.
+FOLLOW_UP_CADENCE_DAYS: dict[str, int] = {
+    "not_contacted": 0,
+    "connection_sent": 7,
+    "connected": 2,
+    "messaged": 5,
+    "responded": 2,
+    "call_scheduled": 7,
+}
+
 CAMPAIGN_LIBRARY: dict[str, list[dict]] = {
     "networking_21d": [
         {
@@ -36,6 +51,15 @@ CAMPAIGN_LIBRARY: dict[str, list[dict]] = {
         },
     ],
 }
+
+
+def _cadence_follow_up_date(status: str, *, since: dt.date | None = None) -> str | None:
+    """Return the follow-up date implied by `status`, or None for terminal statuses."""
+    days = FOLLOW_UP_CADENCE_DAYS.get(status)
+    if days is None:
+        return None
+    base = since or datetime.now().date()
+    return (base + dt.timedelta(days=days)).strftime("%Y-%m-%d")
 
 
 class ContactService:
@@ -97,7 +121,7 @@ class ContactService:
             "status": "not_contacted",
             "created_at": datetime.now().isoformat(),
             "last_contact": None,
-            "follow_up_date": None,
+            "follow_up_date": _cadence_follow_up_date("not_contacted"),
             "company_id": company_id,
             "email": email,
             "source": source,
@@ -127,6 +151,7 @@ class ContactService:
             old_status = contact.get("status", "not_contacted")
             contact["status"] = status
             contact["last_contact"] = datetime.now().isoformat()
+            contact["follow_up_date"] = _cadence_follow_up_date(status)
             contact["activities"].append({
                 "date": datetime.now().isoformat(),
                 "type": status,
@@ -297,9 +322,51 @@ class ContactService:
 
         for contact in all_contacts:
             status = contact.get("status")
+            if status in TERMINAL_STATUSES:
+                continue
             age_days = self._days_since_reference(contact, today)
             if age_days is None:
+                # No timestamps at all — the contact is stranded rather than fresh.
+                # Surface it so `contacts repair` gets run instead of it sitting invisible.
+                actions.append({
+                    "priority": 50,
+                    "action": "repair_contact",
+                    "contact_id": contact["id"],
+                    "name": contact.get("name", ""),
+                    "company": contact.get("company", ""),
+                    "reason": "No created_at/last_contact; run `linkedin-cli contacts repair`",
+                })
                 continue
+
+            if status == "not_contacted":
+                actions.append({
+                    "priority": 60 + min(age_days, 30),
+                    "action": "send_connection",
+                    "contact_id": contact["id"],
+                    "name": contact.get("name", ""),
+                    "company": contact.get("company", ""),
+                    "reason": f"Added {age_days} day(s) ago; send a connection request",
+                })
+
+            if status == "messaged" and age_days >= FOLLOW_UP_CADENCE_DAYS["messaged"]:
+                actions.append({
+                    "priority": 75 + min(age_days, 30),
+                    "action": "follow_up_messaged",
+                    "contact_id": contact["id"],
+                    "name": contact.get("name", ""),
+                    "company": contact.get("company", ""),
+                    "reason": f"Messaged {age_days} day(s) ago with no reply; follow up",
+                })
+
+            if status == "call_scheduled" and age_days >= FOLLOW_UP_CADENCE_DAYS["call_scheduled"]:
+                actions.append({
+                    "priority": 68 + min(age_days, 30),
+                    "action": "call_follow_up",
+                    "contact_id": contact["id"],
+                    "name": contact.get("name", ""),
+                    "company": contact.get("company", ""),
+                    "reason": f"Call scheduled {age_days} day(s) ago; confirm or debrief",
+                })
 
             if status == "connected" and age_days >= 7:
                 actions.append({
@@ -322,7 +389,99 @@ class ContactService:
                 })
 
         actions.sort(key=lambda a: a["priority"], reverse=True)
-        return actions[:limit]
+
+        # A contact can qualify under several rules at once (an overdue follow-up is
+        # usually also a stale connection). Keep only its highest-priority action so
+        # the daily plan reads as one line per person.
+        deduped: list[dict] = []
+        seen: set[int] = set()
+        for action in actions:
+            if action["contact_id"] in seen:
+                continue
+            seen.add(action["contact_id"])
+            deduped.append(action)
+
+        return deduped[:limit]
+
+    def active_pipeline_count(self) -> int:
+        """Contacts still in play."""
+        return sum(1 for c in self.contacts.list_all() if c.get("status") not in TERMINAL_STATUSES)
+
+    def stalled_contacts(self) -> list[ContactDict]:
+        """Active contacts the planner should have had something to say about.
+
+        Two shapes qualify, and both mean the planner is broken rather than idle:
+        a contact with no usable `follow_up_date` (it can never come due — the
+        state all 11 real contacts were in for five months), and one whose
+        follow-up date has already arrived. A contact scheduled for a future date
+        is simply not due yet, which is a quiet day, not a stall.
+        """
+        today = datetime.now().date()
+        stalled: list[ContactDict] = []
+        for contact in self.contacts.list_all():
+            if contact.get("status") in TERMINAL_STATUSES:
+                continue
+            raw = contact.get("follow_up_date")
+            if not raw:
+                stalled.append(contact)
+                continue
+            try:
+                due = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).date()
+            except (ValueError, AttributeError):
+                stalled.append(contact)
+                continue
+            if due <= today:
+                stalled.append(contact)
+        return stalled
+
+    def repair_contacts(self, dry_run: bool = False) -> dict:
+        """Backfill missing timestamps and follow-up dates on existing contacts.
+
+        Contacts written before the cadence existed (or imported without dates) are
+        invisible to `get_next_actions`. This makes them actionable again.
+        """
+        repaired: list[dict] = []
+        for contact in self.contacts.list_all():
+            fixes: list[str] = []
+            status = contact.get("status", "not_contacted")
+
+            if not contact.get("created_at"):
+                activities = contact.get("activities") or []
+                dates = [a.get("date") for a in activities if a.get("date")]
+                contact["created_at"] = min(dates) if dates else datetime.now().isoformat()
+                fixes.append("created_at")
+
+            if status != "not_contacted" and not contact.get("last_contact"):
+                contact["last_contact"] = contact["created_at"]
+                fixes.append("last_contact")
+
+            if status in TERMINAL_STATUSES:
+                if contact.get("follow_up_date"):
+                    contact["follow_up_date"] = None
+                    fixes.append("follow_up_date cleared")
+            elif not contact.get("follow_up_date"):
+                reference = contact.get("last_contact") or contact["created_at"]
+                try:
+                    since = datetime.fromisoformat(str(reference).replace("Z", "+00:00")).date()
+                except (ValueError, AttributeError):
+                    since = datetime.now().date()
+                contact["follow_up_date"] = _cadence_follow_up_date(status, since=since)
+                fixes.append("follow_up_date")
+
+            if not fixes:
+                continue
+
+            repaired.append({
+                "contact_id": contact["id"],
+                "name": contact.get("name", ""),
+                "status": status,
+                "fixes": fixes,
+                "follow_up_date": contact.get("follow_up_date"),
+            })
+            if not dry_run:
+                self.contacts.update(contact)
+
+        return {"repaired": repaired, "total": len(repaired), "dry_run": dry_run}
 
     def _days_since_reference(self, contact: ContactDict, today: dt.date) -> int | None:
         ref = contact.get("last_contact") or contact.get("created_at")

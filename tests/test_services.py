@@ -705,3 +705,197 @@ class TestDashboardService:
 
         data = svc.get_dashboard_data()
         assert len(data["suggestions"]) > 0
+
+
+class TestFollowUpCadence:
+    """The planner must never come up empty while contacts are still in play.
+
+    Regression cover for the five-month window where `run-daily` reported 136
+    consecutive successes with zero actions: `messaged` had no rule, nothing set
+    `follow_up_date`, and contacts missing timestamps were skipped forever.
+    """
+
+    def _svc(self, json_repos):
+        from linkedin.services.contact_service import ContactService
+
+        contact_repo, company_repo, *_ = json_repos
+        return ContactService(contact_repo, company_repo)
+
+    def _age(self, svc, contact_id, days):
+        contact = svc.get_contact(contact_id)
+        contact["last_contact"] = (datetime.now() - timedelta(days=days)).isoformat()
+        contact["follow_up_date"] = None
+        svc.contacts.update(contact)
+
+    def test_add_seeds_follow_up_date(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        assert svc.get_contact(1)["follow_up_date"] is not None
+
+    def test_status_change_seeds_follow_up_date(self, json_repos):
+        from linkedin.services.contact_service import FOLLOW_UP_CADENCE_DAYS
+
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="messaged")
+
+        expected = (datetime.now() + timedelta(days=FOLLOW_UP_CADENCE_DAYS["messaged"])).strftime("%Y-%m-%d")
+        assert svc.get_contact(1)["follow_up_date"] == expected
+
+    def test_explicit_follow_up_beats_cadence(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="messaged", follow_up="2030-01-01")
+        assert svc.get_contact(1)["follow_up_date"] == "2030-01-01"
+
+    def test_terminal_status_clears_follow_up(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="hired")
+        assert svc.get_contact(1)["follow_up_date"] is None
+
+    def test_messaged_contact_produces_an_action(self, json_repos):
+        """The gap that hid 4 of 11 real contacts from the planner."""
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="messaged")
+        self._age(svc, 1, days=6)
+
+        actions = svc.get_next_actions()
+        assert [a["action"] for a in actions] == ["follow_up_messaged"]
+
+    def test_recently_messaged_contact_is_left_alone(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="messaged")
+        self._age(svc, 1, days=1)
+        assert svc.get_next_actions() == []
+
+    def test_not_contacted_produces_an_action(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        actions = svc.get_next_actions()
+        assert any(a["action"] in ("send_connection", "follow_up_today") for a in actions)
+
+    def test_terminal_contacts_generate_no_actions(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="rejected")
+        assert svc.get_next_actions() == []
+
+    def test_one_action_per_contact(self, json_repos):
+        """An overdue follow-up is usually also a stale connection; show it once."""
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="connection_sent")
+        contact = svc.get_contact(1)
+        contact["last_contact"] = (datetime.now() - timedelta(days=40)).isoformat()
+        contact["follow_up_date"] = (datetime.now() - timedelta(days=20)).strftime("%Y-%m-%d")
+        svc.contacts.update(contact)
+
+        actions = svc.get_next_actions()
+        assert [a["contact_id"] for a in actions] == [1]
+
+    def test_active_pipeline_count_excludes_terminal(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.add_contact(name="Bob", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(2, status="hired")
+        assert svc.active_pipeline_count() == 1
+
+
+class TestRepairContacts:
+    def _svc(self, json_repos):
+        from linkedin.services.contact_service import ContactService
+
+        contact_repo, company_repo, *_ = json_repos
+        return ContactService(contact_repo, company_repo)
+
+    def test_timestampless_contact_is_surfaced_not_skipped(self, json_repos):
+        """Two of the user's real contacts had no dates and were invisible forever."""
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add(sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None))
+
+        actions = self._svc(json_repos).get_next_actions()
+        assert [a["action"] for a in actions] == ["repair_contact"]
+
+    def test_repair_backfills_and_makes_actionable(self, json_repos):
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add(sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None))
+        svc = self._svc(json_repos)
+
+        result = svc.repair_contacts()
+        assert result["total"] == 1
+        assert "created_at" in result["repaired"][0]["fixes"]
+
+        contact = svc.get_contact(1)
+        assert contact["created_at"] and contact["last_contact"] and contact["follow_up_date"]
+        assert all(a["action"] != "repair_contact" for a in svc.get_next_actions())
+
+    def test_repair_dry_run_writes_nothing(self, json_repos):
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add(sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None))
+        svc = self._svc(json_repos)
+
+        assert svc.repair_contacts(dry_run=True)["total"] == 1
+        assert svc.get_contact(1)["created_at"] is None
+
+    def test_repair_is_idempotent(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        assert svc.repair_contacts()["total"] == 0
+
+
+class TestStalledContacts:
+    """`stalled_contacts` separates a broken planner from a quiet day."""
+
+    def _svc(self, json_repos):
+        from linkedin.services.contact_service import ContactService
+
+        contact_repo, company_repo, *_ = json_repos
+        return ContactService(contact_repo, company_repo)
+
+    def _set(self, svc, contact_id, **fields):
+        contact = svc.get_contact(contact_id)
+        contact.update(fields)
+        svc.contacts.update(contact)
+
+    def test_missing_follow_up_date_is_stalled(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        self._set(svc, 1, status="messaged", follow_up_date=None)
+        assert [c["id"] for c in svc.stalled_contacts()] == [1]
+
+    def test_unparseable_follow_up_date_is_stalled(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        self._set(svc, 1, status="messaged", follow_up_date="not-a-date")
+        assert [c["id"] for c in svc.stalled_contacts()] == [1]
+
+    def test_past_due_follow_up_is_stalled(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        past = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+        self._set(svc, 1, status="messaged", follow_up_date=past)
+        assert [c["id"] for c in svc.stalled_contacts()] == [1]
+
+    def test_future_follow_up_is_not_stalled(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        future = (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d")
+        self._set(svc, 1, status="messaged", follow_up_date=future)
+        assert svc.stalled_contacts() == []
+
+    def test_terminal_contacts_are_never_stalled(self, json_repos):
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
+        svc.update_contact(1, status="rejected")
+        self._set(svc, 1, follow_up_date=None)
+        assert svc.stalled_contacts() == []
+
+    def test_the_real_five_month_stall_is_detected(self, json_repos):
+        """All 11 real contacts were active with follow_up_date=None."""
+        contact_repo, _company_repo, *_ = json_repos
+        for i in range(1, 12):
+            contact_repo.add(sample_contact(id=i, status="messaged", follow_up_date=None))
+        assert len(self._svc(json_repos).stalled_contacts()) == 11

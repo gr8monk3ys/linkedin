@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LinkedIn Job Hunt Assistant — a Python CLI combining a local CRM, AI-powered draft generation (Claude API), job application lifecycle tracking, interview prep, analytics, market intelligence, profile optimization, smart templates, content calendar, and conversation history. Supports JSON file storage (default) or SQLModel/PostgreSQL. Includes Playwright-based browser automation.
+LinkedIn Job Hunt Assistant — a Python CLI combining a local CRM, AI-powered draft generation (Claude API), job application lifecycle tracking, interview prep, analytics, market intelligence, profile optimization, smart templates, content calendar, and conversation history. Storage is JSON files under `~/.linkedin-cli`. Includes Playwright-based browser automation.
 
 ## Commands
 
@@ -12,15 +12,11 @@ LinkedIn Job Hunt Assistant — a Python CLI combining a local CRM, AI-powered d
 # Install dependencies
 uv sync
 uv sync --extra dev          # pytest, ruff, coverage
-uv sync --extra web          # Reflex web UI
 uv sync --extra automation   # Playwright + keyring
 
 # CLI (both entry points are equivalent)
 uv run linkedin <command>
 uv run linkedin-cli <command>
-
-# Run the web dashboard
-uv run linkedin-web
 
 # Run tests
 uv run pytest
@@ -32,10 +28,6 @@ uv run ruff check src/ tests/
 uv run ruff check src/ tests/ --fix
 uv run ruff format src/ tests/
 
-# Database (only needed when using LINKEDIN_BACKEND=db)
-uv run alembic upgrade head
-uv run alembic revision --autogenerate -m "description"
-uv run python -m linkedin.scripts.migrate_json_to_db
 ```
 
 ## Architecture
@@ -50,8 +42,7 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 **Data layer:**
 - `src/linkedin/data/repository.py` — Abstract base classes for all repos, including `ApplicationRepo`, `InterviewPrepRepo`, `ConversationRepo`, `CalendarRepo`.
 - `src/linkedin/data/json_store.py` — JSON file implementations (default). All file path constants (`CONTACTS_FILE`, `APPLICATIONS_FILE`, etc.) are module-level and monkeypatched in tests.
-- `src/linkedin/data/db_store.py` — SQLModel/SQLAlchemy implementations.
-- `src/linkedin/data/factory.py` — `create_repos()` selects backend via `LINKEDIN_BACKEND` env var (`json` or `db`).
+- `src/linkedin/data/factory.py` — `create_repos()` builds the JSON repo set. A SQLModel/Postgres backend behind `LINKEDIN_BACKEND=db` was removed 2026-08-29 (unused since February; four of its nine repos silently fell back to JSON, splitting the dataset).
 
 **Services** (`src/linkedin/services/`) — All business logic. Accept/return plain dicts:
 - `contact_service.py` — CRUD, pipeline advancement, next-actions, outreach campaign management, duplicate detection + merge
@@ -70,22 +61,23 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 - `resume_service.py` — Bridge to the resume repo checkout (`LINKEDIN_RESUME_REPO` env var): variant discovery, `skills.tex` parsing, JD→variant matching, built-PDF resolution, autoapply `state.db` import. Stdlib only — never imports resume repo code.
 - `dashboard_service.py`, `analytics_service.py` — Overview aggregation, pipeline conversion, response rates
 
-**Web UI** (`src/linkedin/web/`) — Reflex SaaS dashboard. Pages under `pages/`, Reflex State subclasses under `states/`.
-
 **Automation** (`src/linkedin/automation/`) — Playwright-based browser automation with session persistence, keyring credentials, rate limiting, and per-day safety limits persisted to `~/.linkedin-cli/automation_usage.json` (20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies). Actions live in `actions/` (connect, message, scrape, search, post, engage, profile_sync, easy_apply) and must stay importable **without** Playwright installed — import `LinkedInPage` only under `TYPE_CHECKING` (CI installs only `--extra dev`). The CLI `automate` group lazy-imports the stack via `_require_automation()`; CLI tests patch `_require_automation`/`_open_linkedin_session` in `linkedin.cli`.
 
 **Key patterns:**
 - Services are instantiated with their repos at module level in `cli.py` and reused across commands.
-- `LINKEDIN_BACKEND` env var selects `json` (default) or `db`. `DATABASE_URL` configures the DB.
 - All AI calls use `generate_with_ai`; wrap in `try/except AIClientError` and return `(error_str, "")`.
 - Mock patches target the usage site: `linkedin.services.<module>.generate_with_ai`.
 - Contact pipeline: `not_contacted → connection_sent → connected → messaged → responded → call_scheduled → hired/rejected`.
+- **Every active contact always carries a `follow_up_date`.** `contact_service.FOLLOW_UP_CADENCE_DAYS` seeds it on add and on every status change; `hired`/`rejected` (`TERMINAL_STATUSES`) clear it and generate no actions. An explicit `follow_up=` argument still wins. Adding a pipeline status means adding its cadence entry *and* its rule in `get_next_actions` — a status with neither is invisible to the planner forever, which is what `messaged` was.
+- **`get_next_actions` returns at most one action per contact**, highest priority first. A contact with no `created_at`/`last_contact` yields a `repair_contact` action rather than being skipped; `contacts repair` backfills it.
+- **`run-daily` exits nonzero and reports `no_actions`** when the planner produces nothing while `active_pipeline_count() > 0`, and nonzero on `failed`. It previously returned exit 0 and status `success` in both cases, which is how it logged 136 consecutive green runs over five months while generating zero drafts. Never widen `_daily_run_status` back to unconditional success.
+- **`json_store.save_json` is atomic** (temp file + fsync + `os.replace`). Every mutation rewrites the whole file, so a plain write loses the entire store if interrupted. `automation/safety.py` persists its daily budgets through it for the same reason — a truncated usage file reads back as "no usage today".
+- **AI feed comments are reviewed before they are published.** `automation_service.engage_feed` takes an `approve_comment` callback and the CLI passes `_review_feed_comment` unless `--yes`; `sanitize_comment` drops empty, overlong, and refusal-shaped model output. The post body is untrusted third-party text fenced inside the prompt — it reaches the model as data, and its output goes out publicly under the user's real name.
 
 ## Testing
 
 **Fixtures** (`tests/conftest.py`):
 - `json_repos` — monkeypatches all `json_store` file path constants to a `tmp_path`; use for service tests.
-- `db_engine` / `db_repos` — in-memory SQLite for DB store tests.
 - `sample_contact`, `sample_company`, `sample_profile` — factory functions (accept `**overrides`). `sample_profile` includes `resume_text` by default.
 
 **Test files:**
@@ -94,7 +86,7 @@ uv run python -m linkedin.scripts.migrate_json_to_db
 - `test_services.py` — Service unit tests for original services.
 - `test_application_service.py`, `test_interview_service.py`, `test_conversation_service.py`, `test_calendar_service.py` — Service tests for new features including `AIClientError` paths.
 - `test_data_service.py` — Needs its own monkeypatching of the `data_service` module's constants (separate from `json_store`).
-- `test_db_store.py`, `test_json_store.py`, `test_factory.py` — Storage layer tests.
+- `test_json_store.py`, `test_factory.py` — Storage layer tests, including `save_json` atomicity.
 - `test_analytics.py`, `test_market.py`, `test_optimizer.py`, `test_templates.py` — Feature-specific tests.
 - `test_automation.py`, `test_automation_scrape.py` — Automation config and action tests.
 - `test_automation_actions.py` — Post/engage/profile-sync/easy-apply actions + persistent safety limits (MagicMock page objects, no Playwright).

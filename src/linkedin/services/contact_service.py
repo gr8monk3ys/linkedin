@@ -76,9 +76,9 @@ class ContactService:
     ) -> list[ContactDict]:
         filtered = self.contacts.list_all()
         if status != "all":
-            filtered = [c for c in filtered if c["status"] == status]
+            filtered = [c for c in filtered if c.get("status") == status]
         if company:
-            filtered = [c for c in filtered if company.lower() in c["company"].lower()]
+            filtered = [c for c in filtered if company.lower() in (c.get("company") or "").lower()]
         if company_id:
             filtered = [c for c in filtered if c.get("company_id") == company_id]
         if source != "all":
@@ -196,7 +196,7 @@ class ContactService:
 
         status_counts: dict[str, int] = {}
         for c in contacts:
-            status = c["status"]
+            status = c.get("status") or "not_contacted"
             status_counts[status] = status_counts.get(status, 0) + 1
 
         return {"total": len(contacts), "status_counts": status_counts}
@@ -244,7 +244,7 @@ class ContactService:
 
         stale_connections = []
         for contact in all_contacts:
-            if contact["status"] == "connection_sent":
+            if contact.get("status") == "connection_sent":
                 last_contact = contact.get("last_contact")
                 if last_contact:
                     try:
@@ -443,7 +443,16 @@ class ContactService:
         repaired: list[dict] = []
         for contact in self.contacts.list_all():
             fixes: list[str] = []
-            status = contact.get("status", "not_contacted")
+            if not contact.get("status"):
+                contact["status"] = "not_contacted"
+                fixes.append("status")
+            status = contact["status"]
+
+            # Missing string fields crash the renderers and the list filters.
+            for field in ("name", "company", "title", "linkedin_url", "notes", "email"):
+                if field not in contact or contact[field] is None:
+                    contact[field] = ""
+                    fixes.append(field)
 
             if not contact.get("created_at"):
                 activities = contact.get("activities") or []

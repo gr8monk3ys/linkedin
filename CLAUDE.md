@@ -35,6 +35,9 @@ uv run ruff format src/ tests/
 **Modular structure** — thin CLI → services → repositories → storage:
 
 - `src/linkedin/cli.py` — Click groups + Rich formatting. No business logic; all calls go to services.
+- `src/linkedin/scheduling/schedule.py` — schedule-time math and the argv for a scheduled `run-daily`. Pure functions.
+- `src/linkedin/scheduling/crontab.py` — the one delimited crontab block the CLI owns, plus the cron env file. Never rewrites unmanaged lines.
+- `src/linkedin/services/run_state.py` — run log, lock file, idempotency keys, failure streaks, webhook notifications.
 - `src/linkedin/constants.py` — Enums (`ContactStatus`, `CompanyPriority`, etc.), emoji mappings.
 - `src/linkedin/types.py` — TypedDicts for all domain objects: `ContactDict`, `CompanyDict`, `ProfileDict`, `DraftDict`, `ResearchDict`, `ApplicationDict`, `ApplicationEventDict`, `InterviewPrepDict`, `ConversationDict`, `MessageDict`, `ContentPostDict`.
 - `src/linkedin/ai/client.py` — `generate_with_ai(prompt, max_tokens, timeout_seconds, retries, backoff_seconds)` wrapping Anthropic API. Raises `AIClientError(RuntimeError)` on failure (auth errors are not retried). Retry/backoff configurable via `LINKEDIN_AI_*` env vars.
@@ -61,7 +64,12 @@ uv run ruff format src/ tests/
 - `resume_service.py` — Bridge to the resume repo checkout (`LINKEDIN_RESUME_REPO` env var): variant discovery, `skills.tex` parsing, JD→variant matching, built-PDF resolution, autoapply `state.db` import. Stdlib only — never imports resume repo code.
 - `dashboard_service.py`, `analytics_service.py` — Overview aggregation, pipeline conversion, response rates
 
-**Automation** (`src/linkedin/automation/`) — Playwright-based browser automation with session persistence, keyring credentials, rate limiting, and per-day safety limits persisted to `~/.linkedin-cli/automation_usage.json` (20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies). Actions live in `actions/` (connect, message, scrape, search, post, engage, profile_sync, easy_apply) and must stay importable **without** Playwright installed — import `LinkedInPage` only under `TYPE_CHECKING` (CI installs only `--extra dev`). The CLI `automate` group lazy-imports the stack via `_require_automation()`; CLI tests patch `_require_automation`/`_open_linkedin_session` in `linkedin.cli`.
+**Automation** (`src/linkedin/automation/`) — Playwright-based browser automation with session persistence, keyring credentials, rate limiting, and per-day safety limits persisted to `~/.linkedin-cli/automation_usage.json` (20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies). Actions live in `actions/` (connect, message, scrape, search, post, engage, profile_sync, easy_apply). The CLI `automate` group lazy-imports the stack via `_require_automation()`; CLI tests patch `_require_automation`/`_open_linkedin_session` in `linkedin.cli`.
+
+- **Every module in this package must import without Playwright or keyring** — CI installs only `--extra dev`, and a module-scope `import playwright` drops that module *and everything importing it* to 0% coverage. That is how `linkedin_page.py` (the layer that actually talks to LinkedIn) went untested. Import Playwright types under `TYPE_CHECKING`, and `sync_playwright`/`keyring` inside the function that uses them. `tests/test_automation_import_safety.py` walks the package and fails if this regresses.
+- **`automation/selectors.py` holds every LinkedIn selector.** Never inline one at a call site. Role/label locators are preferred over CSS — accessible names survive class-name churn. `FRAGILE_SELECTORS` catalogues the CSS ones that break on a markup change.
+- **A markup change must not look like a quiet page.** These methods fail soft by design (a missing Connect button is normal), so the ones that cannot tell a breakage from an empty page call `self._record_miss(name)`. `LinkedInPage.selector_health()` reports them and `cli._close_linkedin_session` prints them at the end of every `automate` run. Close browsers through that helper, not `browser.close()`.
+- `tests/fake_page.py` is a Page/Locator double — register what the page contains, and anything unregistered resolves empty (exactly what a renamed class looks like).
 
 **Key patterns:**
 - Services are instantiated with their repos at module level in `cli.py` and reused across commands.
@@ -89,6 +97,10 @@ uv run ruff format src/ tests/
 - `test_json_store.py`, `test_factory.py` — Storage layer tests, including `save_json` atomicity.
 - `test_analytics.py`, `test_market.py`, `test_optimizer.py`, `test_templates.py` — Feature-specific tests.
 - `test_automation.py`, `test_automation_scrape.py` — Automation config and action tests.
+- `test_linkedin_page.py` — Page object against `tests/fake_page.py`; covers selector misses.
+- `test_automation_import_safety.py` — Walks `linkedin.automation` asserting no module needs Playwright/keyring to import.
+- `test_automation_connect_message_search.py` — Connect/message/search actions and their safety-budget accounting.
+- `test_scheduling.py` — Schedule math and managed-crontab handling.
 - `test_automation_actions.py` — Post/engage/profile-sync/easy-apply actions + persistent safety limits (MagicMock page objects, no Playwright).
 - `test_resume_service.py` — Resume repo bridge (builds a fake checkout + autoapply SQLite db in tmp_path).
 - `test_cli_automate.py` — CLI tests for the `automate` group and resume-repo application commands.

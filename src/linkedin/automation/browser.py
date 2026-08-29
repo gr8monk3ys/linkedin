@@ -1,11 +1,20 @@
-"""Browser management with Playwright."""
+"""Browser management with Playwright.
+
+Import-safe without Playwright installed: `sync_playwright` is imported inside
+`start()`, and the Playwright types are hints only. Only *running* a browser
+needs the `--extra automation` install.
+"""
+
+from __future__ import annotations
 
 import json
 from pathlib import Path
-
-from playwright.sync_api import Browser, BrowserContext, Page, sync_playwright
+from typing import TYPE_CHECKING
 
 from linkedin.automation.config import AutomationConfig
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Browser, BrowserContext, Page
 
 
 class BrowserManager:
@@ -20,6 +29,8 @@ class BrowserManager:
 
     def start(self) -> Page:
         """Launch browser and return the main page."""
+        from playwright.sync_api import sync_playwright
+
         self._playwright = sync_playwright().start()
 
         launcher = getattr(self._playwright, self.config.browser_type)

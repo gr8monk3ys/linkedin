@@ -899,3 +899,60 @@ class TestStalledContacts:
         for i in range(1, 12):
             contact_repo.add(sample_contact(id=i, status="messaged", follow_up_date=None))
         assert len(self._svc(json_repos).stalled_contacts()) == 11
+
+
+class TestRepairPartialRecords:
+    """Contacts written without required keys crashed the renderers.
+
+    `contacts due` raised KeyError('company') on real data the moment follow-up
+    dates started populating — the records had been invisible until then.
+    """
+
+    def _svc(self, json_repos):
+        from linkedin.services.contact_service import ContactService
+
+        contact_repo, company_repo, *_ = json_repos
+        return ContactService(contact_repo, company_repo)
+
+    def test_repair_backfills_missing_string_fields(self, json_repos):
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add({"id": 1, "status": "connected"})
+        svc = self._svc(json_repos)
+
+        result = svc.repair_contacts()
+        assert result["total"] == 1
+        contact = svc.get_contact(1)
+        for field in ("name", "company", "title", "linkedin_url", "notes", "email"):
+            assert contact[field] == ""
+
+    def test_repair_supplies_a_missing_status(self, json_repos):
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add({"id": 1, "name": "Alice"})
+        svc = self._svc(json_repos)
+
+        svc.repair_contacts()
+        assert svc.get_contact(1)["status"] == "not_contacted"
+
+    def test_repair_does_not_blank_existing_values(self, json_repos):
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add({"id": 1, "name": "Alice", "company": "Acme", "status": "messaged"})
+        svc = self._svc(json_repos)
+
+        svc.repair_contacts()
+        contact = svc.get_contact(1)
+        assert contact["name"] == "Alice" and contact["company"] == "Acme"
+
+    def test_filters_survive_partial_records(self, json_repos):
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add({"id": 1})
+        contact_repo.add(sample_contact(id=2, status="messaged", company="Acme"))
+        svc = self._svc(json_repos)
+
+        assert [c["id"] for c in svc.list_contacts(status="messaged")] == [2]
+        assert [c["id"] for c in svc.list_contacts(company="acme")] == [2]
+        assert svc.get_stats()["total"] == 2
+
+    def test_due_contacts_survive_partial_records(self, json_repos):
+        contact_repo, _company_repo, *_ = json_repos
+        contact_repo.add({"id": 1, "follow_up_date": "2020-01-01"})
+        assert len(self._svc(json_repos).get_due_contacts()["overdue"]) == 1

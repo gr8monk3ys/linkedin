@@ -1,8 +1,18 @@
-"""Login action for LinkedIn."""
+"""Login action for LinkedIn.
 
-from linkedin.automation.browser import BrowserManager
-from linkedin.automation.credentials import get_credentials, store_credentials
+Import-safe without Playwright or keyring: both are imported inside the
+functions that need them, so this module can be imported (and tested) in CI,
+which installs only `--extra dev`.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from linkedin.automation.linkedin_page import LinkedInPage
+
+if TYPE_CHECKING:
+    from linkedin.automation.browser import BrowserManager
 
 
 def login_action(browser: BrowserManager, email: str | None = None, password: str | None = None) -> bool:
@@ -10,6 +20,8 @@ def login_action(browser: BrowserManager, email: str | None = None, password: st
 
     Returns True if login successful.
     """
+    from linkedin.automation.credentials import get_credentials
+
     if not email or not password:
         creds = get_credentials()
         if not creds:
@@ -34,4 +46,6 @@ def login_action(browser: BrowserManager, email: str | None = None, password: st
 
 def setup_credentials(email: str, password: str) -> None:
     """Store credentials securely in system keyring."""
+    from linkedin.automation.credentials import store_credentials
+
     store_credentials(email, password)

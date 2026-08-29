@@ -299,6 +299,9 @@ linkedin-cli run-history --status failed --limit 50 --json  # Inspect recent fai
 ```
 
 Run reliability notes:
+- Every `automate` run ends by reporting any LinkedIn selector that matched
+  nothing, so a markup change is visible instead of looking like a quiet feed.
+  Selectors live in `src/linkedin/automation/selectors.py`.
 - `run-daily` exits **nonzero** on `failed` and on `no_actions` — the planner finding
   nothing while contacts are still in the pipeline is a stall, not a success. Run
   `contacts repair` and `contacts next-actions` to see why.

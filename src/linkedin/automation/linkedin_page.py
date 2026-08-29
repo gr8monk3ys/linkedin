@@ -1,8 +1,23 @@
-"""LinkedIn page object model using Playwright locators."""
+"""LinkedIn page object model using Playwright locators.
 
-import re
+Import-safe without Playwright installed (`Page` is a type hint only), so the
+selector logic can be tested in CI, which installs only `--extra dev`.
 
-from playwright.sync_api import Page
+Every method here fails soft — a missing element returns 0/[]/False rather than
+raising, because half of these elements are legitimately absent (no Connect
+button on an existing connection). That makes a *selector breakage* look
+identical to a quiet page, so the methods that cannot tell the difference record
+the miss in `self.selector_misses` instead of staying silent.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from linkedin.automation import selectors as sel
+
+if TYPE_CHECKING:
+    from playwright.sync_api import Page
 
 
 class LinkedInPage:
@@ -13,6 +28,22 @@ class LinkedInPage:
 
     def __init__(self, page: Page):
         self.page = page
+        #: Names from `selectors.FRAGILE_SELECTORS` that matched nothing this
+        #: session. Non-empty means "LinkedIn markup probably changed", not
+        #: "there was nothing to do".
+        self.selector_misses: list[str] = []
+
+    def _record_miss(self, name: str) -> None:
+        if name not in self.selector_misses:
+            self.selector_misses.append(name)
+
+    def selector_health(self) -> dict:
+        """Report which fragile selectors stopped matching during this session."""
+        return {
+            "healthy": not self.selector_misses,
+            "misses": list(self.selector_misses),
+            "selectors": {n: sel.FRAGILE_SELECTORS[n] for n in self.selector_misses if n in sel.FRAGILE_SELECTORS},
+        }
 
     # -------------------------------------------------------------------------
     # Navigation
@@ -43,9 +74,9 @@ class LinkedInPage:
     def login(self, email: str, password: str) -> bool:
         """Log in to LinkedIn. Returns True if successful."""
         self.goto_login()
-        self.page.get_by_label("Email or phone").fill(email)
-        self.page.get_by_label("Password").fill(password)
-        self.page.get_by_role("button", name="Sign in").click()
+        self.page.get_by_label(sel.LOGIN_EMAIL_LABEL).fill(email)
+        self.page.get_by_label(sel.LOGIN_PASSWORD_LABEL).fill(password)
+        self.page.get_by_role("button", name=sel.SIGN_IN_BUTTON).click()
 
         # Wait for navigation to complete
         try:
@@ -72,13 +103,13 @@ class LinkedInPage:
         Assumes we're on a profile page.
         """
         try:
-            connect_btn = self.page.get_by_role("button", name="Connect")
+            connect_btn = self.page.get_by_role("button", name=sel.CONNECT_BUTTON)
             if connect_btn.count() == 0:
                 # Try "More" dropdown
-                more_btn = self.page.get_by_role("button", name="More")
+                more_btn = self.page.get_by_role("button", name=sel.MORE_BUTTON)
                 if more_btn.count() > 0:
                     more_btn.first.click()
-                    connect_option = self.page.get_by_role("menuitem", name="Connect")
+                    connect_option = self.page.get_by_role("menuitem", name=sel.CONNECT_MENU_ITEM)
                     if connect_option.count() == 0:
                         return False
                     connect_option.click()
@@ -88,12 +119,12 @@ class LinkedInPage:
                 connect_btn.first.click()
 
             if note:
-                add_note_btn = self.page.get_by_role("button", name="Add a note")
+                add_note_btn = self.page.get_by_role("button", name=sel.ADD_NOTE_BUTTON)
                 if add_note_btn.count() > 0:
                     add_note_btn.click()
-                    self.page.get_by_role("textbox", name="Add a note").fill(note)
+                    self.page.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).fill(note)
 
-            send_btn = self.page.get_by_role("button", name="Send")
+            send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
             if send_btn.count() > 0:
                 send_btn.click()
                 return True
@@ -111,17 +142,17 @@ class LinkedInPage:
         Assumes we're on a profile page of a connected user.
         """
         try:
-            msg_btn = self.page.get_by_role("button", name="Message")
+            msg_btn = self.page.get_by_role("button", name=sel.MESSAGE_BUTTON)
             if msg_btn.count() == 0:
                 return False
             msg_btn.first.click()
 
             # Wait for message dialog
-            msg_box = self.page.get_by_role("textbox", name="Write a message")
+            msg_box = self.page.get_by_role("textbox", name=sel.MESSAGE_TEXTBOX)
             msg_box.wait_for(timeout=5000)
             msg_box.fill(message)
 
-            send_btn = self.page.get_by_role("button", name="Send")
+            send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
             send_btn.click()
             return True
         except Exception:
@@ -135,15 +166,15 @@ class LinkedInPage:
         """Extract basic profile info from current profile page."""
         info = {}
         try:
-            name_el = self.page.locator("h1").first
+            name_el = self.page.locator(sel.PROFILE_NAME).first
             if name_el.count() > 0:
                 info["name"] = name_el.text_content().strip()
 
-            headline_el = self.page.locator(".text-body-medium").first
+            headline_el = self.page.locator(sel.PROFILE_HEADLINE).first
             if headline_el.count() > 0:
                 info["headline"] = headline_el.text_content().strip()
 
-            location_el = self.page.locator(".text-body-small.inline").first
+            location_el = self.page.locator(sel.PROFILE_LOCATION).first
             if location_el.count() > 0:
                 info["location"] = location_el.text_content().strip()
         except Exception:
@@ -158,19 +189,23 @@ class LinkedInPage:
         """Get search result entries from current search page."""
         results = []
         try:
-            cards = self.page.locator(".reusable-search__result-container")
+            cards = self.page.locator(sel.SEARCH_RESULT_CARD)
+            if cards.count() == 0:
+                self._record_miss("search_result_card")
             for i in range(cards.count()):
                 card = cards.nth(i)
                 entry = {}
-                name_link = card.locator("a.app-aware-link span[aria-hidden='true']").first
+                name_link = card.locator(sel.SEARCH_RESULT_NAME).first
                 if name_link.count() > 0:
                     entry["name"] = name_link.text_content().strip()
+                else:
+                    self._record_miss("search_result_name")
 
-                headline = card.locator(".entity-result__primary-subtitle").first
+                headline = card.locator(sel.SEARCH_RESULT_HEADLINE).first
                 if headline.count() > 0:
                     entry["headline"] = headline.text_content().strip()
 
-                link = card.locator("a.app-aware-link").first
+                link = card.locator(sel.SEARCH_RESULT_LINK).first
                 if link.count() > 0:
                     entry["linkedin_url"] = (link.get_attribute("href") or "").split("?")[0]
 
@@ -188,19 +223,19 @@ class LinkedInPage:
         """Publish a text post to the feed. Returns True on success."""
         try:
             self.goto_feed()
-            start_btn = self.page.get_by_role("button", name=re.compile("Start a post", re.I))
+            start_btn = self.page.get_by_role("button", name=sel.START_POST_BUTTON)
             if start_btn.count() == 0:
                 return False
             start_btn.first.click()
 
-            editor = self.page.get_by_role("textbox", name=re.compile("Text editor", re.I))
+            editor = self.page.get_by_role("textbox", name=sel.POST_EDITOR_TEXTBOX)
             if editor.count() == 0:
-                editor = self.page.locator("div.ql-editor[contenteditable='true']")
+                editor = self.page.locator(sel.POST_EDITOR_FALLBACK)
             if editor.count() == 0:
                 return False
             editor.first.fill(text)
 
-            post_btn = self.page.get_by_role("button", name=re.compile(r"^Post$", re.I))
+            post_btn = self.page.get_by_role("button", name=sel.POST_SUBMIT_BUTTON)
             if post_btn.count() == 0:
                 return False
             post_btn.first.click()
@@ -225,7 +260,9 @@ class LinkedInPage:
         """
         liked = 0
         try:
-            like_btns = self.page.get_by_role("button", name=re.compile(r"^React Like|^Like\b", re.I))
+            like_btns = self.page.get_by_role("button", name=sel.LIKE_BUTTON)
+            if like_btns.count() == 0:
+                self._record_miss("feed_card")
             for i in range(like_btns.count()):
                 if liked >= count:
                     break
@@ -245,8 +282,6 @@ class LinkedInPage:
     # Feed posts (index-addressed, for like + comment flows)
     # -------------------------------------------------------------------------
 
-    FEED_CARD_SELECTOR = "div.feed-shared-update-v2"
-
     def get_feed_posts(self, max_posts: int = 10) -> list[dict]:
         """Scroll the feed and collect post data.
 
@@ -263,29 +298,35 @@ class LinkedInPage:
             scroll_attempts = 0
             max_scrolls = max_posts * 2
             while len(posts) < max_posts and scroll_attempts < max_scrolls:
-                cards = self.page.locator(self.FEED_CARD_SELECTOR)
+                cards = self.page.locator(sel.FEED_CARD)
+                if cards.count() == 0:
+                    self._record_miss("feed_card")
                 for i in range(cards.count()):
                     if len(posts) >= max_posts:
                         break
                     card = cards.nth(i)
                     entry: dict = {"element_index": i, "author": "", "headline": "", "content": ""}
 
-                    author_el = card.locator(".update-components-actor__name span[aria-hidden='true']").first
+                    author_el = card.locator(sel.FEED_AUTHOR).first
                     if author_el.count() > 0:
                         entry["author"] = (author_el.text_content() or "").strip()
+                    else:
+                        self._record_miss("feed_author")
 
                     key = f"{entry['author']}_{i}"
                     if key in seen:
                         continue
                     seen.add(key)
 
-                    headline_el = card.locator(".update-components-actor__description span[aria-hidden='true']").first
+                    headline_el = card.locator(sel.FEED_AUTHOR_HEADLINE).first
                     if headline_el.count() > 0:
                         entry["headline"] = (headline_el.text_content() or "").strip()
 
-                    content_el = card.locator(".feed-shared-update-v2__description, .update-components-text").first
+                    content_el = card.locator(sel.FEED_CONTENT).first
                     if content_el.count() > 0:
                         entry["content"] = (content_el.text_content() or "").strip()[:500]
+                    else:
+                        self._record_miss("feed_content")
 
                     posts.append(entry)
 
@@ -299,11 +340,13 @@ class LinkedInPage:
     def like_post(self, post_index: int) -> bool:
         """Like a feed post by index. Skips already-liked posts. Returns True on success."""
         try:
-            cards = self.page.locator(self.FEED_CARD_SELECTOR)
+            cards = self.page.locator(sel.FEED_CARD)
+            if cards.count() == 0:
+                self._record_miss("feed_card")
             if post_index >= cards.count():
                 return False
             card = cards.nth(post_index)
-            like_btn = card.get_by_role("button", name=re.compile(r"^React Like|^Like\b", re.I))
+            like_btn = card.get_by_role("button", name=sel.LIKE_BUTTON)
             if like_btn.count() == 0:
                 return False
             if like_btn.first.get_attribute("aria-pressed") == "true":
@@ -316,21 +359,23 @@ class LinkedInPage:
     def comment_on_post(self, post_index: int, comment_text: str) -> bool:
         """Post a comment on a feed post by index. Returns True on success."""
         try:
-            cards = self.page.locator(self.FEED_CARD_SELECTOR)
+            cards = self.page.locator(sel.FEED_CARD)
+            if cards.count() == 0:
+                self._record_miss("feed_card")
             if post_index >= cards.count():
                 return False
             card = cards.nth(post_index)
 
-            comment_btn = card.get_by_role("button", name=re.compile(r"^Comment\b", re.I))
+            comment_btn = card.get_by_role("button", name=sel.COMMENT_BUTTON)
             if comment_btn.count() == 0:
                 return False
             comment_btn.first.click()
 
-            textbox = card.get_by_role("textbox", name=re.compile("Add a comment", re.I))
+            textbox = card.get_by_role("textbox", name=sel.COMMENT_TEXTBOX)
             textbox.wait_for(timeout=5000)
             textbox.fill(comment_text)
 
-            post_btn = card.get_by_role("button", name=re.compile(r"^Post\b", re.I))
+            post_btn = card.get_by_role("button", name=sel.COMMENT_SUBMIT_BUTTON)
             if post_btn.count() == 0:
                 return False
             post_btn.first.click()
@@ -350,17 +395,17 @@ class LinkedInPage:
         """Update own headline via the 'Edit intro' dialog. Returns True on success."""
         try:
             self.goto_own_profile()
-            edit_btn = self.page.get_by_role("button", name=re.compile("Edit intro", re.I))
+            edit_btn = self.page.get_by_role("button", name=sel.EDIT_INTRO_BUTTON)
             if edit_btn.count() == 0:
                 return False
             edit_btn.first.click()
 
-            field = self.page.get_by_label(re.compile("Headline", re.I))
+            field = self.page.get_by_label(sel.HEADLINE_FIELD_LABEL)
             if field.count() == 0:
                 return False
             field.first.fill(headline)
 
-            save_btn = self.page.get_by_role("button", name=re.compile(r"^Save$", re.I))
+            save_btn = self.page.get_by_role("button", name=sel.SAVE_BUTTON)
             if save_btn.count() == 0:
                 return False
             save_btn.first.click()
@@ -373,15 +418,13 @@ class LinkedInPage:
         """Update own About section. Returns True on success."""
         try:
             self.goto_own_profile()
-            about_section = self.page.locator("#about")
+            about_section = self.page.locator(sel.PROFILE_ABOUT_SECTION)
             if about_section.count() == 0:
                 return False
-            edit_btn = self.page.get_by_role("button", name=re.compile("Edit about", re.I))
+            edit_btn = self.page.get_by_role("button", name=sel.EDIT_ABOUT_BUTTON)
             if edit_btn.count() == 0:
                 # Fallback: pencil button within the about section's parent block
-                edit_btn = about_section.locator(
-                    "xpath=ancestor::section//button[contains(@aria-label, 'about') or contains(@aria-label, 'About')]"
-                )
+                edit_btn = about_section.locator(sel.PROFILE_ABOUT_EDIT_FALLBACK)
             if edit_btn.count() == 0:
                 return False
             edit_btn.first.click()
@@ -391,7 +434,7 @@ class LinkedInPage:
                 return False
             field.first.fill(about)
 
-            save_btn = self.page.get_by_role("button", name=re.compile(r"^Save$", re.I))
+            save_btn = self.page.get_by_role("button", name=sel.SAVE_BUTTON)
             if save_btn.count() == 0:
                 return False
             save_btn.first.click()
@@ -415,7 +458,7 @@ class LinkedInPage:
         submitted | ready_to_submit | no_easy_apply | needs_manual_input | error
         """
         try:
-            apply_btn = self.page.get_by_role("button", name=re.compile("Easy Apply", re.I))
+            apply_btn = self.page.get_by_role("button", name=sel.EASY_APPLY_BUTTON)
             if apply_btn.count() == 0:
                 return {"status": "no_easy_apply", "detail": "No Easy Apply button on page"}
             apply_btn.first.click()
@@ -423,12 +466,12 @@ class LinkedInPage:
 
             for _ in range(max_steps):
                 if resume_path:
-                    file_input = self.page.locator("input[type='file']")
+                    file_input = self.page.locator(sel.FILE_INPUT)
                     if file_input.count() > 0:
                         file_input.first.set_input_files(resume_path)
                         self.page.wait_for_timeout(1500)
 
-                submit_btn = self.page.get_by_role("button", name=re.compile("Submit application", re.I))
+                submit_btn = self.page.get_by_role("button", name=sel.EASY_APPLY_SUBMIT_BUTTON)
                 if submit_btn.count() > 0:
                     if not submit:
                         return {"status": "ready_to_submit", "detail": "Stopped before final submit (pass --submit)"}
@@ -437,14 +480,14 @@ class LinkedInPage:
                     return {"status": "submitted", "detail": "Application submitted"}
 
                 # Required fields LinkedIn flags in red block progression
-                errors = self.page.locator(".artdeco-inline-feedback--error")
+                errors = self.page.locator(sel.FORM_ERROR)
                 if errors.count() > 0:
                     return {
                         "status": "needs_manual_input",
                         "detail": "Form has required fields that need manual answers",
                     }
 
-                next_btn = self.page.get_by_role("button", name=re.compile("Next|Review|Continue", re.I))
+                next_btn = self.page.get_by_role("button", name=sel.EASY_APPLY_NEXT_BUTTON)
                 if next_btn.count() == 0:
                     return {"status": "needs_manual_input", "detail": "Could not find a Next/Review button"}
                 next_btn.first.click()
@@ -462,21 +505,27 @@ class LinkedInPage:
         """
         data: dict[str, str] = {}
         try:
-            name_el = self.page.locator("h1.text-heading-xlarge")
+            name_el = self.page.locator(sel.PROFILE_NAME_STRICT)
             if name_el.count():
                 data["name"] = name_el.inner_text().strip()
+            else:
+                self._record_miss("profile_name")
 
-            headline_el = self.page.locator(".text-body-medium.break-words")
+            headline_el = self.page.locator(sel.PROFILE_HEADLINE_STRICT)
             if headline_el.count():
                 data["headline"] = headline_el.first.inner_text().strip()
+            else:
+                self._record_miss("profile_headline")
 
-            location_el = self.page.locator(".text-body-small.inline.t-black--light.break-words")
+            location_el = self.page.locator(sel.PROFILE_LOCATION_STRICT)
             if location_el.count():
                 data["location"] = location_el.first.inner_text().strip()
 
-            about_el = self.page.locator("#about ~ div .visually-hidden")
+            about_el = self.page.locator(sel.PROFILE_ABOUT_TEXT)
             if about_el.count():
                 data["about"] = about_el.inner_text().strip()
+            else:
+                self._record_miss("profile_about")
         except Exception:
             pass
         return data

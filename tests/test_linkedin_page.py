@@ -221,10 +221,15 @@ class TestLikeVisiblePosts:
         assert button.scrolled == 1
 
     def test_no_like_buttons_records_a_selector_miss(self, page):
-        """Zero likes with zero buttons is a breakage, not a quiet feed."""
+        """Zero likes with zero buttons is a breakage, not a quiet feed.
+
+        The miss names LIKE_BUTTON, the selector that actually matched nothing —
+        naming feed_card would send the reader to a selector that is fine.
+        """
         lp = LinkedInPage(page)
         assert lp.like_visible_posts(count=3) == 0
-        assert "feed_card" in lp.selector_misses
+        assert lp.selector_misses == ["like_button"]
+        assert "like_button" in lp.selector_health()["selectors"]
 
 
 class TestGetFeedPosts:

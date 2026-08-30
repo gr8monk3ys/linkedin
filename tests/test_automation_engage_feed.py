@@ -11,7 +11,7 @@ from linkedin.automation.safety import (
     MAX_REACTIONS_PER_DAY,
     SafetyLimits,
 )
-from linkedin.services.automation_service import AutomationService
+from linkedin.services.automation_service import AutomationService, publish_unreviewed
 
 
 class TestLikePostByIndex:
@@ -91,7 +91,7 @@ class TestEngageFeed:
         safety = SafetyLimits()
 
         with patch("linkedin.services.automation_service.generate_with_ai", return_value="Nice point!") as gen:
-            results = svc.engage_feed(page, limit=3, comment_count=2, safety=safety)
+            results = svc.engage_feed(page, limit=3, comment_count=2, safety=safety, approve_comment=publish_unreviewed)
 
         assert len(results) == 3
         assert all(r["liked"] for r in results)
@@ -104,7 +104,7 @@ class TestEngageFeed:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = []
-        assert svc.engage_feed(page, limit=5) == []
+        assert svc.engage_feed(page, limit=5, approve_comment=publish_unreviewed) == []
 
     def test_no_comment_on_contentless_post(self, profile_repo):
         svc = AutomationService(profile_repo)
@@ -112,7 +112,7 @@ class TestEngageFeed:
         page.get_feed_posts.return_value = [_post(0, content="")]
         page.like_post.return_value = True
         with patch("linkedin.services.automation_service.generate_with_ai") as gen:
-            results = svc.engage_feed(page, limit=1, comment_count=1)
+            results = svc.engage_feed(page, limit=1, comment_count=1, approve_comment=publish_unreviewed)
         gen.assert_not_called()
         assert not results[0]["commented"]
 
@@ -122,7 +122,7 @@ class TestEngageFeed:
         page.get_feed_posts.return_value = [_post(0)]
         page.like_post.return_value = True
         with patch("linkedin.services.automation_service.generate_with_ai", side_effect=AIClientError("down")):
-            results = svc.engage_feed(page, limit=1, comment_count=1)
+            results = svc.engage_feed(page, limit=1, comment_count=1, approve_comment=publish_unreviewed)
         assert results[0]["liked"]
         assert not results[0]["commented"]
         assert results[0]["comment_text"] == ""
@@ -133,7 +133,7 @@ class TestEngageFeed:
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0), _post(1)]
         safety = SafetyLimits(reactions=MAX_REACTIONS_PER_DAY)
-        results = svc.engage_feed(page, limit=2, comment_count=0, safety=safety)
+        results = svc.engage_feed(page, limit=2, comment_count=0, safety=safety, approve_comment=publish_unreviewed)
         assert results == []
         page.like_post.assert_not_called()
 
@@ -143,7 +143,7 @@ class TestEngageFeed:
         long_content = "x" * 120
         page.get_feed_posts.return_value = [_post(0, content=long_content)]
         page.like_post.return_value = True
-        results = svc.engage_feed(page, limit=1)
+        results = svc.engage_feed(page, limit=1, approve_comment=publish_unreviewed)
         assert results[0]["content_preview"] == "x" * 47 + "..."
 
     def test_generate_feed_comment_without_profile(self):
@@ -245,6 +245,11 @@ class TestCommentSanitizer:
 
 
 class TestCommentApproval:
+    def test_omitting_the_gate_is_an_error_not_a_free_pass(self, profile_repo):
+        """The unreviewed path has to be asked for by name; forgetting it must not publish."""
+        with pytest.raises(TypeError, match="approve_comment"):
+            AutomationService(profile_repo).engage_feed(MagicMock(), limit=1, comment_count=1)
+
     def test_declined_comment_is_not_published(self, profile_repo):
         svc = AutomationService(profile_repo)
         page = MagicMock()
@@ -289,7 +294,9 @@ class TestCommentApproval:
         page.like_post.return_value = True
 
         with patch("linkedin.services.automation_service.generate_with_ai", return_value="I cannot help with that."):
-            results = svc.engage_feed(page, limit=1, comment_count=1, safety=SafetyLimits())
+            results = svc.engage_feed(
+                page, limit=1, comment_count=1, safety=SafetyLimits(), approve_comment=publish_unreviewed
+            )
 
         page.comment_on_post.assert_not_called()
         assert results[0]["skipped_reason"] == "no usable comment generated"
@@ -350,7 +357,7 @@ class TestEngageCliApproval:
         mock = MagicMock(return_value=[])
         result = self._run(monkeypatch, ["automate", "engage", "--feed", "--comments", "1", "--yes"], mock)
         assert result.exit_code == 0, result.output
-        assert mock.call_args.kwargs["approve_comment"] is None
+        assert mock.call_args.kwargs["approve_comment"] is publish_unreviewed
         assert "published unreviewed" in result.output
 
     def test_reviewer_publishes_only_on_yes(self):

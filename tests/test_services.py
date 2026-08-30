@@ -1,6 +1,7 @@
 """Tests for service layer."""
 
 from datetime import datetime, timedelta
+from enum import Enum
 from unittest.mock import patch
 
 import pytest
@@ -735,13 +736,13 @@ class TestFollowUpCadence:
         assert svc.get_contact(1)["follow_up_date"] is not None
 
     def test_status_change_seeds_follow_up_date(self, json_repos):
-        from linkedin.services.contact_service import FOLLOW_UP_CADENCE_DAYS
+        from linkedin.services.contact_service import STATUS_RULES
 
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
         svc.update_contact(1, status="messaged")
 
-        expected = (datetime.now() + timedelta(days=FOLLOW_UP_CADENCE_DAYS["messaged"])).strftime("%Y-%m-%d")
+        expected = (datetime.now() + timedelta(days=STATUS_RULES["messaged"]["cadence_days"])).strftime("%Y-%m-%d")
         assert svc.get_contact(1)["follow_up_date"] == expected
 
     def test_explicit_follow_up_beats_cadence(self, json_repos):
@@ -798,25 +799,38 @@ class TestFollowUpCadence:
         actions = svc.get_next_actions()
         assert [a["contact_id"] for a in actions] == [1]
 
-    def test_every_pipeline_status_has_both_a_cadence_and_a_rule(self):
+    def test_every_pipeline_status_is_terminal_or_planned_for(self):
         """The root cause: `messaged` had a status but no rule, so those contacts
-        were invisible to the planner for five months. Adding a status to one
-        table and not the other must fail loudly rather than silently."""
+        were invisible to the planner for five months. A status declared in
+        `ContactStatus` and planned for nowhere must fail loudly."""
+        from linkedin.constants import ContactStatus
         from linkedin.services.contact_service import (
-            FOLLOW_UP_CADENCE_DAYS,
             STATUS_RULES,
+            TERMINAL_STATUSES,
             _check_status_coverage,
         )
 
-        assert set(FOLLOW_UP_CADENCE_DAYS) == set(STATUS_RULES)
+        assert set(STATUS_RULES) | set(TERMINAL_STATUSES) == {s.value for s in ContactStatus}
         _check_status_coverage()
 
     def test_a_status_missing_its_rule_raises(self, monkeypatch):
+        """Adding a status to the enum and to neither table is what must fail."""
         from linkedin.services import contact_service
 
-        monkeypatch.setitem(contact_service.FOLLOW_UP_CADENCE_DAYS, "ghosted", 5)
+        class Ghosted(str, Enum):
+            GHOSTED = "ghosted"
+            HIRED = "hired"
+
+        monkeypatch.setattr(contact_service, "ContactStatus", Ghosted)
         with pytest.raises(RuntimeError, match="invisible to the planner"):
             contact_service._check_status_coverage()
+
+    def test_cadence_and_action_cannot_drift_apart(self):
+        """Both live in one row, so a status can never have one without the other."""
+        from linkedin.services.contact_service import STATUS_RULES
+
+        for status, rule in STATUS_RULES.items():
+            assert {"cadence_days", "after_days", "priority", "action", "reason"} <= set(rule), status
 
     def test_every_rule_action_is_renderable_by_the_cli(self):
         """A rule whose action has no label/command renders as a bare slug."""
@@ -984,3 +998,31 @@ class TestRepairPartialRecords:
         contact_repo, _company_repo, *_ = json_repos
         contact_repo.add({"id": 1, "follow_up_date": "2020-01-01"})
         assert len(self._svc(json_repos).get_due_contacts()["overdue"]) == 1
+
+
+class TestDashboardMatchesThePlanner:
+    """The dashboard used to keep its own copy of "overdue" and its own `>= 14`."""
+
+    def _svc(self, json_repos):
+        from linkedin.services.dashboard_service import DashboardService
+
+        contacts, companies, profiles, drafts = json_repos[:4]
+        return DashboardService(profiles, contacts, companies, drafts)
+
+    def test_a_contact_with_no_status_does_not_crash(self, json_repos):
+        json_repos[0].add({"id": 1, "name": "Alice"})
+        data = self._svc(json_repos).get_dashboard_data()
+        assert data["overdue"] == []
+
+    def test_stale_threshold_tracks_the_status_rule(self, json_repos):
+        from linkedin.services.contact_service import STATUS_RULES
+
+        stale_after = STATUS_RULES["connection_sent"]["after_days"]
+        json_repos[0].add({
+            "id": 1,
+            "name": "Alice",
+            "status": "connection_sent",
+            "last_contact": (datetime.now() - timedelta(days=stale_after)).isoformat(),
+        })
+        data = self._svc(json_repos).get_dashboard_data()
+        assert [c["id"] for c, _ in data["stale_connections"]] == [1]

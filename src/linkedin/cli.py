@@ -68,10 +68,10 @@ from linkedin.scheduling.schedule import (
 )
 from linkedin.services.analytics_service import AnalyticsService
 from linkedin.services.application_service import ApplicationService
-from linkedin.services.automation_service import AutomationService
+from linkedin.services.automation_service import AutomationService, publish_unreviewed
 from linkedin.services.calendar_service import ContentCalendarService
 from linkedin.services.company_service import CompanyService
-from linkedin.services.contact_service import ContactService, _parse_iso_date
+from linkedin.services.contact_service import STATUS_RULES, ContactService, parse_iso_date
 from linkedin.services.conversation_service import ConversationService
 from linkedin.services.dashboard_service import DashboardService
 from linkedin.services.data_service import DataService
@@ -1062,7 +1062,7 @@ def contacts_list(status, company, company_id, source):
     for c in filtered:
         emoji = STATUS_EMOJI.get(ContactStatus(c["status"]), "")
         follow_up = c.get("follow_up_date", "")
-        follow_up_date = _parse_iso_date(follow_up)
+        follow_up_date = parse_iso_date(follow_up)
         if follow_up_date is not None and follow_up_date < datetime.now().date():
             follow_up = f"[red]⚠ {follow_up}[/red]"
         table.add_row(
@@ -1250,7 +1250,8 @@ def contacts_due(days):
             console.print(f"  - {contact.get('name', '')} ({contact.get('company', '')}) - [dim]in {-days_until} days[/dim]")
 
     if stale:
-        console.print("\n[bold yellow]📤 Stale Connection Requests (>14 days)[/bold yellow]\n")
+        stale_after = STATUS_RULES["connection_sent"]["after_days"]
+        console.print(f"\n[bold yellow]📤 Stale Connection Requests (>{stale_after} days)[/bold yellow]\n")
         for contact, days_since in stale:
             console.print(f"  ! {contact.get('name', '')} ({contact.get('company', '')}) - {days_since} days ago")
             console.print("    → Consider sending a follow-up or finding another contact\n")
@@ -4167,7 +4168,7 @@ def _open_linkedin_session(auto, headless: bool):
         browser.save_session()
     return browser, linkedin_page
 
-def _close_linkedin_session(browser, linkedin_page=None) -> None:
+def _close_linkedin_session(browser, linkedin_page) -> None:
     """Close the browser, and say so when a selector stopped matching.
 
     A LinkedIn markup change makes every action return 0/[]/False, which reads
@@ -4177,10 +4178,9 @@ def _close_linkedin_session(browser, linkedin_page=None) -> None:
     try:
         browser.close()
     finally:
-        health = getattr(linkedin_page, "selector_health", None)
-        if health is None:
+        if linkedin_page is None:
             return
-        report = health()
+        report = linkedin_page.selector_health()
         if report["healthy"]:
             return
         console.print(
@@ -4527,7 +4527,7 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
                 safety=safety,
                 rate_limiter=limiter,
                 dry_run=dry_run,
-                approve_comment=None if yes else _review_feed_comment,
+                approve_comment=publish_unreviewed if yes else _review_feed_comment,
             )
             liked = sum(1 for r in results if r["liked"])
             commented = sum(1 for r in results if r["commented"])

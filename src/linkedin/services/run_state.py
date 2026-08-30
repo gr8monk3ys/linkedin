@@ -86,11 +86,16 @@ def get_last_failure_streak_notified() -> int:
 
 
 def set_last_failure_streak_notified(streak: int) -> None:
+    streak = max(0, int(streak))
     state = load_run_state()
     alerts = state.get("alerts", {})
     if not isinstance(alerts, dict):
         alerts = {}
-    alerts["last_failure_streak_notified"] = max(0, int(streak))
+    if alerts.get("last_failure_streak_notified") == streak:
+        # Every successful run clears this, and it is already 0 on almost all of
+        # them. Skipping the no-op saves a full rewrite + fsync of the state file.
+        return
+    alerts["last_failure_streak_notified"] = streak
     state["alerts"] = alerts
     save_run_state(state)
 

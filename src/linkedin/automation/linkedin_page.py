@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 from linkedin.automation import selectors as sel
 
 if TYPE_CHECKING:
-    from playwright.sync_api import Page
+    from playwright.sync_api import Locator, Page
 
 
 class LinkedInPage:
@@ -36,6 +36,18 @@ class LinkedInPage:
     def _record_miss(self, name: str) -> None:
         if name not in self.selector_misses:
             self.selector_misses.append(name)
+
+    def _feed_cards(self) -> tuple[Locator, int]:
+        """Locate the feed cards, recording a miss when none match.
+
+        Every feed method goes through here so that adding one cannot silently
+        opt out of health reporting — the omission would look like working code.
+        """
+        cards = self.page.locator(sel.FEED_CARD)
+        count = cards.count()
+        if count == 0:
+            self._record_miss("feed_card")
+        return cards, count
 
     def selector_health(self) -> dict:
         """Report which fragile selectors stopped matching during this session."""
@@ -245,7 +257,9 @@ class LinkedInPage:
             like_btns = self.page.get_by_role("button", name=sel.LIKE_BUTTON)
             button_count = like_btns.count()
             if button_count == 0:
-                self._record_miss("feed_card")
+                # FEED_CARD was never queried here; blaming it points the doctor
+                # output at a selector that is fine.
+                self._record_miss("like_button")
             for i in range(button_count):
                 if liked >= count:
                     break
@@ -281,10 +295,7 @@ class LinkedInPage:
             scroll_attempts = 0
             max_scrolls = max_posts * 2
             while len(posts) < max_posts and scroll_attempts < max_scrolls:
-                cards = self.page.locator(sel.FEED_CARD)
-                card_count = cards.count()
-                if card_count == 0:
-                    self._record_miss("feed_card")
+                cards, card_count = self._feed_cards()
                 for i in range(card_count):
                     if len(posts) >= max_posts:
                         break
@@ -324,10 +335,7 @@ class LinkedInPage:
     def like_post(self, post_index: int) -> bool:
         """Like a feed post by index. Skips already-liked posts. Returns True on success."""
         try:
-            cards = self.page.locator(sel.FEED_CARD)
-            card_count = cards.count()
-            if card_count == 0:
-                self._record_miss("feed_card")
+            cards, card_count = self._feed_cards()
             if post_index >= card_count:
                 return False
             card = cards.nth(post_index)
@@ -344,10 +352,7 @@ class LinkedInPage:
     def comment_on_post(self, post_index: int, comment_text: str) -> bool:
         """Post a comment on a feed post by index. Returns True on success."""
         try:
-            cards = self.page.locator(sel.FEED_CARD)
-            card_count = cards.count()
-            if card_count == 0:
-                self._record_miss("feed_card")
+            cards, card_count = self._feed_cards()
             if post_index >= card_count:
                 return False
             card = cards.nth(post_index)

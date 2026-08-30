@@ -5,62 +5,58 @@ import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
+from linkedin.constants import ContactStatus
 from linkedin.data.repository import CompanyRepo, ContactRepo
 from linkedin.types import ContactDict
 
 # Statuses that end the pipeline; they carry no follow-up and generate no actions.
 TERMINAL_STATUSES = frozenset({"hired", "rejected"})
 
-# How long to wait in each pipeline status before the contact is due for a nudge.
-# Advancing a contact's status seeds `follow_up_date` from this table, so every
-# active contact always has a next date and the planner can never come up empty.
-FOLLOW_UP_CADENCE_DAYS: dict[str, int] = {
-    "not_contacted": 0,
-    "connection_sent": 7,
-    "connected": 2,
-    "messaged": 5,
-    "responded": 2,
-    "call_scheduled": 7,
-}
-
-# What to do about a contact sitting in each status, and how long to wait first.
-# This is the backstop for a contact whose follow_up_date is missing or stale;
-# `STATUS_RULES` and `FOLLOW_UP_CADENCE_DAYS` must cover the same statuses, which
-# `_check_status_coverage()` enforces at import. A status present in one table and
-# absent from the other is exactly the hole that made `messaged` contacts
-# invisible to the planner.
+# Everything the planner knows about a pipeline status, in one row per status:
+# how long to wait before the contact is due (`cadence_days`, which seeds
+# `follow_up_date` on add and on every status change), and what to do once that
+# wait has elapsed. Keeping cadence and action in the same row is what makes a
+# status with one and not the other unrepresentable — that hole is what made
+# `messaged` contacts invisible to the planner. `_check_status_coverage()` closes
+# the other half: a status added to `ContactStatus` and to neither table here.
 STATUS_RULES: dict[str, dict] = {
     "not_contacted": {
+        "cadence_days": 0,
         "after_days": 0,
         "priority": 60,
         "action": "send_connection",
         "reason": "Added {age} day(s) ago; send a connection request",
     },
     "connection_sent": {
+        "cadence_days": 7,
         "after_days": 14,
         "priority": 85,
         "action": "stale_connection_sent",
         "reason": "Connection request sent {age} day(s) ago with no response",
     },
     "connected": {
+        "cadence_days": 2,
         "after_days": 7,
         "priority": 70,
         "action": "send_first_message",
         "reason": "Connected {age} day(s) ago; send first message",
     },
     "messaged": {
+        "cadence_days": 5,
         "after_days": 5,
         "priority": 75,
         "action": "follow_up_messaged",
         "reason": "Messaged {age} day(s) ago with no reply; follow up",
     },
     "responded": {
+        "cadence_days": 2,
         "after_days": 3,
         "priority": 65,
         "action": "schedule_call",
         "reason": "Responded {age} day(s) ago; propose a call",
     },
     "call_scheduled": {
+        "cadence_days": 7,
         "after_days": 7,
         "priority": 68,
         "action": "call_follow_up",
@@ -70,13 +66,19 @@ STATUS_RULES: dict[str, dict] = {
 
 
 def _check_status_coverage() -> None:
-    """Fail loudly if a pipeline status has a cadence but no rule, or vice versa."""
-    cadence, rules = set(FOLLOW_UP_CADENCE_DAYS), set(STATUS_RULES)
-    if cadence != rules:
+    """Fail loudly if a pipeline status is neither terminal nor planned for.
+
+    `ContactStatus` is where a new status gets added, and a status the planner has
+    no rule for is invisible to it forever. Checking the tables against the enum
+    rather than against each other is what makes that impossible to ship.
+    """
+    known = set(STATUS_RULES) | set(TERMINAL_STATUSES)
+    declared = {status.value for status in ContactStatus}
+    if known != declared:
         raise RuntimeError(
-            "Pipeline status tables disagree — a status with no rule is invisible to "
-            f"the planner. Only in FOLLOW_UP_CADENCE_DAYS: {sorted(cadence - rules)}; "
-            f"only in STATUS_RULES: {sorted(rules - cadence)}"
+            "Pipeline status tables disagree with ContactStatus — a status with no "
+            f"rule is invisible to the planner. Missing a rule: {sorted(declared - known)}; "
+            f"rule for an unknown status: {sorted(known - declared)}"
         )
 
 
@@ -112,7 +114,7 @@ CAMPAIGN_LIBRARY: dict[str, list[dict]] = {
 }
 
 
-def _parse_iso_date(value) -> dt.date | None:
+def parse_iso_date(value) -> dt.date | None:
     """Parse a stored ISO timestamp or date, returning None for anything unusable."""
     if not value:
         return None
@@ -122,11 +124,12 @@ def _parse_iso_date(value) -> dt.date | None:
         return None
 
 
-def _cadence_follow_up_date(status: str, *, since: dt.date | None = None) -> str | None:
+def cadence_follow_up_date(status: str, *, since: dt.date | None = None) -> str | None:
     """Return the follow-up date implied by `status`, or None for terminal statuses."""
-    days = FOLLOW_UP_CADENCE_DAYS.get(status)
-    if days is None:
+    rule = STATUS_RULES.get(status)
+    if rule is None:
         return None
+    days = rule["cadence_days"]
     base = since or datetime.now().date()
     return (base + dt.timedelta(days=days)).strftime("%Y-%m-%d")
 
@@ -190,7 +193,7 @@ class ContactService:
             "status": "not_contacted",
             "created_at": datetime.now().isoformat(),
             "last_contact": None,
-            "follow_up_date": _cadence_follow_up_date("not_contacted"),
+            "follow_up_date": cadence_follow_up_date("not_contacted"),
             "company_id": company_id,
             "email": email,
             "source": source,
@@ -220,7 +223,7 @@ class ContactService:
             old_status = contact.get("status", "not_contacted")
             contact["status"] = status
             contact["last_contact"] = datetime.now().isoformat()
-            contact["follow_up_date"] = _cadence_follow_up_date(status)
+            contact["follow_up_date"] = cadence_follow_up_date(status)
             contact["activities"].append({
                 "date": datetime.now().isoformat(),
                 "type": status,
@@ -300,7 +303,7 @@ class ContactService:
 
         due_contacts = []
         for contact in all_contacts:
-            follow_up_date = _parse_iso_date(contact.get("follow_up_date"))
+            follow_up_date = parse_iso_date(contact.get("follow_up_date"))
             if follow_up_date is None or follow_up_date > threshold:
                 continue
             due_contacts.append((contact, follow_up_date, (today - follow_up_date).days))
@@ -308,7 +311,7 @@ class ContactService:
         stale_connections = []
         for contact in all_contacts:
             if contact.get("status") == "connection_sent":
-                last_date = _parse_iso_date(contact.get("last_contact"))
+                last_date = parse_iso_date(contact.get("last_contact"))
                 if last_date is not None:
                     days_since = (today - last_date).days
                     if days_since >= STATUS_RULES["connection_sent"]["after_days"]:
@@ -342,6 +345,17 @@ class ContactService:
         self.contacts.update(contact)
         return follow_up_date
 
+    @staticmethod
+    def _action(contact: ContactDict, priority: int, action: str, reason: str) -> dict:
+        return {
+            "priority": priority,
+            "action": action,
+            "contact_id": contact["id"],
+            "name": contact.get("name", ""),
+            "company": contact.get("company", ""),
+            "reason": reason,
+        }
+
     def get_next_actions(self, limit: int = 10) -> list[dict]:
         """Return prioritized next actions across the pipeline."""
         today = datetime.now().date()
@@ -349,36 +363,18 @@ class ContactService:
         due_data = self.get_due_contacts(days=0, contacts=all_contacts)
         actions: list[dict] = []
 
-        for contact, follow_date, days_overdue in due_data["overdue"]:
-            actions.append({
-                "priority": 100 + min(days_overdue, 30),
-                "action": "follow_up_overdue",
-                "contact_id": contact["id"],
-                "name": contact.get("name", ""),
-                "company": contact.get("company", ""),
-                "reason": f"Follow-up overdue by {days_overdue} day(s)",
-            })
+        for contact, _, days_overdue in due_data["overdue"]:
+            actions.append(self._action(
+                contact, 100 + min(days_overdue, 30), "follow_up_overdue",
+                f"Follow-up overdue by {days_overdue} day(s)",
+            ))
 
-        for contact, follow_date, _ in due_data["due_today"]:
-            actions.append({
-                "priority": 95,
-                "action": "follow_up_today",
-                "contact_id": contact["id"],
-                "name": contact.get("name", ""),
-                "company": contact.get("company", ""),
-                "reason": "Follow-up due today",
-            })
+        for contact, _, _ in due_data["due_today"]:
+            actions.append(self._action(contact, 95, "follow_up_today", "Follow-up due today"))
 
-        for contact, days_since in due_data["stale"]:
-            actions.append({
-                "priority": 85 + min(days_since, 30),
-                "action": "stale_connection_sent",
-                "contact_id": contact["id"],
-                "name": contact.get("name", ""),
-                "company": contact.get("company", ""),
-                "reason": f"Connection request sent {days_since} day(s) ago with no response",
-            })
-
+        # No loop over due_data["stale"]: STATUS_RULES["connection_sent"] emits the
+        # same action from the same threshold, and the dedupe below discarded one of
+        # the two copies. One source for the action, one for its wording.
         for contact in all_contacts:
             status = contact.get("status")
             if status in TERMINAL_STATUSES:
@@ -387,32 +383,24 @@ class ContactService:
             if age_days is None:
                 # No timestamps at all — the contact is stranded rather than fresh.
                 # Surface it so `contacts repair` gets run instead of it sitting invisible.
-                actions.append({
-                    "priority": 50,
-                    "action": "repair_contact",
-                    "contact_id": contact["id"],
-                    "name": contact.get("name", ""),
-                    "company": contact.get("company", ""),
-                    "reason": "No created_at/last_contact; run `linkedin-cli contacts repair`",
-                })
+                actions.append(self._action(
+                    contact, 50, "repair_contact",
+                    "No created_at/last_contact; run `linkedin-cli contacts repair`",
+                ))
                 continue
 
             rule = STATUS_RULES.get(status)
             if rule and age_days >= rule["after_days"]:
-                actions.append({
-                    "priority": rule["priority"] + min(age_days, 30),
-                    "action": rule["action"],
-                    "contact_id": contact["id"],
-                    "name": contact.get("name", ""),
-                    "company": contact.get("company", ""),
-                    "reason": rule["reason"].format(age=age_days),
-                })
+                actions.append(self._action(
+                    contact, rule["priority"] + min(age_days, 30), rule["action"],
+                    rule["reason"].format(age=age_days),
+                ))
 
         actions.sort(key=lambda a: a["priority"], reverse=True)
 
         # A contact can qualify under several rules at once (an overdue follow-up is
-        # usually also a stale connection). Keep only its highest-priority action so
-        # the daily plan reads as one line per person.
+        # usually also due today). Keep only its highest-priority action so the daily
+        # plan reads as one line per person.
         deduped: list[dict] = []
         seen: set[int] = set()
         for action in actions:
@@ -436,7 +424,7 @@ class ContactService:
         for contact in self.contacts.list_all():
             if contact.get("status") in TERMINAL_STATUSES:
                 continue
-            due = _parse_iso_date(contact.get("follow_up_date"))
+            due = parse_iso_date(contact.get("follow_up_date"))
             if due is None or due <= today:
                 stalled.append(contact)
         return stalled
@@ -478,8 +466,8 @@ class ContactService:
                     fixes.append("follow_up_date cleared")
             elif not contact.get("follow_up_date"):
                 reference = contact.get("last_contact") or contact["created_at"]
-                since = _parse_iso_date(reference) or datetime.now().date()
-                contact["follow_up_date"] = _cadence_follow_up_date(status, since=since)
+                since = parse_iso_date(reference) or datetime.now().date()
+                contact["follow_up_date"] = cadence_follow_up_date(status, since=since)
                 fixes.append("follow_up_date")
 
             if not fixes:

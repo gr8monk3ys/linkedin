@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from linkedin.automation.rate_limiter import RateLimiter
 from linkedin.automation.safety import SafetyLimits
 from linkedin.data.repository import ContactRepo
+from linkedin.services.contact_service import cadence_follow_up_date
 from linkedin.types import ContactDict
 
 if TYPE_CHECKING:
@@ -75,6 +76,7 @@ def import_search_results(
             "linkedin_url": url,
             "notes": f"Imported from search. Headline: {headline}",
             "status": "not_contacted",
+            "follow_up_date": cadence_follow_up_date("not_contacted"),
             "source": "linkedin_search",
             "created_at": datetime.now().isoformat(),
             "activities": [],
@@ -128,6 +130,7 @@ def scrape_and_import_profile(
         "linkedin_url": url,
         "notes": data.get("about", ""),
         "status": "not_contacted",
+        "follow_up_date": cadence_follow_up_date("not_contacted"),
         "source": "linkedin_scrape",
         "created_at": datetime.now().isoformat(),
         "activities": [],

@@ -58,6 +58,16 @@ def sanitize_comment(text: str) -> str:
     return cleaned
 
 
+def publish_unreviewed(post: dict, text: str) -> bool:
+    """Approve every comment without asking — the explicit opt-out for `--yes`.
+
+    `engage_feed` requires an `approve_comment`, so skipping review has to be
+    named at the call site. A default of None would have made the unreviewed
+    path the one you get by forgetting an argument.
+    """
+    return True
+
+
 class AutomationService:
     """Business logic for feed engagement runs."""
 
@@ -67,18 +77,21 @@ class AutomationService:
     def engage_feed(
         self,
         linkedin: LinkedInPage,
+        *,
+        approve_comment: Callable[[dict, str], bool],
         limit: int = 10,
         comment_count: int = 0,
         safety: SafetyLimits | None = None,
         rate_limiter: RateLimiter | None = None,
         dry_run: bool = False,
-        approve_comment: Callable[[dict, str], bool] | None = None,
     ) -> list[dict]:
         """Browse the feed, like up to `limit` posts, AI-comment on up to `comment_count`.
 
         `approve_comment(post, text)` is called before every comment is published;
-        returning False skips it. Callers that publish for real must pass one —
-        the text is model output derived from untrusted feed content.
+        returning False skips it. It is required, and keyword-only: the text is
+        model output derived from untrusted feed content going out publicly under
+        the user's real name, so a caller that wants to skip review has to say so
+        with `publish_unreviewed` rather than by omitting an argument.
 
         Returns one result dict per post seen:
             {"author", "content_preview", "liked", "commented", "comment_text", "skipped_reason"}
@@ -113,7 +126,7 @@ class AutomationService:
                 comment_text = self.generate_feed_comment(profile, post)
                 if not comment_text:
                     skipped_reason = "no usable comment generated"
-                elif approve_comment is not None and not approve_comment(post, comment_text):
+                elif not approve_comment(post, comment_text):
                     skipped_reason = "declined at review"
                     comment_text = ""
                 if comment_text:

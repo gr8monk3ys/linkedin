@@ -72,10 +72,13 @@ POST_EDITOR_FALLBACK = "div.ql-editor[contenteditable='true']"
 FILE_INPUT = "input[type='file']"
 FORM_ERROR = ".artdeco-inline-feedback--error"
 
-#: CSS selectors keyed on LinkedIn class names — the first suspects when a run
-#: reports zero results. Names match the `selector_misses` entries.
+#: Selectors whose absence cannot be told apart from an empty page — the first
+#: suspects when a run reports zero results. Names match the `selector_misses`
+#: entries. Mostly CSS keyed on LinkedIn class names, plus the accessible-name
+#: patterns that a relabelled button would break just as silently.
 FRAGILE_SELECTORS = {
     "feed_card": FEED_CARD,
+    "like_button": LIKE_BUTTON.pattern,
     "feed_author": FEED_AUTHOR,
     "feed_content": FEED_CONTENT,
     "search_result_card": SEARCH_RESULT_CARD,

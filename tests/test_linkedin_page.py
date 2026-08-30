@@ -355,9 +355,9 @@ class TestSearchResults:
 
 class TestScrapeProfile:
     def test_scrapes_all_fields(self, page):
-        page.register_css(sel.PROFILE_NAME_STRICT, FakeElement("Ada Lovelace"))
-        page.register_css(sel.PROFILE_HEADLINE_STRICT, FakeElement("Engineer"))
-        page.register_css(sel.PROFILE_LOCATION_STRICT, FakeElement("London"))
+        page.register_css(sel.PROFILE_NAME, FakeElement("Ada Lovelace"))
+        page.register_css(sel.PROFILE_HEADLINE, FakeElement("Engineer"))
+        page.register_css(sel.PROFILE_LOCATION, FakeElement("London"))
         page.register_css(sel.PROFILE_ABOUT_TEXT, FakeElement("I build things."))
 
         lp = LinkedInPage(page)
@@ -374,10 +374,6 @@ class TestScrapeProfile:
         assert lp.scrape_profile() == {}
         assert set(lp.selector_misses) == {"profile_name", "profile_headline", "profile_about"}
 
-    def test_get_profile_info_uses_loose_selectors(self, page):
-        page.register_css(sel.PROFILE_NAME, FakeElement("Ada"))
-        page.register_css(sel.PROFILE_HEADLINE, FakeElement("Engineer"))
-        assert LinkedInPage(page).get_profile_info() == {"name": "Ada", "headline": "Engineer"}
 
 
 class TestProfileEditing:

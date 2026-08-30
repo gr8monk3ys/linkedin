@@ -3,6 +3,8 @@
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
+import pytest
+
 from tests.conftest import sample_company, sample_contact, sample_profile
 
 
@@ -796,12 +798,38 @@ class TestFollowUpCadence:
         actions = svc.get_next_actions()
         assert [a["contact_id"] for a in actions] == [1]
 
-    def test_active_pipeline_count_excludes_terminal(self, json_repos):
-        svc = self._svc(json_repos)
-        svc.add_contact(name="Alice", title="Engineer", company="Acme", linkedin="")
-        svc.add_contact(name="Bob", title="Engineer", company="Acme", linkedin="")
-        svc.update_contact(2, status="hired")
-        assert svc.active_pipeline_count() == 1
+    def test_every_pipeline_status_has_both_a_cadence_and_a_rule(self):
+        """The root cause: `messaged` had a status but no rule, so those contacts
+        were invisible to the planner for five months. Adding a status to one
+        table and not the other must fail loudly rather than silently."""
+        from linkedin.services.contact_service import (
+            FOLLOW_UP_CADENCE_DAYS,
+            STATUS_RULES,
+            _check_status_coverage,
+        )
+
+        assert set(FOLLOW_UP_CADENCE_DAYS) == set(STATUS_RULES)
+        _check_status_coverage()
+
+    def test_a_status_missing_its_rule_raises(self, monkeypatch):
+        from linkedin.services import contact_service
+
+        monkeypatch.setitem(contact_service.FOLLOW_UP_CADENCE_DAYS, "ghosted", 5)
+        with pytest.raises(RuntimeError, match="invisible to the planner"):
+            contact_service._check_status_coverage()
+
+    def test_every_rule_action_is_renderable_by_the_cli(self):
+        """A rule whose action has no label/command renders as a bare slug."""
+        from linkedin.cli import NEXT_ACTION_COMMANDS, NEXT_ACTION_LABELS
+        from linkedin.services.contact_service import STATUS_RULES
+
+        actions = {r["action"] for r in STATUS_RULES.values()} | {
+            "follow_up_overdue",
+            "follow_up_today",
+            "repair_contact",
+        }
+        assert actions <= set(NEXT_ACTION_LABELS)
+        assert actions <= set(NEXT_ACTION_COMMANDS)
 
 
 class TestRepairContacts:

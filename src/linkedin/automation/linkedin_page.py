@@ -162,25 +162,6 @@ class LinkedInPage:
     # Profile Info
     # -------------------------------------------------------------------------
 
-    def get_profile_info(self) -> dict[str, str]:
-        """Extract basic profile info from current profile page."""
-        info = {}
-        try:
-            name_el = self.page.locator(sel.PROFILE_NAME).first
-            if name_el.count() > 0:
-                info["name"] = name_el.text_content().strip()
-
-            headline_el = self.page.locator(sel.PROFILE_HEADLINE).first
-            if headline_el.count() > 0:
-                info["headline"] = headline_el.text_content().strip()
-
-            location_el = self.page.locator(sel.PROFILE_LOCATION).first
-            if location_el.count() > 0:
-                info["location"] = location_el.text_content().strip()
-        except Exception:
-            pass
-        return info
-
     # -------------------------------------------------------------------------
     # Search
     # -------------------------------------------------------------------------
@@ -190,9 +171,10 @@ class LinkedInPage:
         results = []
         try:
             cards = self.page.locator(sel.SEARCH_RESULT_CARD)
-            if cards.count() == 0:
+            card_count = cards.count()
+            if card_count == 0:
                 self._record_miss("search_result_card")
-            for i in range(cards.count()):
+            for i in range(card_count):
                 card = cards.nth(i)
                 entry = {}
                 name_link = card.locator(sel.SEARCH_RESULT_NAME).first
@@ -261,9 +243,10 @@ class LinkedInPage:
         liked = 0
         try:
             like_btns = self.page.get_by_role("button", name=sel.LIKE_BUTTON)
-            if like_btns.count() == 0:
+            button_count = like_btns.count()
+            if button_count == 0:
                 self._record_miss("feed_card")
-            for i in range(like_btns.count()):
+            for i in range(button_count):
                 if liked >= count:
                     break
                 btn = like_btns.nth(i)
@@ -299,9 +282,10 @@ class LinkedInPage:
             max_scrolls = max_posts * 2
             while len(posts) < max_posts and scroll_attempts < max_scrolls:
                 cards = self.page.locator(sel.FEED_CARD)
-                if cards.count() == 0:
+                card_count = cards.count()
+                if card_count == 0:
                     self._record_miss("feed_card")
-                for i in range(cards.count()):
+                for i in range(card_count):
                     if len(posts) >= max_posts:
                         break
                     card = cards.nth(i)
@@ -341,9 +325,10 @@ class LinkedInPage:
         """Like a feed post by index. Skips already-liked posts. Returns True on success."""
         try:
             cards = self.page.locator(sel.FEED_CARD)
-            if cards.count() == 0:
+            card_count = cards.count()
+            if card_count == 0:
                 self._record_miss("feed_card")
-            if post_index >= cards.count():
+            if post_index >= card_count:
                 return False
             card = cards.nth(post_index)
             like_btn = card.get_by_role("button", name=sel.LIKE_BUTTON)
@@ -360,9 +345,10 @@ class LinkedInPage:
         """Post a comment on a feed post by index. Returns True on success."""
         try:
             cards = self.page.locator(sel.FEED_CARD)
-            if cards.count() == 0:
+            card_count = cards.count()
+            if card_count == 0:
                 self._record_miss("feed_card")
-            if post_index >= cards.count():
+            if post_index >= card_count:
                 return False
             card = cards.nth(post_index)
 
@@ -505,19 +491,19 @@ class LinkedInPage:
         """
         data: dict[str, str] = {}
         try:
-            name_el = self.page.locator(sel.PROFILE_NAME_STRICT)
+            name_el = self.page.locator(sel.PROFILE_NAME)
             if name_el.count():
                 data["name"] = name_el.inner_text().strip()
             else:
                 self._record_miss("profile_name")
 
-            headline_el = self.page.locator(sel.PROFILE_HEADLINE_STRICT)
+            headline_el = self.page.locator(sel.PROFILE_HEADLINE)
             if headline_el.count():
                 data["headline"] = headline_el.first.inner_text().strip()
             else:
                 self._record_miss("profile_headline")
 
-            location_el = self.page.locator(sel.PROFILE_LOCATION_STRICT)
+            location_el = self.page.locator(sel.PROFILE_LOCATION)
             if location_el.count():
                 data["location"] = location_el.first.inner_text().strip()
 

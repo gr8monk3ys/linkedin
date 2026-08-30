@@ -71,7 +71,7 @@ from linkedin.services.application_service import ApplicationService
 from linkedin.services.automation_service import AutomationService
 from linkedin.services.calendar_service import ContentCalendarService
 from linkedin.services.company_service import CompanyService
-from linkedin.services.contact_service import ContactService
+from linkedin.services.contact_service import ContactService, _parse_iso_date
 from linkedin.services.conversation_service import ConversationService
 from linkedin.services.dashboard_service import DashboardService
 from linkedin.services.data_service import DataService
@@ -481,8 +481,8 @@ def _run_daily_cycle(
     return data
 
 
-def _daily_run_status(data: dict) -> str:
-    """Classify a completed cycle.
+def _daily_run_status(data: dict) -> tuple[str, list[dict]]:
+    """Classify a completed cycle, returning (status, stalled_contacts).
 
     Planning nothing is only a success when every active contact is scheduled for
     a future date — a genuinely quiet day. If a contact is due, overdue, or has no
@@ -491,8 +491,9 @@ def _daily_run_status(data: dict) -> str:
     generating zero drafts.
     """
     if data.get("actions"):
-        return "success"
-    return "no_actions" if _contact_svc.stalled_contacts() else "success"
+        return "success", []
+    stalled = _contact_svc.stalled_contacts()
+    return ("no_actions" if stalled else "success"), stalled
 
 
 def _run_daily_with_reliability(
@@ -587,7 +588,7 @@ def _run_daily_with_reliability(
     history_before_success = load_run_history_entries()
     prior_failure_streak = failure_streak(history_before_success)
     finished_at = datetime.now()
-    data["status"] = _daily_run_status(data)
+    data["status"], stalled = _daily_run_status(data)
     data["run_id"] = run_id
     data["trigger"] = trigger
     data["idempotency_key"] = effective_key
@@ -595,7 +596,6 @@ def _run_daily_with_reliability(
     data["finished_at"] = finished_at.isoformat(timespec="seconds")
 
     if data["status"] == "no_actions":
-        stalled = _contact_svc.stalled_contacts()
         data["stalled_contact_ids"] = [c["id"] for c in stalled]
         data["reason"] = (
             f"{len(stalled)} contact(s) are due or have no follow-up date, "
@@ -1062,13 +1062,9 @@ def contacts_list(status, company, company_id, source):
     for c in filtered:
         emoji = STATUS_EMOJI.get(ContactStatus(c["status"]), "")
         follow_up = c.get("follow_up_date", "")
-        if follow_up:
-            try:
-                follow_up_date = datetime.fromisoformat(follow_up.replace("Z", "+00:00")).date()
-                if follow_up_date < datetime.now().date():
-                    follow_up = f"[red]⚠ {follow_up}[/red]"
-            except (ValueError, AttributeError):
-                pass
+        follow_up_date = _parse_iso_date(follow_up)
+        if follow_up_date is not None and follow_up_date < datetime.now().date():
+            follow_up = f"[red]⚠ {follow_up}[/red]"
         table.add_row(
             str(c["id"]),
             c["name"],

@@ -58,12 +58,9 @@ SEARCH_RESULT_NAME = "a.app-aware-link span[aria-hidden='true']"
 SEARCH_RESULT_HEADLINE = ".entity-result__primary-subtitle"
 SEARCH_RESULT_LINK = "a.app-aware-link"
 
-PROFILE_NAME = "h1"
-PROFILE_NAME_STRICT = "h1.text-heading-xlarge"
-PROFILE_HEADLINE = ".text-body-medium"
-PROFILE_HEADLINE_STRICT = ".text-body-medium.break-words"
-PROFILE_LOCATION = ".text-body-small.inline"
-PROFILE_LOCATION_STRICT = ".text-body-small.inline.t-black--light.break-words"
+PROFILE_NAME = "h1.text-heading-xlarge"
+PROFILE_HEADLINE = ".text-body-medium.break-words"
+PROFILE_LOCATION = ".text-body-small.inline.t-black--light.break-words"
 PROFILE_ABOUT_SECTION = "#about"
 PROFILE_ABOUT_TEXT = "#about ~ div .visually-hidden"
 PROFILE_ABOUT_EDIT_FALLBACK = (
@@ -83,7 +80,7 @@ FRAGILE_SELECTORS = {
     "feed_content": FEED_CONTENT,
     "search_result_card": SEARCH_RESULT_CARD,
     "search_result_name": SEARCH_RESULT_NAME,
-    "profile_name": PROFILE_NAME_STRICT,
-    "profile_headline": PROFILE_HEADLINE_STRICT,
+    "profile_name": PROFILE_NAME,
+    "profile_headline": PROFILE_HEADLINE,
     "profile_about": PROFILE_ABOUT_TEXT,
 }

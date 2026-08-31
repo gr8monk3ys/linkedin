@@ -306,3 +306,46 @@ def test_applications_import_autoapply(runner, resume_repo):
     result = runner.invoke(cli, ["applications", "import-autoapply", "--resume-repo", str(resume_repo)])
     assert "Imported 0 application" in result.output
     assert "1 already tracked" in result.output
+
+
+def test_easy_apply_hands_a_question_step_to_the_human_when_headful(runner, fake_automation, monkeypatch):
+    """A required question the automation cannot answer is not a failure when a
+    person is watching the browser. Closing the window on `needs_manual_input`
+    threw away a half-completed application every time a wizard asked
+    anything -- which is most of them."""
+    monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
+    runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
+    fake_automation.namespace["easy_apply"].apply_to_job.return_value = {
+        "status": "needs_manual_input",
+        "detail": "Form has required fields that need manual answers",
+    }
+    # Person finishes the form in the window, then confirms they submitted.
+    # (`click.pause` is a no-op without a TTY, so only the confirm reads input.)
+    result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "finish" in result.output.lower()
+    view = runner.invoke(cli, ["applications", "view", "1"])
+    assert "applied" in view.output
+
+
+def test_easy_apply_question_step_not_submitted_stays_saved(runner, fake_automation, monkeypatch):
+    monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
+    runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
+    fake_automation.namespace["easy_apply"].apply_to_job.return_value = {
+        "status": "needs_manual_input", "detail": "required fields",
+    }
+    result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit"], input="n\n")
+    assert result.exit_code == 0, result.output
+    view = runner.invoke(cli, ["applications", "view", "1"])
+    assert "applied" not in view.output
+
+
+def test_easy_apply_question_step_headless_is_still_a_failure(runner, fake_automation, monkeypatch):
+    """With nobody watching there is no one to hand the form to."""
+    monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
+    runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
+    fake_automation.namespace["easy_apply"].apply_to_job.return_value = {
+        "status": "needs_manual_input", "detail": "required fields",
+    }
+    result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit", "--headless"])
+    assert result.exit_code == 1

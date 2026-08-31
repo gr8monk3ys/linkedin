@@ -4801,6 +4801,19 @@ def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
                 result = linkedin_page.easy_apply(resume_path="", submit=True, max_steps=2)
                 if result.get("status") == "submitted":
                     safety.record_easy_apply()
+        elif result.get("status") == "needs_manual_input" and not headless:
+            # The automation never invents an answer, so a wizard that asks a
+            # question stops here -- which is most of them. With a person at
+            # the window that is a hand-off, not a failure: they finish the
+            # form and press Submit themselves, and only their word records it.
+            console.print(f"[yellow]{result.get('detail', '')}[/yellow]")
+            console.print("[yellow]Finish the remaining questions in the browser window and submit it yourself.[/yellow]")
+            click.pause("Press any key once you are done (or have closed the form)...")
+            if click.confirm("Did you submit the application?"):
+                result = {"status": "submitted", "detail": "Submitted by hand after automated fill"}
+                safety.record_easy_apply()
+            else:
+                result = {"status": "ready_to_submit", "detail": "Left unsubmitted; still saved in the CRM"}
     finally:
         _close_linkedin_session(browser, linkedin_page)
 

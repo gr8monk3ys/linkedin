@@ -198,17 +198,23 @@ class ApplicationService:
         return actions[:limit]
 
     def _days_since_reference(self, app: ApplicationDict, today) -> int | None:
-        """Days since the most recent thing that happened to this application."""
+        """Days since the last thing that happened *to the application*.
+
+        Precedence, not max. `created_at` is bookkeeping — an import stamps it
+        with the import time — and taking the max let that outrank a real
+        applied date, making an application sent weeks ago look brand new. It
+        stays only as a last resort for a record with no other date at all.
+        """
         history = app.get("history") or []
-        candidates = [
+        for candidate in (
             history[-1].get("date") if history else None,
             app.get("applied_date"),
             app.get("created_at"),
-        ]
-        dates = [d for d in (parse_iso_date(c) for c in candidates) if d is not None]
-        if not dates:
-            return None
-        return (today - max(dates)).days
+        ):
+            parsed = parse_iso_date(candidate)
+            if parsed is not None:
+                return (today - parsed).days
+        return None
 
     @staticmethod
     def _application_action(app: ApplicationDict, priority: int, action: str, reason: str) -> dict:

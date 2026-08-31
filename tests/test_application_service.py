@@ -314,3 +314,28 @@ def test_application_with_no_usable_date_is_surfaced_not_skipped(svc):
     actions = svc.get_application_actions()
     assert len(actions) == 1
     assert actions[0]["action"] == "repair_application"
+
+
+def test_an_import_does_not_reset_the_clock_on_an_old_application(svc):
+    """Bookkeeping timestamps must not count as contact with the employer.
+
+    Importing an application sent weeks ago wrote `created_at` of today, and a
+    reference date of max(created_at, applied_date) made it look brand new — so
+    a stale application would not come up for chasing until ten days after the
+    *import*.
+    """
+    from datetime import datetime, timedelta
+
+    app = svc.add_application("stripe", "Technical Solutions Engineer")
+    stored = svc.get_application(app["id"])
+    old = (datetime.now() - timedelta(days=21)).isoformat()
+    stored["status"] = "applied"
+    stored["applied_date"] = old
+    stored["history"] = [{"status": "applied", "date": old, "notes": "Imported from autoapply"}]
+    stored["created_at"] = datetime.now().isoformat()  # the import happened today
+    svc.applications.update(stored)
+
+    actions = svc.get_application_actions()
+    assert len(actions) == 1
+    assert actions[0]["action"] == "chase_application"
+    assert "21" in actions[0]["reason"]

@@ -56,7 +56,7 @@ def _seed_autoapply_db(root, rows):
         """
         CREATE TABLE jobs (
             id INTEGER PRIMARY KEY, company TEXT, title TEXT, url TEXT,
-            description TEXT, status TEXT, variant TEXT
+            description TEXT, status TEXT, variant TEXT, discovered_at TEXT
         );
         CREATE TABLE applications (
             id INTEGER PRIMARY KEY, job_id INTEGER, status TEXT,
@@ -177,3 +177,62 @@ def test_merge_into_applications_dedupes(application_repo):
     assert [a["company"] for a in added] == ["New Co", "No URL Co"]
     assert all(a["history"] for a in added)
     assert len(application_repo.list_all()) == 3
+
+
+def test_import_decodes_html_entities_in_scraped_text(resume_repo):
+    """Job text comes from scraped HTML, so entities arrive raw.
+
+    "LA28 Olympic &amp; Paralympic Games" is a company name the user reads in
+    their own pipeline, and it would be carried into a cover letter verbatim.
+    """
+    _seed_autoapply_db(resume_repo, [(
+        "LA28 Olympic &amp; Paralympic Games", "Data &amp; Analytics Lead",
+        "https://x/1", "Work with R&amp;D", "submitted", "",
+    )])
+
+    entries = import_autoapply_applications(repo_root=str(resume_repo))
+
+    assert entries[0]["company"] == "LA28 Olympic & Paralympic Games"
+    assert entries[0]["title"] == "Data & Analytics Lead"
+    assert "R&D" in entries[0]["jd_text"]
+
+
+def test_import_falls_back_to_discovery_date_when_submission_date_is_missing(resume_repo):
+    """`submitted_at` is null for most rows; `discovered_at` never is.
+
+    Without a fallback an application imported today looks applied today, so a
+    job applied to weeks ago would not come up for chasing until ten days after
+    the *import* — the planner would be timing the wrong event.
+    """
+    _seed_autoapply_db(resume_repo, [(
+        "stripe", "Technical Solutions Engineer", "https://x/1", "jd",
+        "submitted", "",
+    )])
+    _set_discovered_at(resume_repo, "2026-08-10T03:02:32")
+
+    entries = import_autoapply_applications(repo_root=str(resume_repo))
+
+    assert entries[0]["applied_date"] == "2026-08-10T03:02:32"
+    assert entries[0]["applied_date_is_approximate"] is True
+
+
+def test_a_real_submission_date_wins_over_discovery(resume_repo):
+    _seed_autoapply_db(resume_repo, [(
+        "stripe", "Technical Solutions Engineer", "https://x/1", "jd",
+        "submitted", "", "", "2026-08-25T10:00:00",
+    )])
+    _set_discovered_at(resume_repo, "2026-08-10T03:02:32")
+
+    entries = import_autoapply_applications(repo_root=str(resume_repo))
+
+    assert entries[0]["applied_date"] == "2026-08-25T10:00:00"
+    assert entries[0]["applied_date_is_approximate"] is False
+
+
+def _set_discovered_at(root, when):
+    import sqlite3
+
+    conn = sqlite3.connect(root / "output" / "autoapply" / "state.db")
+    conn.execute("UPDATE jobs SET discovered_at = ?", (when,))
+    conn.commit()
+    conn.close()

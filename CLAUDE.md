@@ -62,6 +62,7 @@ uv run ruff format src/ tests/
 - `template_service.py` — `{{placeholder}}` templates, A/B testing, response tracking, auto-outcome recording
 - `data_service.py` — CSV/JSON import/export, backup create/verify/restore (with path-traversal protection)
 - `resume_service.py` — Bridge to the resume repo checkout (`LINKEDIN_RESUME_REPO` env var): variant discovery, `skills.tex` parsing, JD→variant matching, built-PDF resolution, autoapply `state.db` import. Stdlib only — never imports resume repo code.
+- `inbox_service.py` — The inbound edge. Turns message threads and pending invitations into *proposed* pipeline transitions. Pure (dicts in, proposals out, no browser, no repo) because the matching logic is what can corrupt the CRM.
 - `dashboard_service.py`, `analytics_service.py` — Overview aggregation, pipeline conversion, response rates
 
 **Automation** (`src/linkedin/automation/`) — Playwright-based browser automation with session persistence, keyring credentials, rate limiting, and per-day safety limits persisted to `~/.linkedin-cli/automation_usage.json` (20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies). Actions live in `actions/` (connect, message, scrape, search, post, engage, profile_sync, easy_apply). The CLI `automate` group lazy-imports the stack via `_require_automation()`; CLI tests patch `_require_automation`/`_open_linkedin_session` in `linkedin.cli`.
@@ -69,6 +70,7 @@ uv run ruff format src/ tests/
 - **Every module in this package must import without Playwright or keyring** — CI installs only `--extra dev`, and a module-scope `import playwright` drops that module *and everything importing it* to 0% coverage. That is how `linkedin_page.py` (the layer that actually talks to LinkedIn) went untested. Import Playwright types under `TYPE_CHECKING`, and `sync_playwright`/`keyring` inside the function that uses them. `tests/test_automation_import_safety.py` walks the package and fails if this regresses.
 - **`automation/selectors.py` holds every LinkedIn selector.** Never inline one at a call site. Role/label locators are preferred over CSS — accessible names survive class-name churn. `FRAGILE_SELECTORS` catalogues the CSS ones that break on a markup change.
 - **A markup change must not look like a quiet page.** These methods fail soft by design (a missing Connect button is normal), so the ones that cannot tell a breakage from an empty page call `self._record_miss(name)`. `LinkedInPage.selector_health()` reports them and `cli._close_linkedin_session` prints them at the end of every `automate` run. Close browsers through that helper, not `browser.close()`.
+- **Messaging selectors are the most fragile in the file.** The pane is virtualized and lazy-loaded, so `THREAD_*` is the first place to look when `inbox sync` reports a quiet inbox.
 - `tests/fake_page.py` is a Page/Locator double — register what the page contains, and anything unregistered resolves empty (exactly what a renamed class looks like).
 
 **Key patterns:**
@@ -80,6 +82,10 @@ uv run ruff format src/ tests/
 - **`get_next_actions` returns at most one action per contact**, highest priority first. A contact with no `created_at`/`last_contact` yields a `repair_contact` action rather than being skipped; `contacts repair` backfills it.
 - **`run-daily` exits nonzero and reports `no_actions`** when the planner produces nothing while `active_pipeline_count() > 0`, and nonzero on `failed`. It previously returned exit 0 and status `success` in both cases, which is how it logged 136 consecutive green runs over five months while generating zero drafts. Never widen `_daily_run_status` back to unconditional success.
 - **`json_store.save_json` is atomic** (temp file + fsync + `os.replace`). Every mutation rewrites the whole file, so a plain write loses the entire store if interrupted. `automation/safety.py` persists its daily budgets through it for the same reason — a truncated usage file reads back as "no usage today".
+- **Nothing inbound auto-advances a contact.** `inbox sync` reads LinkedIn messaging and the sent-invitation manager and writes *proposals* to `inbox_proposals.json`; `inbox review` applies them one at a time. A contact whose status changed since the sync drops its proposal — the hand edit wins. `--yes` covers high-confidence proposals only: a proposal matched on display name alone is `low` confidence and is always asked about, and a name matching two contacts is no evidence about either.
+- **`get_pending_sent_invitations` returns `None`, not `[]`, when it cannot read the list.** Every other page-object method fails soft to an empty result; this one must not. Acceptance is inferred from an invitation's *absence*, so a selector that stopped matching would otherwise read as "every outstanding invitation was accepted" and advance the whole pipeline at once. `[]` is returned only when LinkedIn's own empty state is on the page.
+- **The reply signal rests entirely on `THREAD_OWN_MESSAGE_PREFIX`.** LinkedIn prefixes a thread snippet with `You:` when the last message is the user's own; that prefix is the only thing separating a real reply from an echo of the message we sent. Lose it and every outbound message becomes a fake response.
+- **Applications have their own planner rules and their own plan section.** `APPLICATION_STATUS_RULES` mirrors `contact_service.STATUS_RULES`, with the same coverage check against `APPLICATION_STATUSES`. Kept out of `get_next_actions`: `_daily_run_status` classifies a run by whether the *contact* planner produced anything, and merging application rows in would let a due application mask a broken contact planner — the exact failure that guard exists to catch.
 - **AI feed comments are reviewed before they are published.** `automation_service.engage_feed` takes an `approve_comment` callback and the CLI passes `_review_feed_comment` unless `--yes`; `sanitize_comment` drops empty, overlong, and refusal-shaped model output. The post body is untrusted third-party text fenced inside the prompt — it reaches the model as data, and its output goes out publicly under the user's real name.
 
 ## Testing
@@ -104,6 +110,9 @@ uv run ruff format src/ tests/
 - `test_automation_actions.py` — Post/engage/profile-sync/easy-apply actions + persistent safety limits (MagicMock page objects, no Playwright).
 - `test_resume_service.py` — Resume repo bridge (builds a fake checkout + autoapply SQLite db in tmp_path).
 - `test_cli_automate.py` — CLI tests for the `automate` group and resume-repo application commands.
+- `test_inbox_service.py` — The proposal matcher: URL vs name matching, the low-confidence path, and the unreadable-invitation-list case. No browser.
+- `test_automation_inbox_jobs.py` — The read-only `inbox` and `jobs` actions.
+- `test_cli_inbox.py` — CLI tests for `inbox sync/list/review` and `automate jobs`.
 
 **Notes:**
 - When adding records via `repo.add()` directly, include an `id` field. When using service methods (e.g. `add_contact()`), id is auto-generated.

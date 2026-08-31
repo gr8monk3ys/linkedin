@@ -356,6 +356,14 @@ class ContactService:
             "reason": reason,
         }
 
+    def delete_contact(self, contact_id: int) -> bool:
+        """Remove a contact. Returns False if it was not there.
+
+        Merging was the only way to get rid of a record, which is wrong for a
+        junk one: it folds the junk into a real contact rather than dropping it.
+        """
+        return self.contacts.delete(contact_id)
+
     def get_next_actions(self, limit: int = 10) -> list[dict]:
         """Return prioritized next actions across the pipeline."""
         today = datetime.now().date()

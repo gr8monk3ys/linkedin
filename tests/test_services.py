@@ -456,6 +456,73 @@ class TestDraftService:
         assert error is not None
         assert draft == ""
 
+    def test_fallback_is_reported_not_silent(self, json_repos, monkeypatch):
+        """A template must never be handed back as if the AI wrote it.
+
+        The API key lives in cron.env, so scheduled runs get real drafts while
+        every interactive command quietly degrades — with no way to tell.
+        """
+        from linkedin.services.draft_service import AIClientError
+
+        monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+
+        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
+            svc.generate_connection(1)
+        assert svc.last_draft_was_fallback is True
+        assert "AI down" in (svc.last_draft_error or "")
+
+    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Real draft")
+    def test_ai_success_is_not_flagged_as_fallback(self, mock_ai, json_repos):
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+
+        svc.generate_connection(1)
+        assert svc.last_draft_was_fallback is False
+
+    def test_fallback_does_not_paste_context_into_the_message(self, json_repos, monkeypatch):
+        """`context` is prompt input, not body text.
+
+        With AI up it steers the model; with AI down the template spliced it in
+        verbatim, so a --context of instructions became the message itself —
+        addressed to a real person, under the user's real name.
+        """
+        from linkedin.services.draft_service import AIClientError
+
+        monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+        instructions = "Keep it brief and warm — thank him and give three days"
+
+        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
+            error, draft = svc.generate_message(1, context=instructions)
+
+        assert error is None
+        assert instructions not in draft
+        assert "Keep it brief" not in draft
+        assert "Alice" in draft
+
+    def test_fallback_thank_you_also_drops_context(self, json_repos, monkeypatch):
+        from linkedin.services.draft_service import AIClientError
+
+        monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+
+        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
+            _, draft = svc.generate_thank_you(1, context="mention the ML platform team specifically")
+
+        assert "mention the ML platform team" not in draft
+
     @patch("linkedin.services.draft_service.generate_with_ai", return_value="Intro message")
     def test_generate_intro_request(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
@@ -1026,3 +1093,71 @@ class TestDashboardMatchesThePlanner:
         })
         data = self._svc(json_repos).get_dashboard_data()
         assert [c["id"] for c, _ in data["stale_connections"]] == [1]
+
+
+class TestDraftDeletion:
+    """Drafts could be created but never removed.
+
+    A draft is a message about to go out under the user's real name; a bad one
+    (an offline template passed off as a draft, say) had no way off the list.
+    """
+
+    def _svc(self, json_repos):
+        from linkedin.services.draft_service import DraftService
+
+        contact_repo, _, profile_repo, draft_repo, *_ = json_repos
+        return DraftService(draft_repo, contact_repo, profile_repo)
+
+    def test_delete_removes_the_draft(self, json_repos):
+        svc = self._svc(json_repos)
+        _, _, _, draft_repo, *_ = json_repos
+        draft_repo.add({"id": 1, "contact_id": 1, "type": "message", "content": "hi"})
+
+        assert svc.delete_draft(1) is True
+        assert svc.drafts.get(1) is None
+
+    def test_delete_missing_draft_reports_false(self, json_repos):
+        assert self._svc(json_repos).delete_draft(999) is False
+
+    def test_delete_leaves_other_drafts_alone(self, json_repos):
+        svc = self._svc(json_repos)
+        _, _, _, draft_repo, *_ = json_repos
+        draft_repo.add({"id": 1, "contact_id": 1, "type": "message", "content": "one"})
+        draft_repo.add({"id": 2, "contact_id": 1, "type": "message", "content": "two"})
+
+        svc.delete_draft(1)
+        assert [d["id"] for d in svc.drafts.list_all()] == [2]
+
+
+class TestContactDeletion:
+    """Contacts could be added and merged but never deleted.
+
+    A junk record was the daily plan's top priority for days — it could not be
+    removed, only merged into something real, which would have corrupted that
+    record instead.
+    """
+
+    def _svc(self, json_repos):
+        from linkedin.services.contact_service import ContactService
+
+        contact_repo, company_repo, *_ = json_repos
+        return ContactService(contact_repo, company_repo)
+
+    def test_delete_removes_the_contact(self, json_repos):
+        svc = self._svc(json_repos)
+        contact = svc.add_contact("Junk", "", "", "")
+
+        assert svc.delete_contact(contact["id"]) is True
+        assert svc.contacts.get(contact["id"]) is None
+
+    def test_delete_missing_contact_reports_false(self, json_repos):
+        assert self._svc(json_repos).delete_contact(999) is False
+
+    def test_deleted_contact_leaves_the_planner(self, json_repos):
+        """The point of deleting: it stops generating actions."""
+        svc = self._svc(json_repos)
+        junk = svc.add_contact("Junk", "", "", "")
+        svc.add_contact("Real Person", "", "", "")
+
+        svc.delete_contact(junk["id"])
+        assert all(a["contact_id"] != junk["id"] for a in svc.get_next_actions())

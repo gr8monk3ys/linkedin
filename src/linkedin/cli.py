@@ -192,6 +192,27 @@ APPLICATION_ACTION_COMMANDS = {
 }
 
 
+def _warn_if_fallback(used_context: bool = False) -> None:
+    """Say out loud when a draft came from the offline template.
+
+    A template is not a draft: it knows nothing about the conversation and
+    cannot use --context. Passing one back silently is how a --context of
+    instructions ended up as the message body. The API key commonly lives in
+    ~/.linkedin-cli/cron.env, which only cron sources — so scheduled runs get
+    real drafts while interactive ones quietly degrade.
+    """
+    if not _draft_svc.last_draft_was_fallback:
+        return
+    console.print(
+        f"[yellow]⚠ AI unavailable ({_draft_svc.last_draft_error}) — this is an offline template, not a draft.[/yellow]"
+    )
+    if used_context:
+        console.print("[yellow]  Your --context was NOT used. Edit before sending.[/yellow]")
+    console.print(
+        "[dim]  Set ANTHROPIC_API_KEY (one may already be in ~/.linkedin-cli/cron.env).[/dim]"
+    )
+
+
 def load_inbox_proposals() -> list[dict]:
     """Proposed pipeline transitions awaiting confirmation."""
     return json_store.load_json(json_store.INBOX_PROPOSALS_FILE, [])
@@ -1131,6 +1152,19 @@ def contacts_add(name, title, company, linkedin, notes, company_id, email, sourc
         console.print(f"  Linked to company #{company_id}")
 
 
+@contacts.command("delete")
+@click.argument("contact_id", type=int)
+@click.confirmation_option(prompt="Delete this contact? Their drafts and history stay behind.")
+def contacts_delete(contact_id):
+    """Delete a contact."""
+    contact = _contact_svc.contacts.get(contact_id)
+    if not contact:
+        console.print(f"[red]Contact #{contact_id} not found.[/red]")
+        raise SystemExit(1)
+    _contact_svc.delete_contact(contact_id)
+    console.print(f"[green]Deleted {contact.get('name', 'contact')} (#{contact_id}).[/green]")
+
+
 @contacts.command("list")
 @click.option("--status", "-s", type=click.Choice(CONTACT_STATUSES + ["all"]), default="all")
 @click.option("--company", "-c", default=None, help="Filter by company name")
@@ -1672,6 +1706,7 @@ def drafts_connection(contact_id):
         return
 
     console.print(Panel(draft, title="Connection Request Draft", border_style="green"))
+    _warn_if_fallback(used_context=False)
     console.print(f"\n[dim]Characters: {len(draft)}/300[/dim]")
 
     if click.confirm("\nSave this draft?"):
@@ -1697,6 +1732,7 @@ def drafts_message(contact_id, context):
         return
 
     console.print(Panel(draft, title="Message Draft", border_style="blue"))
+    _warn_if_fallback(used_context=True)
 
     if click.confirm("\nSave this draft?"):
         _draft_svc.save_draft(contact_id, "message", draft)
@@ -1716,6 +1752,7 @@ def drafts_intro_request(contact_id, target_id):
         return
 
     console.print(Panel(draft, title="Introduction Request Draft", border_style="magenta"))
+    _warn_if_fallback(used_context=False)
 
     if click.confirm("\nSave this draft?"):
         _draft_svc.save_draft(contact_id, "intro_request", draft, target_contact_id=target_id)
@@ -1740,6 +1777,7 @@ def drafts_thank_you(contact_id, context):
         return
 
     console.print(Panel(draft, title="Thank You Note Draft", border_style="green"))
+    _warn_if_fallback(used_context=True)
 
     if click.confirm("\nSave this draft?"):
         _draft_svc.save_draft(contact_id, "thank_you", draft)
@@ -1798,6 +1836,18 @@ def drafts_batch_connections(limit, save_all):
             generated += 1
 
     console.print(f"\n[green]✓ Generated and saved {generated} drafts![/green]")
+
+
+@drafts.command("delete")
+@click.argument("draft_id", type=int)
+@click.confirmation_option(prompt="Delete this draft?")
+def drafts_delete(draft_id):
+    """Delete a saved draft."""
+    if _draft_svc.delete_draft(draft_id):
+        console.print(f"[green]Deleted draft #{draft_id}.[/green]")
+    else:
+        console.print(f"[red]Draft #{draft_id} not found.[/red]")
+        raise SystemExit(1)
 
 
 @drafts.command("list")

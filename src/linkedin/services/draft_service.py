@@ -19,6 +19,16 @@ class DraftService:
         self.drafts = draft_repo
         self.contacts = contact_repo
         self.profiles = profile_repo
+        #: Whether the last draft came from an offline template rather than the
+        #: model. Callers must say so — a template is not a draft, and silently
+        #: passing one off as one is how a --context of instructions reached a
+        #: real message body.
+        self.last_draft_was_fallback = False
+        self.last_draft_error: str | None = None
+
+    def delete_draft(self, draft_id: int) -> bool:
+        """Remove a saved draft. Returns False if it was not there."""
+        return self.drafts.delete(draft_id)
 
     def list_drafts(self) -> list[dict]:
         drafts = self.drafts.list_all()
@@ -152,12 +162,24 @@ class DraftService:
         return self.drafts.add(draft)
 
     def _generate_with_fallback(self, prompt: str, max_tokens: int, fallback_text: str) -> tuple[str | None, str]:
+        """Generate a draft, falling back to an offline template.
+
+        The fallback records itself. Handing a template back as `(None, text)`
+        made it indistinguishable from a real draft, and the two are not
+        interchangeable: the template cannot use `context` and does not know
+        anything about the conversation. The API key lives in cron.env, so
+        scheduled runs get real drafts while interactive ones quietly degraded.
+        """
+        self.last_draft_was_fallback = False
+        self.last_draft_error = None
         try:
             draft = generate_with_ai(prompt, max_tokens=max_tokens)
             return None, draft
         except AIClientError as exc:
             if not self._fallback_enabled():
                 return str(exc), ""
+            self.last_draft_was_fallback = True
+            self.last_draft_error = str(exc)
             return None, fallback_text
 
     def _fallback_enabled(self) -> bool:
@@ -179,12 +201,19 @@ class DraftService:
         return msg[:300]
 
     def _fallback_message(self, profile: ProfileDict, contact: dict, context: str) -> str:
+        """Offline template. Deliberately ignores `context`.
+
+        `context` is prompt input, not body text. Splicing it in verbatim turned
+        a --context of instructions into the message itself — addressed to a
+        real person, under the user's real name. A template cannot compose
+        instructions into prose, so it does not try; the caller says the context
+        was dropped instead.
+        """
         first = self._first_name(contact)
         role = profile.get("target_role", "my next role")
-        extra = f" {context.strip()}" if context.strip() else ""
         return (
             f"Hi {first}, thanks again for connecting. I’m currently focused on {role} and would appreciate any "
-            f"advice on teams or opportunities that might be a fit.{extra} If helpful, I can send a concise summary."
+            f"advice on teams or opportunities that might be a fit. If helpful, I can send a concise summary."
         )
 
     def _fallback_intro_request(self, profile: ProfileDict, contact: dict, target: dict) -> str:
@@ -197,10 +226,10 @@ class DraftService:
         )
 
     def _fallback_thank_you(self, profile: ProfileDict, contact: dict, context: str) -> str:
+        """Offline template. Ignores `context` — see `_fallback_message`."""
         first = self._first_name(contact)
-        detail = context.strip() or "today"
         return (
-            f"Hi {first}, thank you again for your time {detail}. I appreciated your perspective and took away a few "
+            f"Hi {first}, thank you again for your time. I appreciated your perspective and took away a few "
             f"clear next steps. I’ll keep you posted, and I’m happy to return the favor anytime."
         )
 

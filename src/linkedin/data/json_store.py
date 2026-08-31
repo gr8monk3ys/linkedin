@@ -191,6 +191,14 @@ class JsonDraftRepo(DraftRepo):
         drafts = self.list_all()
         return _next_id(drafts)
 
+    def delete(self, draft_id: int) -> bool:
+        drafts = self.list_all()
+        remaining = [d for d in drafts if d["id"] != draft_id]
+        if len(remaining) == len(drafts):
+            return False
+        save_json(DRAFTS_FILE, remaining)
+        return True
+
 
 class JsonResearchRepo(ResearchRepo):
     def get(self) -> ResearchDict:

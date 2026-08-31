@@ -121,7 +121,13 @@ JOB_COMPANY = (
     ".job-card-container__primary-description, .artdeco-entity-lockup__subtitle, "
     "h4.base-search-card__subtitle"
 )
-JOB_LOCATION = ".job-card-container__metadata-item, span.job-search-card__location"
+#: `metadata-item` is gone from the authenticated card (verified 2026-08-31,
+#: every location came back empty); the wrapper and the lockup caption are what
+#: carry it now.
+JOB_LOCATION = (
+    ".job-card-container__metadata-wrapper, .artdeco-entity-lockup__caption, "
+    ".job-card-container__metadata-item, span.job-search-card__location"
+)
 JOB_LINK = "a.job-card-list__title, a.job-card-container__link, a.base-card__full-link"
 JOB_POSTED = "time"
 JOB_EASY_APPLY = (

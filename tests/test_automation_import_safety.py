@@ -130,3 +130,42 @@ class TestLoginAction:
             browser = self._browser()
             assert login.login_action(browser, "a@b.c", "pw") is False
             browser.save_session.assert_not_called()
+
+    def test_missing_credentials_still_lands_on_the_login_page(self):
+        """Returning False must not leave the browser on about:blank.
+
+        The CLI's fallback is "finish the login yourself in the window", and
+        with no credentials stored this returned False before navigating
+        anywhere — so the window it pointed at was blank.
+        """
+        from linkedin.automation.actions import login
+
+        with patch("linkedin.automation.credentials.get_credentials", return_value=None), patch(
+            "linkedin.automation.actions.login.LinkedInPage"
+        ) as page_cls:
+            assert login.login_action(self._browser()) is False
+            page_cls.return_value.goto_login.assert_called_once()
+
+    def test_failed_credentials_leave_the_login_page_open(self):
+        from linkedin.automation.actions import login
+
+        browser = self._browser()
+        browser.page.url = "about:blank"
+        with patch("linkedin.automation.actions.login.LinkedInPage") as page_cls:
+            page_cls.return_value.is_logged_in.return_value = False
+            page_cls.return_value.login.return_value = False
+            assert login.login_action(browser, "a@b.c", "pw") is False
+            page_cls.return_value.goto_login.assert_called_once()
+
+    def test_a_security_checkpoint_is_not_navigated_away_from(self):
+        """A failed login often means 2FA, and that challenge is the page the
+        human needs. Reloading /login would discard it."""
+        from linkedin.automation.actions import login
+
+        browser = self._browser()
+        browser.page.url = "https://www.linkedin.com/checkpoint/challenge/"
+        with patch("linkedin.automation.actions.login.LinkedInPage") as page_cls:
+            page_cls.return_value.is_logged_in.return_value = False
+            page_cls.return_value.login.return_value = False
+            assert login.login_action(browser, "a@b.c", "pw") is False
+            page_cls.return_value.goto_login.assert_not_called()

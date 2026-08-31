@@ -4258,7 +4258,11 @@ def _open_linkedin_session(auto, headless: bool):
             browser.close()
             console.print("[red]Not logged in.[/red] Run: linkedin-cli automate login (headful) first, or store credentials with: linkedin-cli automate setup")
             raise SystemExit(1)
-        console.print("[yellow]Automatic login failed — complete the login (and any checkpoint) in the browser window.[/yellow]")
+        console.print(
+            "[yellow]Automatic login failed — complete the login (and any checkpoint) in the browser window.[/yellow]\n"
+            "[dim]No credentials are stored unless you ran `linkedin-cli automate setup`; logging in by hand here is fine "
+            "and the session is saved afterwards.[/dim]"
+        )
         click.pause("Press any key once you are logged in...")
         if not linkedin_page.is_logged_in():
             browser.close()

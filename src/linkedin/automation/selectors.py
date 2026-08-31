@@ -84,6 +84,9 @@ THREAD_CARD = "li.msg-conversation-listitem"
 THREAD_NAME = ".msg-conversation-listitem__participant-names span"
 THREAD_SNIPPET = ".msg-conversation-card__message-snippet"
 THREAD_TIMESTAMP = "time.msg-conversation-listitem__time-stamp"
+#: The thread list carries no profile URL (verified live 2026-08-30), so this is
+#: optional and every thread match falls back to the display name. That is why
+#: messaging proposals are low confidence by construction.
 THREAD_LINK = "a.msg-conversation-listitem__link"
 THREAD_UNREAD_BADGE = ".msg-conversation-card__unread-count"
 
@@ -92,14 +95,20 @@ THREAD_UNREAD_BADGE = ".msg-conversation-card__unread-count"
 #: outbound message we sent, so the whole inbound signal rests on it.
 THREAD_OWN_MESSAGE_PREFIX = re.compile(r"^\s*you\s*:", re.I)
 
-# Sent-invitation manager.
-INVITATION_CARD = "li.invitation-card"
-INVITATION_NAME = ".invitation-card__title"
-INVITATION_LINK = "a.invitation-card__link"
-#: An explicit empty state is what tells a genuinely empty invitation list apart
-#: from a selector that stopped matching. Without it the reader cannot return []
-#: safely, because the caller reads [] as "every invitation was accepted".
-INVITATION_EMPTY_STATE = ".mn-invitation-manager__empty-state, .artdeco-empty-state"
+# Sent-invitation manager. LinkedIn rebuilt this page with fully obfuscated class
+# names (`aa13b50b ce9c4d83 ...`, verified 2026-08-30), so there is no semantic
+# class left to key on and `li.invitation-card` matches nothing. Profile links are
+# the only stable handle, and they are what the matcher actually needs.
+INVITATION_PROFILE_LINK = "main a[href*='/in/']"
+#: The links themselves carry no text — the name lives in the surrounding card,
+#: which has no usable class either. This walks up to the nearest ancestor that
+#: has any text at all, whose first line is the name.
+INVITATION_NAME_ANCESTOR = "xpath=ancestor::div[normalize-space(text()) or .//text()][1]"
+#: LinkedIn prints its own count as "People (7)". Comparing it against the number
+#: of links found is what distinguishes a genuinely empty list from a page that
+#: did not render — the reader must never report [] on a guess, because the
+#: caller reads [] as "every invitation was accepted".
+INVITATION_COUNT_TEXT = re.compile(r"People\s*\((\d+)\)", re.I)
 
 # Job search results. LinkedIn serves two different markups for the same search:
 # `job-card-*` when authenticated and `base-search-card` / `job-search-card` to
@@ -140,8 +149,7 @@ FRAGILE_SELECTORS = {
     "profile_about": PROFILE_ABOUT_TEXT,
     "thread_card": THREAD_CARD,
     "thread_name": THREAD_NAME,
-    "invitation_card": INVITATION_CARD,
-    "invitation_name": INVITATION_NAME,
+    "invitation_profile_link": INVITATION_PROFILE_LINK,
     "job_card": JOB_CARD,
     "job_title": JOB_TITLE,
     "login_email_input": LOGIN_EMAIL_INPUT,

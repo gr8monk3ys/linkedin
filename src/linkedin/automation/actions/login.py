@@ -31,16 +31,18 @@ def login_action(browser: BrowserManager, email: str | None = None, password: st
 
     linkedin = LinkedInPage(page)
 
+    # A saved session is checked before credentials, not after: it is sufficient
+    # on its own, and the keyring is empty for anyone who logged in by hand.
+    # Asking for credentials first threw away a working session.
+    if linkedin.is_logged_in():
+        return True
+
     if not email or not password:
         creds = get_credentials()
         if not creds:
             linkedin.goto_login()
             return False
         email, password = creds
-
-    # Check if already logged in via saved session
-    if linkedin.is_logged_in():
-        return True
 
     success = linkedin.login(email, password)
     if success:

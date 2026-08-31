@@ -93,7 +93,10 @@ class TestLoginAction:
     def test_returns_false_without_stored_credentials(self):
         from linkedin.automation.actions import login
 
-        with patch("linkedin.automation.credentials.get_credentials", return_value=None):
+        with patch("linkedin.automation.credentials.get_credentials", return_value=None), patch(
+            "linkedin.automation.actions.login.LinkedInPage"
+        ) as page_cls:
+            page_cls.return_value.is_logged_in.return_value = False
             assert login.login_action(self._browser()) is False
 
     def test_returns_false_without_a_page(self):
@@ -143,6 +146,7 @@ class TestLoginAction:
         with patch("linkedin.automation.credentials.get_credentials", return_value=None), patch(
             "linkedin.automation.actions.login.LinkedInPage"
         ) as page_cls:
+            page_cls.return_value.is_logged_in.return_value = False
             assert login.login_action(self._browser()) is False
             page_cls.return_value.goto_login.assert_called_once()
 
@@ -169,3 +173,20 @@ class TestLoginAction:
             page_cls.return_value.login.return_value = False
             assert login.login_action(browser, "a@b.c", "pw") is False
             page_cls.return_value.goto_login.assert_not_called()
+
+    def test_a_valid_saved_session_needs_no_stored_credentials(self):
+        """The keyring is optional; a saved session is sufficient on its own.
+
+        Checking credentials first meant a working session was thrown away
+        whenever `automate setup` had never been run — which is every session
+        established by logging in by hand.
+        """
+        from linkedin.automation.actions import login
+
+        with patch("linkedin.automation.credentials.get_credentials", return_value=None), patch(
+            "linkedin.automation.actions.login.LinkedInPage"
+        ) as page_cls:
+            page_cls.return_value.is_logged_in.return_value = True
+            assert login.login_action(self._browser()) is True
+            page_cls.return_value.goto_login.assert_not_called()
+            page_cls.return_value.login.assert_not_called()

@@ -4,11 +4,14 @@ The matcher is the part of the inbox feature that can corrupt the CRM, so it is
 a pure function over dicts and every case here runs without a browser.
 """
 
+import datetime as _dt
+
 import pytest
 
 from linkedin.services.inbox_service import (
     InboxService,
     normalize_name,
+    parse_thread_timestamp,
     strip_url_query,
 )
 
@@ -218,3 +221,62 @@ def test_malformed_thread_is_skipped_not_fatal(missing):
     bad = thread()
     del bad[missing]
     assert svc.propose_transitions([bad], [], [contact()]) == []
+
+
+# --- LinkedIn's thread timestamps -------------------------------------------
+# The messaging pane never shows an ISO date. Feeding these to a strict ISO
+# parser made every thread unparseable, so the sync read 20 threads and
+# proposed nothing — indistinguishable from a quiet inbox.
+
+TODAY = _dt.date(2026, 8, 30)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Aug 29", _dt.date(2026, 8, 29)),
+    ("Jul 1", _dt.date(2026, 7, 1)),
+    ("May 26", _dt.date(2026, 5, 26)),
+    ("Aug 30", _dt.date(2026, 8, 30)),
+])
+def test_parses_month_day_as_the_most_recent_occurrence(raw, expected):
+    assert parse_thread_timestamp(raw, today=TODAY) == expected
+
+
+def test_month_day_that_would_be_in_the_future_belongs_to_last_year():
+    """"Dec 25" seen in August means last December, not four months from now."""
+    assert parse_thread_timestamp("Dec 25", today=TODAY) == _dt.date(2025, 12, 25)
+
+
+def test_explicit_year_is_honoured():
+    assert parse_thread_timestamp("Aug 29, 2024", today=TODAY) == _dt.date(2024, 8, 29)
+
+
+@pytest.mark.parametrize("raw", ["10:42 AM", "1:05 PM", "11:59 PM"])
+def test_a_time_of_day_means_today(raw):
+    assert parse_thread_timestamp(raw, today=TODAY) == TODAY
+
+
+def test_yesterday():
+    assert parse_thread_timestamp("Yesterday", today=TODAY) == _dt.date(2026, 8, 29)
+
+
+def test_iso_still_parses():
+    assert parse_thread_timestamp("2026-08-29T09:00:00", today=TODAY) == _dt.date(2026, 8, 29)
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "not a date", None])
+def test_unparseable_returns_none(raw):
+    assert parse_thread_timestamp(raw, today=TODAY) is None
+
+
+def test_reply_with_a_linkedin_timestamp_produces_a_proposal():
+    """End to end on the real shape: 'Aug 29' against a contact last touched Aug 27."""
+    svc = InboxService()
+    threads = [thread(url="", timestamp="Aug 29", name="Kobie Nikka")]
+    contacts = [contact(id=4, name="Kobie Nikka", company="SpaceX",
+                        status="connection_sent", last_contact="2026-08-27T00:00:00")]
+
+    proposals = svc.propose_transitions(threads, [], contacts, today=TODAY)
+
+    assert len(proposals) == 1
+    assert proposals[0]["to_status"] == "responded"
+    assert proposals[0]["confidence"] == "low"  # no URL on a thread card

@@ -17,6 +17,7 @@ real contacts, so proposals are persisted and confirmed by a human, the same way
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from datetime import datetime
 
@@ -25,6 +26,15 @@ from linkedin.services.contact_service import parse_iso_date
 #: Statuses a reply can advance. `responded` is excluded: a contact already
 #: there has nothing to learn from another message.
 REPLY_ADVANCES_FROM = frozenset({"not_contacted", "connection_sent", "connected", "messaged"})
+
+#: LinkedIn's messaging pane never renders an ISO date. It shows a time of day
+#: for today, "Yesterday", a weekday inside the last week, "Aug 29" inside the
+#: last year, and only then a year. Feeding these to a strict ISO parser made
+#: every thread unparseable, so a sync could read twenty threads and propose
+#: nothing — which looks exactly like a quiet inbox.
+_TIME_OF_DAY = re.compile(r"^\d{1,2}:\d{2}\s*(am|pm)?$", re.I)
+_MONTH_DAY = re.compile(r"^([a-z]{3,9})\s+(\d{1,2})(?:,\s*(\d{4}))?$", re.I)
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
 _CREDENTIAL_SUFFIX = re.compile(r",.*$")
 _PARENTHETICAL = re.compile(r"\([^)]*\)")
@@ -41,6 +51,55 @@ def strip_url_query(url: str) -> str:
     if not url:
         return ""
     return url.split("?")[0].rstrip("/").lower()
+
+
+def parse_thread_timestamp(raw, *, today: dt.date | None = None) -> dt.date | None:
+    """Parse a LinkedIn messaging timestamp to a date, or None if unusable.
+
+    A bare month and day is read as its most recent occurrence: "Dec 25" seen in
+    August is last December, not four months from now.
+    """
+    if not raw or not str(raw).strip():
+        return None
+    text = str(raw).strip()
+    today = today or datetime.now().date()
+
+    iso = parse_iso_date(text)
+    if iso is not None:
+        return iso
+
+    if _TIME_OF_DAY.match(text):
+        return today
+    lowered = text.lower()
+    if lowered == "yesterday":
+        return today - dt.timedelta(days=1)
+    if lowered == "today":
+        return today
+    if lowered[:3] in {day[:3] for day in _WEEKDAYS}:
+        # A weekday name means within the last seven days.
+        target = [d[:3] for d in _WEEKDAYS].index(lowered[:3])
+        delta = (today.weekday() - target) % 7
+        return today - dt.timedelta(days=delta or 7)
+
+    match = _MONTH_DAY.match(text)
+    if not match:
+        return None
+    month_name, day, year = match.groups()
+    for fmt in ("%b", "%B"):
+        try:
+            month = datetime.strptime(month_name[:3] if fmt == "%b" else month_name, fmt).month
+            break
+        except ValueError:
+            continue
+    else:
+        return None
+    try:
+        if year:
+            return dt.date(int(year), month, int(day))
+        candidate = dt.date(today.year, month, int(day))
+        return candidate if candidate <= today else dt.date(today.year - 1, month, int(day))
+    except ValueError:
+        return None
 
 
 def normalize_name(name: str) -> str:
@@ -65,6 +124,7 @@ class InboxService:
         threads: list[dict],
         pending_invitations: list[dict] | None,
         contacts: list[dict],
+        today: dt.date | None = None,
     ) -> list[dict]:
         """Return proposed status changes, highest confidence first.
 
@@ -78,7 +138,7 @@ class InboxService:
         """
         by_id: dict[int, dict] = {}
 
-        for proposal in self._reply_proposals(threads, contacts):
+        for proposal in self._reply_proposals(threads, contacts, today):
             by_id.setdefault(proposal["contact_id"], proposal)
 
         for proposal in self._invitation_proposals(pending_invitations, contacts):
@@ -89,7 +149,7 @@ class InboxService:
 
     # -- signals ---------------------------------------------------------------
 
-    def _reply_proposals(self, threads: list[dict], contacts: list[dict]):
+    def _reply_proposals(self, threads: list[dict], contacts: list[dict], today: dt.date | None = None):
         for thread in threads:
             name = thread.get("name")
             timestamp = thread.get("timestamp")
@@ -100,7 +160,7 @@ class InboxService:
             if not thread.get("last_from_them"):
                 continue
 
-            replied_at = parse_iso_date(timestamp)
+            replied_at = parse_thread_timestamp(timestamp, today=today)
             if replied_at is None:
                 continue
 

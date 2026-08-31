@@ -520,6 +520,7 @@ class LinkedInPage:
         sent. Losing it would turn every outbound message into a fake response.
         """
         threads: list[dict] = []
+        self._wait_for_content(sel.THREAD_CARD)
         cards = self.page.locator(sel.THREAD_CARD)
         try:
             count = cards.count()
@@ -529,15 +530,20 @@ class LinkedInPage:
             self._record_miss("thread_card")
             return threads
 
+        empty_cards = 0
         for i in range(min(count, limit)):
             card = cards.nth(i)
             try:
                 name_el = card.locator(sel.THREAD_NAME).first
                 if name_el.count() == 0:
-                    self._record_miss("thread_name")
+                    # The list is virtualized: cards below the fold exist as
+                    # empty shells. Those are not a markup change, so the miss
+                    # is only recorded if *every* card came back empty.
+                    empty_cards += 1
                     continue
                 name = (name_el.text_content() or "").strip()
                 if not name:
+                    empty_cards += 1
                     continue
 
                 snippet = self._text(card, sel.THREAD_SNIPPET)
@@ -554,6 +560,9 @@ class LinkedInPage:
                 })
             except Exception:
                 continue
+
+        if not threads and empty_cards:
+            self._record_miss("thread_name")
         return threads
 
     def get_pending_sent_invitations(self) -> list[dict] | None:
@@ -562,39 +571,93 @@ class LinkedInPage:
         The caller infers acceptance from *absence* — an invitation that is no
         longer pending was accepted or withdrawn. That makes an empty list the
         most destructive possible misreading, since it would advance every
-        outstanding invitation at once. So zero cards is only reported as []
-        when LinkedIn's own empty state is on the page; otherwise it is None,
-        meaning "could not tell", and the caller does nothing.
+        outstanding invitation at once. So [] is returned only when LinkedIn's
+        own "People (0)" count says so; anything else unreadable is None.
+
+        Keyed on profile links rather than a card class: LinkedIn rebuilt this
+        page with obfuscated class names, and the links are both stable and the
+        thing the matcher actually compares on.
         """
-        cards = self.page.locator(sel.INVITATION_CARD)
+        self._wait_for_content(sel.INVITATION_PROFILE_LINK)
         try:
-            count = cards.count()
+            rows = self._settled_invitation_rows()
+            stated = self._stated_invitation_count()
         except Exception:
             return None
 
-        if count == 0:
-            try:
-                if self.page.locator(sel.INVITATION_EMPTY_STATE).count() > 0:
-                    return []
-            except Exception:
-                pass
-            self._record_miss("invitation_card")
-            return None
+        if rows:
+            return rows
+        # Nothing found. An empty list is the most destructive thing this method
+        # can say, so it is only said when LinkedIn's own count agrees.
+        if stated == 0:
+            return []
+        self._record_miss("invitation_profile_link")
+        return None
 
-        pending: list[dict] = []
-        for i in range(count):
-            card = cards.nth(i)
-            try:
-                name = self._text(card, sel.INVITATION_NAME)
-                if not name:
-                    self._record_miss("invitation_name")
-                    continue
-                link = card.locator(sel.INVITATION_LINK).first
-                url = (link.get_attribute("href") or "") if link.count() else ""
-                pending.append({"name": name, "url": self._absolute(url)})
-            except Exception:
+    def _settled_invitation_rows(self, attempts: int = 3, pause_ms: int = 1500) -> list[dict]:
+        """Read the list until two consecutive reads agree.
+
+        A *partially* rendered list is more dangerous than an empty one: the
+        invitations that did not render read as accepted, and those are exactly
+        the ones still pending. Observed live — three of seven rendered, and the
+        four missing were all real contacts, every one wrongly proposed as
+        connected.
+
+        Stability is the test rather than LinkedIn's own "People (N)" count,
+        because that count renders stale: it read 0 while seven invitations were
+        on the page. A list still filling in changes between reads; a complete
+        one does not.
+        """
+        previous: list[dict] = []
+        for attempt in range(attempts):
+            rows = self._invitation_rows()
+            if attempt and {r["url"] for r in rows} == {r["url"] for r in previous}:
+                return rows
+            previous = rows
+            self.page.wait_for_timeout(pause_ms)
+        return []
+
+    def _stated_invitation_count(self) -> int | None:
+        """LinkedIn's own count of pending invitations, e.g. "People (7)"."""
+        try:
+            text = self.page.locator("main").inner_text()
+        except Exception:
+            return None
+        match = sel.INVITATION_COUNT_TEXT.search(text or "")
+        return int(match.group(1)) if match else None
+
+    def _invitation_rows(self) -> list[dict]:
+        """One row per distinct profile linked from the invitation list.
+
+        A card links the same profile more than once (avatar and name), so rows
+        are deduped on URL, keeping the longest surrounding text as the name
+        source — the avatar link carries no text.
+        """
+        links = self.page.locator(sel.INVITATION_PROFILE_LINK)
+        best: dict[str, str] = {}
+        for i in range(links.count()):
+            link = links.nth(i)
+            href = self._absolute(link.get_attribute("href") or "")
+            if not href:
                 continue
-        return pending
+            name = self._invitation_name(link)
+            # `setdefault` first: the anchors carry no text of their own, so a
+            # plain "keep the longest" comparison never fired and the whole list
+            # came back empty while seven links sat on the page.
+            best.setdefault(href, name)
+            if len(name) > len(best[href]):
+                best[href] = name
+        return [{"name": name, "url": url} for url, name in best.items()]
+
+    @staticmethod
+    def _invitation_name(link) -> str:
+        try:
+            ancestor = link.locator(sel.INVITATION_NAME_ANCESTOR)
+            if ancestor.count() == 0:
+                return ""
+            return (ancestor.first.inner_text() or "").strip().split("\n")[0].strip()
+        except Exception:
+            return ""
 
     def get_job_results(self, limit: int = 25) -> list[dict]:
         """Read job cards from the current job-search page."""
@@ -632,6 +695,20 @@ class LinkedInPage:
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
+
+    def _wait_for_content(self, selector: str, timeout_ms: int = 15000) -> None:
+        """Give a client-rendered list time to appear before counting it.
+
+        `goto` returns on load, but the messaging and invitation panes are drawn
+        afterwards. Counting immediately found zero every time and reported the
+        selector as broken — the sync read a full inbox as an empty one.
+        """
+        try:
+            self.page.wait_for_selector(selector, timeout=timeout_ms)
+        except Exception:
+            # Genuinely absent or genuinely broken; the caller's miss handling
+            # tells those apart.
+            pass
 
     def _visible(self, selector: str):
         """The first *visible* match, which is not always the first match.

@@ -11,7 +11,7 @@ import pytest
 
 from linkedin.automation import selectors as sel
 from linkedin.automation.linkedin_page import LinkedInPage
-from tests.fake_page import FakeCard, FakeElement, FakePage, canonical
+from tests.fake_page import FakeCard, FakeElement, FakeLocator, FakePage, canonical
 
 
 @pytest.fixture
@@ -601,31 +601,117 @@ class TestMessageThreads:
 
 
 class TestPendingInvitations:
-    def test_reads_pending_invitations(self, page):
+    """Keyed on profile links: LinkedIn rebuilt this page with obfuscated class
+    names, so `li.invitation-card` matches nothing on the live site."""
+
+    @staticmethod
+    def _link(name, href):
+        """One invitation anchor: no text of its own, name on an ancestor."""
         card = FakeCard(None, {
-            canonical("css", sel.INVITATION_NAME): [FakeElement("Andy Matsuzaki")],
-            canonical("css", sel.INVITATION_LINK): [FakeElement(href="/in/andy")],
+            canonical("css", sel.INVITATION_NAME_ANCESTOR): [
+                FakeElement(f"{name}\nProduct Manager\nSent 3 days ago") if name else FakeElement("")
+            ],
         })
-        card._page = page
-        page.register_css(sel.INVITATION_CARD, [card])
+        card._elements = [FakeElement(href=href)]
+        return card
+
+    def _page_with(self, links, main_text="People (2)"):
+        page = FakePage()
+        for card in links:
+            card._page = page
+        page.register_css(sel.INVITATION_PROFILE_LINK, links)
+        page.register_css("main", [FakeElement(main_text)])
+        return page
+
+    def test_reads_pending_invitations(self):
+        page = self._page_with([
+            self._link("Andy Matsuzaki", "/in/andy"),
+            self._link("Michele Chung", "/in/michele"),
+        ])
+        pending = LinkedInPage(page).get_pending_sent_invitations()
+
+        assert pending == [
+            {"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"},
+            {"name": "Michele Chung", "url": "https://www.linkedin.com/in/michele"},
+        ]
+
+    def test_the_same_profile_linked_twice_is_one_invitation(self):
+        """A card links the profile from both the avatar and the name."""
+        page = self._page_with([
+            self._link("", "/in/andy"),
+            self._link("Andy Matsuzaki", "/in/andy"),
+        ], main_text="People (1)")
+        pending = LinkedInPage(page).get_pending_sent_invitations()
+
+        assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
+
+    def test_a_still_rendering_list_is_refused(self):
+        """The most dangerous shape: rows present, but not all of them yet.
+
+        Every invitation that failed to render reads as accepted. Observed live
+        — three of seven rendered, and the four missing were all real contacts.
+        A list still filling in changes between reads, which is the tell.
+        """
+        page = self._page_with([], main_text="People (7)")
+        growing = [
+            [self._link("Sashank Gondala", "/in/sashank")],
+            [self._link("Sashank Gondala", "/in/sashank"), self._link("Andy", "/in/andy")],
+            [self._link("Sashank Gondala", "/in/sashank"), self._link("Andy", "/in/andy"),
+             self._link("Michele", "/in/michele")],
+        ]
+
+        def next_batch(_selector):
+            batch = growing.pop(0) if growing else []
+            for card in batch:
+                card._page = page
+            return FakeLocator(page, batch)
+
+        page.locator = next_batch
+        lp = LinkedInPage(page)
+
+        assert lp.get_pending_sent_invitations() is None
+        assert "invitation_profile_link" in lp.selector_misses
+
+    def test_a_list_that_stops_changing_is_trusted(self):
+        """Two identical reads mean the page finished rendering."""
+        page = self._page_with([
+            self._link("Andy Matsuzaki", "/in/andy"),
+        ], main_text="People (0)")  # count renders stale; stability is the test
 
         pending = LinkedInPage(page).get_pending_sent_invitations()
         assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
 
-    def test_unreadable_list_returns_none_not_empty(self, page):
-        """The caller treats [] as 'all accepted'. A broken selector must not say that.
+    def test_a_complete_list_matching_the_stated_count_is_accepted(self):
+        page = self._page_with([
+            self._link("Andy Matsuzaki", "/in/andy"),
+            self._link("Michele Chung", "/in/michele"),
+        ], main_text="People (2)")
+        assert len(LinkedInPage(page).get_pending_sent_invitations()) == 2
+
+    def test_unreadable_list_returns_none_not_empty(self):
+        """The caller treats [] as 'all accepted'. A broken page must not say that.
 
         This is the one place in the package where failing soft to an empty list
         would advance every outstanding invitation at once.
         """
+        page = self._page_with([], main_text="People (7)")
         lp = LinkedInPage(page)
-        assert lp.get_pending_sent_invitations() is None
-        assert "invitation_card" in lp.selector_misses
 
-    def test_genuinely_empty_list_is_distinguishable(self, page):
-        """Zero pending invitations is real, and must not read as a breakage."""
-        page.register_css(sel.INVITATION_EMPTY_STATE, [FakeElement("No pending invitations")])
+        assert lp.get_pending_sent_invitations() is None
+        assert "invitation_profile_link" in lp.selector_misses
+
+    def test_no_count_at_all_is_also_unreadable(self):
+        page = self._page_with([], main_text="something else entirely")
+        assert LinkedInPage(page).get_pending_sent_invitations() is None
+
+    def test_genuinely_empty_list_is_distinguishable(self):
+        """Zero pending invitations is real, and must not read as a breakage.
+
+        Only LinkedIn's own count makes it a fact rather than a guess.
+        """
+        page = self._page_with([], main_text="People (0)")
         lp = LinkedInPage(page)
+
         assert lp.get_pending_sent_invitations() == []
         assert lp.selector_misses == []
 

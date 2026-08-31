@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import re
 
+#: Playwright's visibility selector engine, used by the page object to skip the
+#: hidden duplicates LinkedIn ships for its responsive layouts.
+VISIBLE = "visible=true"
+
 
 def canonical(kind: str, *parts) -> str:
     out = [kind]
@@ -27,6 +31,10 @@ def canonical(kind: str, *parts) -> str:
         else:
             out.append(str(part))
     return ":".join(out)
+
+
+class StrictModeViolation(Exception):
+    """Playwright's strict-mode error, reproduced in the double."""
 
 
 class FakeElement:
@@ -79,6 +87,12 @@ class FakeLocator:
         return len(self._elements)
 
     @property
+    def last(self):
+        if not self._elements:
+            return FakeLocator(self._page, [])
+        return FakeLocator(self._page, self._elements[-1:])
+
+    @property
     def first(self):
         if self._elements and isinstance(self._elements[0], FakeCard):
             return self._elements[0]
@@ -94,8 +108,24 @@ class FakeLocator:
         return FakeLocator(self._page, [item])
 
     def _one(self):
+        """Resolve to exactly one element, the way Playwright's strict mode does.
+
+        Playwright raises on an action against a locator matching more than one
+        element, and every such call here is wrapped in `except Exception` by
+        the page object — so without this check a strict-mode violation looks
+        identical to "the button wasn't there", and the tests stay green while
+        the real browser fails. `automate login` was broken this way from the
+        start: LinkedIn renders two "Email or phone" inputs.
+
+        Narrow with `.first` (or `.nth`) when several matches are expected.
+        """
         if not self._elements:
             raise AssertionError("operated on an empty locator")
+        if len(self._elements) > 1:
+            raise StrictModeViolation(
+                f"locator resolved to {len(self._elements)} elements; "
+                "use .first or .nth(i) to pick one"
+            )
         return self._elements[0]
 
     def click(self):
@@ -125,6 +155,10 @@ class FakeLocator:
 
     # nested lookups scoped to this element (cards)
     def locator(self, selector):
+        if selector == VISIBLE:
+            # The double has no layout, so every registered element counts as
+            # visible; the filter exists so page-object code can express it.
+            return self
         return self._page._resolve(canonical("css", selector), scope=self)
 
     def get_by_role(self, role, name=None):
@@ -139,9 +173,11 @@ class FakeCard(FakeLocator):
         self.children = dict(children or {})
 
     def locator(self, selector):
+        if selector == VISIBLE:
+            return self
         return FakeLocator(self._page, self.children.get(canonical("css", selector), []))
 
-    def get_by_role(self, role, name=None):
+    def get_by_role(self, role, name=None, exact=False):
         return FakeLocator(self._page, self.children.get(canonical("role", role, name), []))
 
 
@@ -185,8 +221,13 @@ class FakePage:
     def locator(self, selector):
         return self._resolve(canonical("css", selector))
 
-    def get_by_role(self, role, name=None):
-        return self._resolve(canonical("role", role, name))
+    def get_by_role(self, role, name=None, exact=False):
+        found = self._resolve(canonical("role", role, name))
+        if not exact:
+            return found
+        # exact=True narrows to elements whose accessible name IS `name`; a
+        # substring match would also catch "Sign in with Apple".
+        return FakeLocator(self, [e for e in found._elements if not e.text or e.text == str(name)])
 
     def get_by_label(self, name):
         return self._resolve(canonical("label", name))

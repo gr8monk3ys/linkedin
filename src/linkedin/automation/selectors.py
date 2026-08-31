@@ -13,8 +13,18 @@ churn. The CSS constants are the ones with no accessible equivalent.
 import re
 
 # --- Role/label locators (resilient: keyed on accessible names) --------------
+#: The login fields are addressed by autocomplete attribute, not accessible
+#: name. Measured 2026-08-30: "Email or phone" matches two inputs and "Password"
+#: matches four (the "Show password" toggle shares the name), and Playwright
+#: raises on an action against a multi-match locator. The autocomplete tokens are
+#: a browser standard rather than LinkedIn markup, so they are the sturdier key.
+LOGIN_EMAIL_INPUT = "input[autocomplete='username']"
+LOGIN_PASSWORD_INPUT = "input[autocomplete='current-password']"
 LOGIN_EMAIL_LABEL = "Email or phone"
 LOGIN_PASSWORD_LABEL = "Password"
+
+#: Matched exactly: "Sign in" as a substring also matches "Sign in with Apple",
+#: which is the *first* button on the page.
 SIGN_IN_BUTTON = "Sign in"
 
 CONNECT_BUTTON = "Connect"
@@ -91,13 +101,24 @@ INVITATION_LINK = "a.invitation-card__link"
 #: safely, because the caller reads [] as "every invitation was accepted".
 INVITATION_EMPTY_STATE = ".mn-invitation-manager__empty-state, .artdeco-empty-state"
 
-# Job search results.
-JOB_CARD = "div.job-card-container"
-JOB_TITLE = "a.job-card-list__title, .job-card-list__title--link"
-JOB_COMPANY = ".job-card-container__primary-description, .artdeco-entity-lockup__subtitle"
-JOB_LOCATION = ".job-card-container__metadata-item"
-JOB_LINK = "a.job-card-list__title, a.job-card-container__link"
-JOB_EASY_APPLY = ".job-card-container__easy-apply-label, li.job-card-container__footer-item"
+# Job search results. LinkedIn serves two different markups for the same search:
+# `job-card-*` when authenticated and `base-search-card` / `job-search-card` to
+# guests. Both are listed because a session can silently drop to the guest view,
+# and a search that reported nothing there would look like a market with no jobs.
+# Verified against the live guest page 2026-08-30.
+JOB_CARD = "div.job-card-container, div.job-search-card"
+JOB_TITLE = "a.job-card-list__title, .job-card-list__title--link, h3.base-search-card__title"
+JOB_COMPANY = (
+    ".job-card-container__primary-description, .artdeco-entity-lockup__subtitle, "
+    "h4.base-search-card__subtitle"
+)
+JOB_LOCATION = ".job-card-container__metadata-item, span.job-search-card__location"
+JOB_LINK = "a.job-card-list__title, a.job-card-container__link, a.base-card__full-link"
+JOB_POSTED = "time"
+JOB_EASY_APPLY = (
+    ".job-card-container__easy-apply-label, li.job-card-container__footer-item, "
+    ".job-search-card__easy-apply-label"
+)
 
 POST_EDITOR_FALLBACK = "div.ql-editor[contenteditable='true']"
 FILE_INPUT = "input[type='file']"
@@ -123,4 +144,6 @@ FRAGILE_SELECTORS = {
     "invitation_name": INVITATION_NAME,
     "job_card": JOB_CARD,
     "job_title": JOB_TITLE,
+    "login_email_input": LOGIN_EMAIL_INPUT,
+    "login_password_input": LOGIN_PASSWORD_INPUT,
 }

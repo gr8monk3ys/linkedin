@@ -73,16 +73,16 @@ class TestNavigation:
 
 class TestLogin:
     def _prepare(self, page):
-        page.register_label(sel.LOGIN_EMAIL_LABEL, FakeElement())
-        page.register_label(sel.LOGIN_PASSWORD_LABEL, FakeElement())
+        page.register_css(sel.LOGIN_EMAIL_INPUT, FakeElement())
+        page.register_css(sel.LOGIN_PASSWORD_INPUT, FakeElement())
         page.register_role("button", sel.SIGN_IN_BUTTON, FakeElement())
         return page
 
     def test_successful_login_fills_and_submits(self, page):
         self._prepare(page)
         assert LinkedInPage(page).login("a@b.c", "pw") is True
-        assert page.registry[canonical("label", sel.LOGIN_EMAIL_LABEL)][0].filled == ["a@b.c"]
-        assert page.registry[canonical("label", sel.LOGIN_PASSWORD_LABEL)][0].filled == ["pw"]
+        assert page.registry[canonical("css", sel.LOGIN_EMAIL_INPUT)][0].filled == ["a@b.c"]
+        assert page.registry[canonical("css", sel.LOGIN_PASSWORD_INPUT)][0].filled == ["pw"]
         assert page.registry[canonical("role", "button", sel.SIGN_IN_BUTTON)][0].clicked == 1
 
     def test_login_returns_false_when_navigation_never_lands(self, page):
@@ -676,3 +676,45 @@ class TestJobResults:
         url = page.visited[-1]
         assert "keywords=Machine+Learning+Engineer" in url
         assert "location=Los+Angeles%2C+CA" in url
+
+
+class TestLoginStrictMode:
+    """The real login page renders duplicates of every field.
+
+    Measured against linkedin.com/login on 2026-08-30: two inputs match the
+    accessible name "Email or phone" (one hidden, one visible), four match
+    "Password" (including the "Show password" toggle), and two buttons match
+    "Sign in" — the first of which is "Sign in with Apple".
+
+    Playwright raises on an action against a multi-match locator, and `login()`
+    swallows exceptions, so this failed as a silent False from the day it was
+    written.
+    """
+
+    @pytest.fixture
+    def login_page(self):
+        page = FakePage(url="https://www.linkedin.com/login")
+        page.register_css(sel.LOGIN_EMAIL_INPUT, [FakeElement(), FakeElement()])
+        page.register_css(sel.LOGIN_PASSWORD_INPUT, [FakeElement(), FakeElement()])
+        page.register_role("button", sel.SIGN_IN_BUTTON, [FakeElement("Sign in with Apple"), FakeElement("Sign in")])
+        return page
+
+    def test_login_fills_credentials_despite_duplicate_fields(self, login_page):
+        assert LinkedInPage(login_page).login("me@example.com", "hunter2") is True
+
+    def test_login_types_into_the_field_it_selected(self, login_page):
+        LinkedInPage(login_page).login("me@example.com", "hunter2")
+        email = login_page.registry[canonical("css", sel.LOGIN_EMAIL_INPUT)][0]
+        password = login_page.registry[canonical("css", sel.LOGIN_PASSWORD_INPUT)][0]
+        assert email.filled == ["me@example.com"]
+        assert password.filled == ["hunter2"]
+
+    def test_login_uses_an_exact_sign_in_match(self, login_page):
+        """A substring match on "Sign in" also matches "Sign in with Apple"."""
+        LinkedInPage(login_page).login("me@example.com", "hunter2")
+        buttons = login_page.registry[canonical("role", "button", sel.SIGN_IN_BUTTON)]
+        assert buttons[0].clicked == 0, "clicked 'Sign in with Apple'"
+
+    def test_login_reports_failure_when_navigation_never_completes(self, login_page):
+        login_page.wait_for_url_fails = True
+        assert LinkedInPage(login_page).login("me@example.com", "hunter2") is False

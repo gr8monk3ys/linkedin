@@ -97,11 +97,17 @@ class LinkedInPage:
     # -------------------------------------------------------------------------
 
     def login(self, email: str, password: str) -> bool:
-        """Log in to LinkedIn. Returns True if successful."""
+        """Log in to LinkedIn. Returns True if successful.
+
+        Every locator here is narrowed to one element on purpose. LinkedIn
+        renders duplicates of all three controls, and Playwright raises on an
+        action against a multi-match locator — which this method used to swallow
+        and report as a plain False.
+        """
         self.goto_login()
-        self.page.get_by_label(sel.LOGIN_EMAIL_LABEL).fill(email)
-        self.page.get_by_label(sel.LOGIN_PASSWORD_LABEL).fill(password)
-        self.page.get_by_role("button", name=sel.SIGN_IN_BUTTON).click()
+        self._visible(sel.LOGIN_EMAIL_INPUT).fill(email)
+        self._visible(sel.LOGIN_PASSWORD_INPUT).fill(password)
+        self.page.get_by_role("button", name=sel.SIGN_IN_BUTTON, exact=True).last.click()
 
         # Wait for navigation to complete
         try:
@@ -137,7 +143,7 @@ class LinkedInPage:
                     connect_option = self.page.get_by_role("menuitem", name=sel.CONNECT_MENU_ITEM)
                     if connect_option.count() == 0:
                         return False
-                    connect_option.click()
+                    connect_option.first.click()
                 else:
                     return False
             else:
@@ -146,12 +152,12 @@ class LinkedInPage:
             if note:
                 add_note_btn = self.page.get_by_role("button", name=sel.ADD_NOTE_BUTTON)
                 if add_note_btn.count() > 0:
-                    add_note_btn.click()
-                    self.page.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).fill(note)
+                    add_note_btn.first.click()
+                    self.page.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).first.fill(note)
 
             send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
             if send_btn.count() > 0:
-                send_btn.click()
+                send_btn.first.click()
                 return True
             return False
         except Exception:
@@ -175,10 +181,10 @@ class LinkedInPage:
             # Wait for message dialog
             msg_box = self.page.get_by_role("textbox", name=sel.MESSAGE_TEXTBOX)
             msg_box.wait_for(timeout=5000)
-            msg_box.fill(message)
+            msg_box.first.fill(message)
 
             send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
-            send_btn.click()
+            send_btn.first.click()
             return True
         except Exception:
             return False
@@ -281,7 +287,7 @@ class LinkedInPage:
                 if btn.get_attribute("aria-pressed") == "true":
                     continue
                 btn.scroll_into_view_if_needed()
-                btn.click()
+                btn.first.click()
                 self.page.wait_for_timeout(800)
                 liked += 1
         except Exception:
@@ -377,7 +383,7 @@ class LinkedInPage:
 
             textbox = card.get_by_role("textbox", name=sel.COMMENT_TEXTBOX)
             textbox.wait_for(timeout=5000)
-            textbox.fill(comment_text)
+            textbox.first.fill(comment_text)
 
             post_btn = card.get_by_role("button", name=sel.COMMENT_SUBMIT_BUTTON)
             if post_btn.count() == 0:
@@ -615,6 +621,7 @@ class LinkedInPage:
                     "title": title,
                     "company": self._text(card, sel.JOB_COMPANY),
                     "location": self._text(card, sel.JOB_LOCATION),
+                    "posted": self._text(card, sel.JOB_POSTED),
                     "url": self._absolute(url),
                     "easy_apply": card.locator(sel.JOB_EASY_APPLY).count() > 0,
                 })
@@ -625,6 +632,14 @@ class LinkedInPage:
     # -------------------------------------------------------------------------
     # Helpers
     # -------------------------------------------------------------------------
+
+    def _visible(self, selector: str):
+        """The first *visible* match, which is not always the first match.
+
+        LinkedIn ships hidden duplicates of form fields for its responsive
+        layouts, so a bare `.first` can land on one that cannot be filled.
+        """
+        return self.page.locator(selector).locator("visible=true").first
 
     @staticmethod
     def _text(scope, selector: str) -> str:

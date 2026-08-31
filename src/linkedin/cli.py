@@ -77,6 +77,7 @@ from linkedin.services.dashboard_service import DashboardService
 from linkedin.services.data_service import DataService
 from linkedin.services.discover_service import DiscoverService
 from linkedin.services.draft_service import DraftService
+from linkedin.services.inbox_service import InboxService
 from linkedin.services.interview_service import InterviewService
 from linkedin.services.market_service import MarketService
 from linkedin.services.optimizer_service import OptimizerService
@@ -150,6 +151,7 @@ _interview_svc = InterviewService(_application_repo, _interview_prep_repo, _prof
 _conversation_svc = ConversationService(_conversation_repo, _contact_repo)
 _calendar_svc = ContentCalendarService(_calendar_repo)
 _automation_svc = AutomationService(_profile_repo)
+_inbox_svc = InboxService()
 
 NEXT_ACTION_LABELS = {
     "follow_up_overdue": "Follow up (overdue)",
@@ -174,6 +176,30 @@ NEXT_ACTION_COMMANDS = {
     "repair_contact": "linkedin-cli contacts repair",
 }
 
+APPLICATION_ACTION_LABELS = {
+    "apply_to_saved": "Apply (saved, never submitted)",
+    "chase_application": "Chase (no response)",
+    "chase_interview": "Chase interview outcome",
+    "respond_to_offer": "Respond to offer",
+    "repair_application": "Repair missing dates",
+}
+APPLICATION_ACTION_COMMANDS = {
+    "apply_to_saved": "linkedin-cli applications advance {id} --status applied",
+    "chase_application": "linkedin-cli applications view {id}",
+    "chase_interview": "linkedin-cli applications view {id}",
+    "respond_to_offer": "linkedin-cli applications view {id}",
+    "repair_application": "linkedin-cli applications view {id}",
+}
+
+
+def load_inbox_proposals() -> list[dict]:
+    """Proposed pipeline transitions awaiting confirmation."""
+    return json_store.load_json(json_store.INBOX_PROPOSALS_FILE, [])
+
+
+def save_inbox_proposals(proposals: list[dict]) -> None:
+    json_store.save_json(json_store.INBOX_PROPOSALS_FILE, proposals)
+
 
 def _save_daily_plan_recap(
     profile: dict,
@@ -181,8 +207,12 @@ def _save_daily_plan_recap(
     postings: list[dict],
     template_rows: list[tuple[str, dict]],
     recap_dir: str = "",
+    application_actions: list[dict] | None = None,
+    proposals: list[dict] | None = None,
 ) -> Path:
     """Persist a markdown snapshot of the daily plan and return its path."""
+    application_actions = application_actions or []
+    proposals = proposals or []
     out_dir = Path(recap_dir) if recap_dir else json_store.DATA_DIR / "recaps"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -209,6 +239,30 @@ def _save_daily_plan_recap(
                 f"- [{action['priority']}] {action.get('name', 'Unknown')} ({action.get('company', '')})"
                 f" | {NEXT_ACTION_LABELS.get(action['action'], action['action'])}"
                 f" | `{command_template.format(id=action['contact_id'])}`"
+            )
+
+    lines.extend(["", "## Inbound (needs your confirmation)"])
+    if not proposals:
+        lines.append("- Nothing new. Run `linkedin-cli inbox sync` to check.")
+    else:
+        for proposal in proposals:
+            flag = " [low confidence]" if proposal.get("confidence") == "low" else ""
+            lines.append(
+                f"- {proposal.get('name', 'Unknown')}: {proposal.get('from_status', '')}"
+                f" -> {proposal.get('to_status', '')}{flag} | {proposal.get('evidence', '')}"
+            )
+        lines.append("- Review with: `linkedin-cli inbox review`")
+
+    lines.extend(["", "## Applications"])
+    if not application_actions:
+        lines.append("- No applications need attention today.")
+    else:
+        for action in application_actions:
+            command = APPLICATION_ACTION_COMMANDS.get(action["action"], "linkedin-cli applications view {id}")
+            lines.append(
+                f"- [{action['priority']}] {action.get('title', 'Unknown')} @ {action.get('company', '')}"
+                f" | {APPLICATION_ACTION_LABELS.get(action['action'], action['action'])}"
+                f" | `{command.format(id=action['application_id'])}`"
             )
 
     lines.extend(["", "## Best-Match Opportunities"])
@@ -249,6 +303,8 @@ def _build_daily_plan_data(actions_limit: int, postings_limit: int, min_posting_
     profile = _profile_svc.get_profile()
     actions = _contact_svc.get_next_actions(limit=actions_limit)
     postings = _market_svc.list_postings(limit=postings_limit, min_score=min_posting_score)
+    application_actions = _application_svc.get_application_actions(limit=actions_limit)
+    proposals = load_inbox_proposals()
 
     template_rows: list[tuple[str, dict]] = []
     template_recommendations: list[dict] = []
@@ -265,6 +321,8 @@ def _build_daily_plan_data(actions_limit: int, postings_limit: int, min_posting_
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "profile": profile,
         "actions": actions,
+        "application_actions": application_actions,
+        "inbox_proposals": proposals,
         "postings": postings,
         "templates": template_recommendations,
     }, template_rows
@@ -303,6 +361,41 @@ def _render_daily_plan(data: dict) -> None:
                 command_template.format(id=action["contact_id"]),
             )
         console.print(action_table)
+
+    proposals = data.get("inbox_proposals") or []
+    if proposals:
+        console.print("\n[bold]Inbound — needs your confirmation[/bold]")
+        inbound_table = Table()
+        inbound_table.add_column("Contact", style="cyan")
+        inbound_table.add_column("Transition", style="yellow")
+        inbound_table.add_column("Evidence", style="dim")
+        for proposal in proposals:
+            marker = " [red](low)[/red]" if proposal.get("confidence") == "low" else ""
+            inbound_table.add_row(
+                proposal.get("name", "Unknown"),
+                f"{proposal.get('from_status', '')} → {proposal.get('to_status', '')}{marker}",
+                proposal.get("evidence", ""),
+            )
+        console.print(inbound_table)
+        console.print("  [dim]Apply with: linkedin-cli inbox review[/dim]")
+
+    application_actions = data.get("application_actions") or []
+    if application_actions:
+        console.print("\n[bold]Applications[/bold]")
+        app_table = Table()
+        app_table.add_column("Priority", style="dim")
+        app_table.add_column("Role", style="cyan")
+        app_table.add_column("Action", style="yellow")
+        app_table.add_column("Command", style="green")
+        for action in application_actions:
+            command = APPLICATION_ACTION_COMMANDS.get(action["action"], "linkedin-cli applications view {id}")
+            app_table.add_row(
+                str(action["priority"]),
+                f"{action.get('title', '')} @ {action.get('company', '')}",
+                APPLICATION_ACTION_LABELS.get(action["action"], action["action"]),
+                command.format(id=action["application_id"]),
+            )
+        console.print(app_table)
 
     console.print("\n[bold]2) Best-Match Opportunities[/bold]")
     if not postings:
@@ -475,6 +568,8 @@ def _run_daily_cycle(
             data["postings"],
             template_rows,
             recap_dir=recap_dir,
+            application_actions=data["application_actions"],
+            proposals=data["inbox_proposals"],
         )
         data["recap_path"] = str(recap_path)
 
@@ -4118,6 +4213,8 @@ def _require_automation():
     from linkedin.automation.actions import connect as connect_actions
     from linkedin.automation.actions import easy_apply as easy_apply_actions
     from linkedin.automation.actions import engage as engage_actions
+    from linkedin.automation.actions import inbox as inbox_actions
+    from linkedin.automation.actions import jobs as jobs_actions
     from linkedin.automation.actions import login as login_actions
     from linkedin.automation.actions import message as message_actions
     from linkedin.automation.actions import post as post_actions
@@ -4136,6 +4233,8 @@ def _require_automation():
         "connect": connect_actions,
         "easy_apply": easy_apply_actions,
         "engage": engage_actions,
+        "inbox": inbox_actions,
+        "jobs": jobs_actions,
         "login": login_actions,
         "message": message_actions,
         "post": post_actions,
@@ -4663,6 +4762,175 @@ def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
     else:
         console.print(f"[red]Easy Apply did not complete: {detail}[/red]")
         raise SystemExit(1)
+
+
+@automate.command("jobs")
+@click.option("--query", "-q", required=True, help="Job search keywords")
+@click.option("--location", "-L", default="", help="Location filter")
+@click.option("--limit", "-l", default=25, help="Max postings to read")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+@click.option("--dry-run", is_flag=True, help="Show results without importing")
+def automate_jobs(query, location, limit, headless, dry_run):
+    """Search LinkedIn jobs and import the results as scored postings.
+
+    Read-only against LinkedIn. This is what fills the daily plan's
+    opportunities section, which reported "No postings above threshold" every
+    morning because nothing had ever imported a posting.
+    """
+    auto = _require_automation()
+    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
+    try:
+        safety, limiter = _safety_and_limiter(auto, dry_run=dry_run)
+        results = auto["jobs"].search_jobs(
+            linkedin_page, query, location=location, limit=limit,
+            rate_limiter=limiter, safety=safety,
+        )
+    finally:
+        _close_linkedin_session(browser, linkedin_page)
+
+    if not results:
+        console.print("[dim]No job results (or the daily search limit is reached).[/dim]")
+        return
+
+    table = Table(title=f"Jobs: {query}")
+    table.add_column("Title", style="cyan")
+    table.add_column("Company")
+    table.add_column("Location", style="dim")
+    table.add_column("Easy Apply", justify="center")
+    for job in results:
+        table.add_row(job["title"], job["company"], job["location"], "✓" if job["easy_apply"] else "")
+    console.print(table)
+
+    if dry_run:
+        console.print(f"[yellow]Dry run — {len(results)} posting(s) not imported.[/yellow]")
+        return
+
+    added, skipped = auto["jobs"].import_job_results(results, _market_svc)
+    console.print(f"[green]Imported {len(added)} posting(s)[/green]" + (f", skipped {skipped} duplicate(s)" if skipped else ""))
+
+
+@cli.group("inbox")
+def inbox():
+    """Read replies and accepted invitations, and confirm what they imply.
+
+    Every other automation action is outbound, so a contact stays at the status
+    it was created with until a human retypes it. These commands are the inbound
+    edge — and they only ever *propose* a change.
+    """
+
+
+@inbox.command("sync")
+@click.option("--limit", "-l", default=25, help="Max message threads to read")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+def inbox_sync(limit, headless):
+    """Read LinkedIn messaging and sent invitations; save proposed transitions."""
+    auto = _require_automation()
+    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
+    try:
+        safety, limiter = _safety_and_limiter(auto, dry_run=False)
+        signals = auto["inbox"].read_inbox(
+            linkedin_page, thread_limit=limit, rate_limiter=limiter, safety=safety
+        )
+    finally:
+        _close_linkedin_session(browser, linkedin_page)
+
+    pending = signals["pending_invitations"]
+    if pending is None:
+        console.print(
+            "[yellow]Could not read the sent-invitation list — skipping acceptance checks.[/yellow]\n"
+            "[dim]An empty list would mean 'every invitation was accepted', so it is not assumed.[/dim]"
+        )
+
+    proposals = _inbox_svc.propose_transitions(
+        signals["threads"], pending, _contact_repo.list_all()
+    )
+    save_inbox_proposals(proposals)
+
+    console.print(f"[dim]Read {len(signals['threads'])} thread(s).[/dim]")
+    if not proposals:
+        console.print("[green]No pipeline changes to propose.[/green]")
+        return
+    _render_proposals(proposals)
+    console.print("\n[dim]Apply with: linkedin-cli inbox review[/dim]")
+
+
+@inbox.command("list")
+def inbox_list():
+    """Show proposed transitions awaiting confirmation."""
+    proposals = load_inbox_proposals()
+    if not proposals:
+        console.print("[dim]No pending proposals. Run: linkedin-cli inbox sync[/dim]")
+        return
+    _render_proposals(proposals)
+
+
+@inbox.command("review")
+@click.option("--yes", is_flag=True, help="Apply every high-confidence proposal without prompting")
+def inbox_review(yes):
+    """Confirm proposed transitions one at a time and apply them.
+
+    `--yes` applies high-confidence proposals only. A low-confidence proposal
+    matched a contact by display name alone, so it is always asked about.
+    """
+    proposals = load_inbox_proposals()
+    if not proposals:
+        console.print("[dim]No pending proposals. Run: linkedin-cli inbox sync[/dim]")
+        return
+
+    applied, skipped, remaining = 0, 0, []
+    for proposal in proposals:
+        contact_id = proposal.get("contact_id")
+        contact = _contact_repo.get(contact_id) if contact_id else None
+        if not contact:
+            console.print(f"[yellow]Contact #{contact_id} no longer exists — dropping.[/yellow]")
+            continue
+
+        if contact.get("status") != proposal.get("from_status"):
+            console.print(
+                f"[yellow]{proposal.get('name')} is now '{contact.get('status')}', "
+                f"not '{proposal.get('from_status')}' — dropping this proposal.[/yellow]"
+            )
+            continue
+
+        low = proposal.get("confidence") == "low"
+        console.print(
+            f"\n[bold cyan]{proposal.get('name')}[/bold cyan] "
+            f"{proposal.get('from_status')} → {proposal.get('to_status')}"
+            + (" [red](matched by name only)[/red]" if low else "")
+        )
+        console.print(f"  [dim]{proposal.get('evidence', '')}[/dim]")
+
+        if yes and not low:
+            confirmed = True
+        else:
+            confirmed = click.confirm("  Apply?", default=not low)
+
+        if confirmed:
+            _contact_svc.update_contact(contact_id, status=proposal["to_status"])
+            applied += 1
+        else:
+            skipped += 1
+            remaining.append(proposal)
+
+    save_inbox_proposals(remaining)
+    console.print(f"\n[green]Applied {applied}[/green]" + (f", kept {skipped} for later" if skipped else ""))
+
+
+def _render_proposals(proposals: list[dict]) -> None:
+    table = Table(title="Proposed pipeline changes")
+    table.add_column("Contact", style="cyan")
+    table.add_column("Transition", style="yellow")
+    table.add_column("Source", style="dim")
+    table.add_column("Evidence", style="dim")
+    for proposal in proposals:
+        marker = " [red](low)[/red]" if proposal.get("confidence") == "low" else ""
+        table.add_row(
+            proposal.get("name", "Unknown"),
+            f"{proposal.get('from_status', '')} → {proposal.get('to_status', '')}{marker}",
+            proposal.get("source", ""),
+            proposal.get("evidence", ""),
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

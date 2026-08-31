@@ -13,6 +13,7 @@ the miss in `self.selector_misses` instead of staying silent.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from urllib.parse import urlencode
 
 from linkedin.automation import selectors as sel
 
@@ -72,6 +73,18 @@ class LinkedInPage:
 
     def goto_profile(self, linkedin_url: str) -> None:
         self.page.goto(linkedin_url)
+
+    def goto_messaging(self) -> None:
+        self.page.goto(f"{self.LINKEDIN_URL}/messaging/")
+
+    def goto_sent_invitations(self) -> None:
+        self.page.goto(f"{self.LINKEDIN_URL}/mynetwork/invitation-manager/sent/")
+
+    def goto_job_search(self, keywords: str, location: str = "") -> None:
+        params = {"keywords": keywords}
+        if location:
+            params["location"] = location
+        self.page.goto(f"{self.LINKEDIN_URL}/jobs/search/?{urlencode(params)}")
 
     def goto_search(self, query: str, network: str = "") -> None:
         url = f"{self.LINKEDIN_URL}/search/results/people/?keywords={query}"
@@ -487,6 +500,146 @@ class LinkedInPage:
             return {"status": "needs_manual_input", "detail": f"Did not reach submit within {max_steps} steps"}
         except Exception as exc:
             return {"status": "error", "detail": str(exc)}
+
+    # -------------------------------------------------------------------------
+    # Inbound signals
+    # -------------------------------------------------------------------------
+
+    def get_message_threads(self, limit: int = 25) -> list[dict]:
+        """Read the messaging pane.
+
+        `last_from_them` is the load-bearing field: LinkedIn prefixes the
+        snippet with "You:" when the last message is our own, and that prefix is
+        the only thing separating a real reply from an echo of the message we
+        sent. Losing it would turn every outbound message into a fake response.
+        """
+        threads: list[dict] = []
+        cards = self.page.locator(sel.THREAD_CARD)
+        try:
+            count = cards.count()
+        except Exception:
+            return threads
+        if count == 0:
+            self._record_miss("thread_card")
+            return threads
+
+        for i in range(min(count, limit)):
+            card = cards.nth(i)
+            try:
+                name_el = card.locator(sel.THREAD_NAME).first
+                if name_el.count() == 0:
+                    self._record_miss("thread_name")
+                    continue
+                name = (name_el.text_content() or "").strip()
+                if not name:
+                    continue
+
+                snippet = self._text(card, sel.THREAD_SNIPPET)
+                link = card.locator(sel.THREAD_LINK).first
+                url = (link.get_attribute("href") or "") if link.count() else ""
+
+                threads.append({
+                    "name": name,
+                    "url": self._absolute(url),
+                    "snippet": sel.THREAD_OWN_MESSAGE_PREFIX.sub("", snippet).strip(),
+                    "timestamp": self._text(card, sel.THREAD_TIMESTAMP),
+                    "unread": card.locator(sel.THREAD_UNREAD_BADGE).count() > 0,
+                    "last_from_them": not sel.THREAD_OWN_MESSAGE_PREFIX.match(snippet),
+                })
+            except Exception:
+                continue
+        return threads
+
+    def get_pending_sent_invitations(self) -> list[dict] | None:
+        """Read still-pending sent invitations, or None if the list is unreadable.
+
+        The caller infers acceptance from *absence* — an invitation that is no
+        longer pending was accepted or withdrawn. That makes an empty list the
+        most destructive possible misreading, since it would advance every
+        outstanding invitation at once. So zero cards is only reported as []
+        when LinkedIn's own empty state is on the page; otherwise it is None,
+        meaning "could not tell", and the caller does nothing.
+        """
+        cards = self.page.locator(sel.INVITATION_CARD)
+        try:
+            count = cards.count()
+        except Exception:
+            return None
+
+        if count == 0:
+            try:
+                if self.page.locator(sel.INVITATION_EMPTY_STATE).count() > 0:
+                    return []
+            except Exception:
+                pass
+            self._record_miss("invitation_card")
+            return None
+
+        pending: list[dict] = []
+        for i in range(count):
+            card = cards.nth(i)
+            try:
+                name = self._text(card, sel.INVITATION_NAME)
+                if not name:
+                    self._record_miss("invitation_name")
+                    continue
+                link = card.locator(sel.INVITATION_LINK).first
+                url = (link.get_attribute("href") or "") if link.count() else ""
+                pending.append({"name": name, "url": self._absolute(url)})
+            except Exception:
+                continue
+        return pending
+
+    def get_job_results(self, limit: int = 25) -> list[dict]:
+        """Read job cards from the current job-search page."""
+        jobs: list[dict] = []
+        cards = self.page.locator(sel.JOB_CARD)
+        try:
+            count = cards.count()
+        except Exception:
+            return jobs
+        if count == 0:
+            self._record_miss("job_card")
+            return jobs
+
+        for i in range(min(count, limit)):
+            card = cards.nth(i)
+            try:
+                title = self._text(card, sel.JOB_TITLE)
+                if not title:
+                    self._record_miss("job_title")
+                    continue
+                link = card.locator(sel.JOB_LINK).first
+                url = (link.get_attribute("href") or "") if link.count() else ""
+                jobs.append({
+                    "title": title,
+                    "company": self._text(card, sel.JOB_COMPANY),
+                    "location": self._text(card, sel.JOB_LOCATION),
+                    "url": self._absolute(url),
+                    "easy_apply": card.locator(sel.JOB_EASY_APPLY).count() > 0,
+                })
+            except Exception:
+                continue
+        return jobs
+
+    # -------------------------------------------------------------------------
+    # Helpers
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _text(scope, selector: str) -> str:
+        element = scope.locator(selector).first
+        if element.count() == 0:
+            return ""
+        return (element.text_content() or "").strip()
+
+    def _absolute(self, href: str) -> str:
+        """LinkedIn hrefs are relative; the CRM stores absolute profile URLs."""
+        if not href:
+            return ""
+        if href.startswith("http"):
+            return href.split("?")[0]
+        return f"{self.LINKEDIN_URL}{href}".split("?")[0]
 
     def scrape_profile(self) -> dict[str, str]:
         """Scrape basic profile info from the current profile page.

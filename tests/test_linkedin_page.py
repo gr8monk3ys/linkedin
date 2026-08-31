@@ -534,3 +534,145 @@ class TestSelectorWarningReachesTheUser:
         with pytest.raises(RuntimeError):
             _close_linkedin_session(Browser(), Broken())
         assert Browser.closed is True
+
+
+def _thread_card(name="Ryan Barner", snippet="Happy to chat.", timestamp="Aug 29", href="/in/ryanbarner", unread=True):
+    children = {
+        canonical("css", sel.THREAD_NAME): [FakeElement(name)],
+        canonical("css", sel.THREAD_SNIPPET): [FakeElement(snippet)],
+        canonical("css", sel.THREAD_TIMESTAMP): [FakeElement(timestamp)],
+        canonical("css", sel.THREAD_LINK): [FakeElement(href=href)],
+    }
+    if unread:
+        children[canonical("css", sel.THREAD_UNREAD_BADGE)] = [FakeElement("1")]
+    return FakeCard(None, children)
+
+
+def _with_threads(page, cards):
+    for card in cards:
+        card._page = page
+    page.register_css(sel.THREAD_CARD, cards)
+    return page
+
+
+class TestMessageThreads:
+    def test_reads_name_snippet_and_url(self, page):
+        _with_threads(page, [_thread_card()])
+        threads = LinkedInPage(page).get_message_threads()
+
+        assert len(threads) == 1
+        assert threads[0]["name"] == "Ryan Barner"
+        assert threads[0]["snippet"] == "Happy to chat."
+        assert threads[0]["url"].endswith("/in/ryanbarner")
+
+    def test_no_threads_records_a_selector_miss(self, page):
+        """An empty messaging pane and a renamed class look identical."""
+        lp = LinkedInPage(page)
+        assert lp.get_message_threads() == []
+        assert "thread_card" in lp.selector_misses
+
+    def test_thread_without_a_name_records_a_miss(self, page):
+        card = _thread_card()
+        del card.children[canonical("css", sel.THREAD_NAME)]
+        _with_threads(page, [card])
+
+        lp = LinkedInPage(page)
+        lp.get_message_threads()
+        assert "thread_name" in lp.selector_misses
+
+    def test_own_last_message_is_marked_not_from_them(self, page):
+        card = _thread_card(snippet="You: sent you my resume")
+        _with_threads(page, [card])
+        threads = LinkedInPage(page).get_message_threads()
+        assert threads[0]["last_from_them"] is False
+
+    def test_their_message_is_marked_from_them(self, page):
+        _with_threads(page, [_thread_card()])
+        threads = LinkedInPage(page).get_message_threads()
+        assert threads[0]["last_from_them"] is True
+
+    def test_limit_caps_threads_read(self, page):
+        _with_threads(page, [_thread_card(name=f"P{i}") for i in range(10)])
+        assert len(LinkedInPage(page).get_message_threads(limit=3)) == 3
+
+    def test_goto_messaging_navigates(self, page):
+        LinkedInPage(page).goto_messaging()
+        assert page.visited[-1].endswith("/messaging/")
+
+
+class TestPendingInvitations:
+    def test_reads_pending_invitations(self, page):
+        card = FakeCard(None, {
+            canonical("css", sel.INVITATION_NAME): [FakeElement("Andy Matsuzaki")],
+            canonical("css", sel.INVITATION_LINK): [FakeElement(href="/in/andy")],
+        })
+        card._page = page
+        page.register_css(sel.INVITATION_CARD, [card])
+
+        pending = LinkedInPage(page).get_pending_sent_invitations()
+        assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
+
+    def test_unreadable_list_returns_none_not_empty(self, page):
+        """The caller treats [] as 'all accepted'. A broken selector must not say that.
+
+        This is the one place in the package where failing soft to an empty list
+        would advance every outstanding invitation at once.
+        """
+        lp = LinkedInPage(page)
+        assert lp.get_pending_sent_invitations() is None
+        assert "invitation_card" in lp.selector_misses
+
+    def test_genuinely_empty_list_is_distinguishable(self, page):
+        """Zero pending invitations is real, and must not read as a breakage."""
+        page.register_css(sel.INVITATION_EMPTY_STATE, [FakeElement("No pending invitations")])
+        lp = LinkedInPage(page)
+        assert lp.get_pending_sent_invitations() == []
+        assert lp.selector_misses == []
+
+
+def _job_card(title="ML Engineer", company="Netflix", location="Los Angeles", href="/jobs/view/123", easy=True):
+    children = {
+        canonical("css", sel.JOB_TITLE): [FakeElement(title)],
+        canonical("css", sel.JOB_COMPANY): [FakeElement(company)],
+        canonical("css", sel.JOB_LOCATION): [FakeElement(location)],
+        canonical("css", sel.JOB_LINK): [FakeElement(href=href)],
+    }
+    if easy:
+        children[canonical("css", sel.JOB_EASY_APPLY)] = [FakeElement("Easy Apply")]
+    return FakeCard(None, children)
+
+
+class TestJobResults:
+    def test_reads_job_cards(self, page):
+        card = _job_card()
+        card._page = page
+        page.register_css(sel.JOB_CARD, [card])
+
+        jobs = LinkedInPage(page).get_job_results()
+        assert len(jobs) == 1
+        assert jobs[0]["title"] == "ML Engineer"
+        assert jobs[0]["company"] == "Netflix"
+        assert jobs[0]["location"] == "Los Angeles"
+        assert jobs[0]["easy_apply"] is True
+        assert jobs[0]["url"].endswith("/jobs/view/123")
+
+    def test_no_jobs_records_a_selector_miss(self, page):
+        lp = LinkedInPage(page)
+        assert lp.get_job_results() == []
+        assert "job_card" in lp.selector_misses
+
+    def test_job_without_a_title_is_dropped_and_recorded(self, page):
+        card = _job_card()
+        del card.children[canonical("css", sel.JOB_TITLE)]
+        card._page = page
+        page.register_css(sel.JOB_CARD, [card])
+
+        lp = LinkedInPage(page)
+        assert lp.get_job_results() == []
+        assert "job_title" in lp.selector_misses
+
+    def test_goto_job_search_encodes_query_and_location(self, page):
+        LinkedInPage(page).goto_job_search("Machine Learning Engineer", location="Los Angeles, CA")
+        url = page.visited[-1]
+        assert "keywords=Machine+Learning+Engineer" in url
+        assert "location=Los+Angeles%2C+CA" in url

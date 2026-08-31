@@ -44,6 +44,7 @@ APPLICATIONS_FILE = DATA_DIR / "applications.json"
 CONVERSATIONS_FILE = DATA_DIR / "conversations.json"
 CALENDAR_FILE = DATA_DIR / "content_calendar.json"
 INTERVIEW_PREP_FILE = DATA_DIR / "interview_prep.json"
+INBOX_PROPOSALS_FILE = DATA_DIR / "inbox_proposals.json"
 
 
 def ensure_dirs():

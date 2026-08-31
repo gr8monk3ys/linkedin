@@ -804,3 +804,72 @@ class TestLoginStrictMode:
     def test_login_reports_failure_when_navigation_never_completes(self, login_page):
         login_page.wait_for_url_fails = True
         assert LinkedInPage(login_page).login("me@example.com", "hunter2") is False
+
+
+class TestJobResultScrolling:
+    """The job list is virtualized: `li[data-occludable-job-id]` renders about
+    seven cards at a time and recycles them out of the DOM as you scroll, so a
+    single read can never see more than a fraction of 1,000+ results.
+    """
+
+    def _card(self, title, company="Netflix"):
+        return _job_card(title=title, company=company, href=f"/jobs/view/{title}")
+
+    def test_accumulates_across_scrolls(self):
+        page = FakePage()
+        batches = [
+            [self._card("A"), self._card("B")],
+            [self._card("C")],          # A and B recycled out
+            [self._card("D")],
+        ]
+
+        def locator(selector):
+            if selector != sel.JOB_CARD:
+                return FakeLocator(page, [])
+            batch = batches.pop(0) if batches else []
+            for card in batch:
+                card._page = page
+            return FakeLocator(page, batch)
+
+        page.locator = locator
+        jobs = LinkedInPage(page).get_job_results(limit=25)
+
+        assert sorted(j["title"] for j in jobs) == ["A", "B", "C", "D"]
+
+    def test_stops_when_scrolling_stops_yielding_new_cards(self):
+        """A static list must terminate, not spin for the full scroll budget."""
+        page = FakePage()
+        card = self._card("Only")
+        card._page = page
+        page.register_css(sel.JOB_CARD, [card])
+
+        jobs = LinkedInPage(page).get_job_results(limit=25)
+
+        assert [j["title"] for j in jobs] == ["Only"]
+        assert len(page.evaluated) <= 3
+
+    def test_limit_stops_the_scrolling_early(self):
+        page = FakePage()
+        cards = [self._card(str(i)) for i in range(10)]
+        for card in cards:
+            card._page = page
+        page.register_css(sel.JOB_CARD, cards)
+
+        jobs = LinkedInPage(page).get_job_results(limit=4)
+        assert len(jobs) == 4
+        assert page.evaluated == []
+
+    def test_the_same_job_seen_twice_is_one_result(self):
+        page = FakePage()
+        batches = [[self._card("A")], [self._card("A")], [self._card("A")]]
+
+        def locator(selector):
+            if selector != sel.JOB_CARD:
+                return FakeLocator(page, [])
+            batch = batches.pop(0) if batches else []
+            for card in batch:
+                card._page = page
+            return FakeLocator(page, batch)
+
+        page.locator = locator
+        assert len(LinkedInPage(page).get_job_results(limit=25)) == 1

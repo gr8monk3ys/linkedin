@@ -130,6 +130,29 @@ JOB_LOCATION = (
 )
 JOB_LINK = "a.job-card-list__title, a.job-card-container__link, a.base-card__full-link"
 JOB_POSTED = "time"
+
+#: Scrolls the virtualized job list. The results pane is an inner scroll
+#: container whose class name is obfuscated, so it is found by walking up from a
+#: card to the first ancestor that actually scrolls.
+JOB_LIST_SCROLL_SCRIPT = """() => {
+  const card = document.querySelector('div.job-card-container, div.job-search-card');
+  if (!card) return false;
+  let el = card.parentElement;
+  while (el && el !== document.body) {
+    if (el.scrollHeight > el.clientHeight + 50) {
+      const before = el.scrollTop;
+      // One viewport at a time. Jumping to scrollHeight skips the middle of a
+      // virtualized list: the cards in between are recycled without ever
+      // having been rendered.
+      el.scrollTop = before + el.clientHeight;
+      return el.scrollTop !== before;
+    }
+    el = el.parentElement;
+  }
+  const before = window.scrollY;
+  window.scrollBy(0, window.innerHeight);
+  return window.scrollY !== before;
+}"""
 JOB_EASY_APPLY = (
     ".job-card-container__easy-apply-label, li.job-card-container__footer-item, "
     ".job-search-card__easy-apply-label"

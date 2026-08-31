@@ -659,19 +659,56 @@ class LinkedInPage:
         except Exception:
             return ""
 
-    def get_job_results(self, limit: int = 25) -> list[dict]:
-        """Read job cards from the current job-search page."""
+    def get_job_results(self, limit: int = 25, max_scrolls: int = 12) -> list[dict]:
+        """Read job cards from the current job-search page.
+
+        The list is virtualized: about seven cards exist in the DOM at once and
+        are recycled out as you scroll, so no single read can see more than a
+        fraction of the results. Cards are therefore collected across scrolls
+        and deduped, rather than counted once.
+        """
+        collected: dict[str, dict] = {}
+
+        for scroll in range(max_scrolls + 1):
+            found = self._visible_job_cards()
+            if not found and scroll == 0:
+                self._record_miss("job_card")
+                return []
+            before = len(collected)
+            for job in found:
+                collected.setdefault(self._job_key(job), job)
+            if len(collected) >= limit:
+                break
+            # Nothing new after a scroll means the list is exhausted or static.
+            if scroll and len(collected) == before:
+                break
+            if not self._scroll_job_list():
+                break
+            self.page.wait_for_timeout(900)
+
+        return list(collected.values())[:limit]
+
+    def _scroll_job_list(self) -> bool:
+        """Scroll the results pane. False when it did not move."""
+        try:
+            return bool(self.page.evaluate(sel.JOB_LIST_SCROLL_SCRIPT))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _job_key(job: dict) -> str:
+        return job["url"] or f"{job['company']}|{job['title']}".lower()
+
+    def _visible_job_cards(self) -> list[dict]:
+        """Parse the job cards currently in the DOM."""
         jobs: list[dict] = []
         cards = self.page.locator(sel.JOB_CARD)
         try:
             count = cards.count()
         except Exception:
             return jobs
-        if count == 0:
-            self._record_miss("job_card")
-            return jobs
 
-        for i in range(min(count, limit)):
+        for i in range(count):
             card = cards.nth(i)
             try:
                 title = self._text(card, sel.JOB_TITLE)

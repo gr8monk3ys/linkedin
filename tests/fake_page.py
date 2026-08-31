@@ -193,6 +193,9 @@ class FakePage:
         self.registry: dict[str, list] = dict(registry or {})
         self.visited: list[str] = []
         self.evaluated: list[str] = []
+        #: What `evaluate` hands back. Defaults to True because the scripts the
+        #: page object runs report "did something happen" — a real page scrolls.
+        self.evaluate_result = True
         self.waits = 0
         self.wait_for_url_fails = False
 
@@ -244,3 +247,4 @@ class FakePage:
 
     def evaluate(self, script):
         self.evaluated.append(script)
+        return self.evaluate_result

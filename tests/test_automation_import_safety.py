@@ -82,111 +82,65 @@ class TestCredentials:
             assert credentials.has_credentials() is True
 
 
-class TestLoginAction:
-    _UNSET = object()
+class TestLogin:
+    """`session._login`: saved session first, credentials second, and on every
+    failure the browser is left on a page a human can use."""
 
-    def _browser(self, page=_UNSET):
+    def _page(self, logged_in=False, login_ok=False, url="about:blank"):
+        page = MagicMock()
+        page.is_logged_in.return_value = logged_in
+        page.login.return_value = login_ok
+        page.page.url = url
+        return page
+
+    def test_returns_false_without_stored_credentials_and_lands_on_login(self):
+        """Returning False must not leave the browser on about:blank: the CLI's
+        fallback is 'finish the login yourself in the window'."""
+        from linkedin.automation.session import _login
+
+        page = self._page()
+        with patch("linkedin.automation.credentials.get_credentials", return_value=None):
+            assert _login(MagicMock(), page) is False
+        page.goto_login.assert_called_once()
+
+    def test_a_valid_saved_session_needs_no_stored_credentials(self):
+        """Checking credentials first threw away a working session whenever
+        `automate setup` had never been run — every hand-established session."""
+        from linkedin.automation.session import _login
+
+        page = self._page(logged_in=True)
         browser = MagicMock()
-        browser.page = MagicMock() if page is self._UNSET else page
-        return browser
-
-    def test_returns_false_without_stored_credentials(self):
-        from linkedin.automation.actions import login
-
-        with patch("linkedin.automation.credentials.get_credentials", return_value=None), patch(
-            "linkedin.automation.actions.login.LinkedInPage"
-        ) as page_cls:
-            page_cls.return_value.is_logged_in.return_value = False
-            assert login.login_action(self._browser()) is False
-
-    def test_returns_false_without_a_page(self):
-        from linkedin.automation.actions import login
-
-        assert login.login_action(self._browser(page=None), email="a@b.c", password="pw") is False
-
-    def test_existing_session_short_circuits(self):
-        from linkedin.automation.actions import login
-
-        with patch("linkedin.automation.actions.login.LinkedInPage") as page_cls:
-            page_cls.return_value.is_logged_in.return_value = True
-            browser = self._browser()
-            assert login.login_action(browser, "a@b.c", "pw") is True
-            page_cls.return_value.login.assert_not_called()
-            browser.save_session.assert_not_called()
+        with patch("linkedin.automation.credentials.get_credentials", side_effect=AssertionError("must not be asked")):
+            assert _login(browser, page) is True
+        page.login.assert_not_called()
+        browser.save_session.assert_not_called()
 
     def test_successful_login_saves_the_session(self):
-        from linkedin.automation.actions import login
+        from linkedin.automation.session import _login
 
-        with patch("linkedin.automation.actions.login.LinkedInPage") as page_cls:
-            page_cls.return_value.is_logged_in.return_value = False
-            page_cls.return_value.login.return_value = True
-            browser = self._browser()
-            assert login.login_action(browser, "a@b.c", "pw") is True
-            browser.save_session.assert_called_once()
-
-    def test_failed_login_does_not_save_the_session(self):
-        from linkedin.automation.actions import login
-
-        with patch("linkedin.automation.actions.login.LinkedInPage") as page_cls:
-            page_cls.return_value.is_logged_in.return_value = False
-            page_cls.return_value.login.return_value = False
-            browser = self._browser()
-            assert login.login_action(browser, "a@b.c", "pw") is False
-            browser.save_session.assert_not_called()
-
-    def test_missing_credentials_still_lands_on_the_login_page(self):
-        """Returning False must not leave the browser on about:blank.
-
-        The CLI's fallback is "finish the login yourself in the window", and
-        with no credentials stored this returned False before navigating
-        anywhere — so the window it pointed at was blank.
-        """
-        from linkedin.automation.actions import login
-
-        with patch("linkedin.automation.credentials.get_credentials", return_value=None), patch(
-            "linkedin.automation.actions.login.LinkedInPage"
-        ) as page_cls:
-            page_cls.return_value.is_logged_in.return_value = False
-            assert login.login_action(self._browser()) is False
-            page_cls.return_value.goto_login.assert_called_once()
+        page = self._page(login_ok=True)
+        browser = MagicMock()
+        with patch("linkedin.automation.credentials.get_credentials", return_value=("a@b.c", "pw")):
+            assert _login(browser, page) is True
+        page.login.assert_called_once_with("a@b.c", "pw")
+        browser.save_session.assert_called_once()
 
     def test_failed_credentials_leave_the_login_page_open(self):
-        from linkedin.automation.actions import login
+        from linkedin.automation.session import _login
 
-        browser = self._browser()
-        browser.page.url = "about:blank"
-        with patch("linkedin.automation.actions.login.LinkedInPage") as page_cls:
-            page_cls.return_value.is_logged_in.return_value = False
-            page_cls.return_value.login.return_value = False
-            assert login.login_action(browser, "a@b.c", "pw") is False
-            page_cls.return_value.goto_login.assert_called_once()
+        page = self._page(login_ok=False, url="about:blank")
+        browser = MagicMock()
+        with patch("linkedin.automation.credentials.get_credentials", return_value=("a@b.c", "pw")):
+            assert _login(browser, page) is False
+        browser.save_session.assert_not_called()
+        page.goto_login.assert_called_once()
 
     def test_a_security_checkpoint_is_not_navigated_away_from(self):
         """A failed login often means 2FA, and that challenge is the page the
         human needs. Reloading /login would discard it."""
-        from linkedin.automation.actions import login
+        from linkedin.automation.session import _login
 
-        browser = self._browser()
-        browser.page.url = "https://www.linkedin.com/checkpoint/challenge/"
-        with patch("linkedin.automation.actions.login.LinkedInPage") as page_cls:
-            page_cls.return_value.is_logged_in.return_value = False
-            page_cls.return_value.login.return_value = False
-            assert login.login_action(browser, "a@b.c", "pw") is False
-            page_cls.return_value.goto_login.assert_not_called()
-
-    def test_a_valid_saved_session_needs_no_stored_credentials(self):
-        """The keyring is optional; a saved session is sufficient on its own.
-
-        Checking credentials first meant a working session was thrown away
-        whenever `automate setup` had never been run — which is every session
-        established by logging in by hand.
-        """
-        from linkedin.automation.actions import login
-
-        with patch("linkedin.automation.credentials.get_credentials", return_value=None), patch(
-            "linkedin.automation.actions.login.LinkedInPage"
-        ) as page_cls:
-            page_cls.return_value.is_logged_in.return_value = True
-            assert login.login_action(self._browser()) is True
-            page_cls.return_value.goto_login.assert_not_called()
-            page_cls.return_value.login.assert_not_called()
+        page = self._page(login_ok=False, url="https://www.linkedin.com/checkpoint/challenge/")
+        with patch("linkedin.automation.credentials.get_credentials", return_value=("a@b.c", "pw")):
+            assert _login(MagicMock(), page) is False
+        page.goto_login.assert_not_called()

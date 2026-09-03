@@ -14,6 +14,7 @@ import os
 import shlex
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -67,7 +68,12 @@ from linkedin.scheduling.schedule import (
     scheduled_run_for_date,
 )
 from linkedin.services.automation_service import publish_unreviewed
-from linkedin.services.contact_service import STATUS_RULES, parse_iso_date
+from linkedin.services.contact_service import (
+    STATUS_RULES,
+    import_scraped_profile,
+    import_search_results,
+    parse_iso_date,
+)
 from linkedin.services.planner import command_for, label_for
 from linkedin.services.resume_service import (
     ResumeRepoError,
@@ -3219,95 +3225,6 @@ def automation_unschedule(as_json):
     console.print("[green]✓ Managed schedule removed.[/green]")
 
 
-@automation.command("search")
-@click.option("--query", "-q", required=True, help="LinkedIn people search query")
-@click.option("--limit", default=20, help="Max results (default: 20)")
-def automation_search(query, limit):
-    """Search LinkedIn and print results table (no import)."""
-    try:
-        from linkedin.automation.actions.scrape import search_and_collect
-        from linkedin.automation.browser import BrowserManager
-        from linkedin.automation.linkedin_page import LinkedInPage
-    except ImportError:
-        console.print("[red]Playwright not installed. Run: uv sync --extra automation[/red]")
-        raise SystemExit(1)
-
-    with BrowserManager() as browser:
-        page = LinkedInPage(browser.page)
-        if not page.is_logged_in():
-            console.print("[yellow]Not logged in. Run: linkedin-cli automation login[/yellow]")
-            raise SystemExit(1)
-        results = search_and_collect(page, query, limit=limit)
-
-    if not results:
-        console.print("[dim]No results found.[/dim]")
-        return
-
-    table = Table(title=f"Search: {query}")
-    table.add_column("Name", style="cyan")
-    table.add_column("Headline", style="white")
-    table.add_column("URL", style="dim")
-    for r in results:
-        table.add_row(r.get("name", ""), r.get("headline", "")[:60], r.get("linkedin_url", "")[:50])
-    console.print(table)
-
-
-@automation.command("import-search")
-@click.option("--query", "-q", required=True, help="LinkedIn people search query")
-@click.option("--limit", default=20, help="Max results to import (default: 20)")
-def automation_import_search(query, limit):
-    """Search LinkedIn and import results into contacts CRM."""
-    try:
-        from linkedin.automation.actions.scrape import import_search_results, search_and_collect
-        from linkedin.automation.browser import BrowserManager
-        from linkedin.automation.linkedin_page import LinkedInPage
-    except ImportError:
-        console.print("[red]Playwright not installed. Run: uv sync --extra automation[/red]")
-        raise SystemExit(1)
-
-    with BrowserManager() as browser:
-        page = LinkedInPage(browser.page)
-        if not page.is_logged_in():
-            console.print("[yellow]Not logged in. Run: linkedin-cli automation login[/yellow]")
-            raise SystemExit(1)
-        results = search_and_collect(page, query, limit=limit)
-
-    added, skipped = import_search_results(results, _app.contact_repo)
-    console.print(f"[green]Imported {len(added)} new contacts.[/green] Skipped {len(skipped)} duplicates.")
-    for c in added:
-        console.print(f"  #{c['id']} {c['name']} — {c.get('title', '')} at {c.get('company', '')}")
-
-
-@automation.command("profile")
-@click.argument("linkedin_url")
-def automation_profile(linkedin_url):
-    """Scrape a LinkedIn profile and add/update in CRM."""
-    try:
-        from linkedin.automation.actions.scrape import scrape_and_import_profile
-        from linkedin.automation.browser import BrowserManager
-        from linkedin.automation.linkedin_page import LinkedInPage
-    except ImportError:
-        console.print("[red]Playwright not installed. Run: uv sync --extra automation[/red]")
-        raise SystemExit(1)
-
-    existing = next(
-        (c for c in _app.contact_repo.list_all() if c.get("linkedin_url") == linkedin_url),
-        None,
-    )
-    with BrowserManager() as browser:
-        page = LinkedInPage(browser.page)
-        if not page.is_logged_in():
-            console.print("[yellow]Not logged in. Run: linkedin-cli automation login[/yellow]")
-            raise SystemExit(1)
-        contact = scrape_and_import_profile(page, linkedin_url, _app.contact_repo)
-
-    if not contact:
-        console.print("[red]Could not scrape profile. Check URL and login status.[/red]")
-        raise SystemExit(1)
-    action = "Updated" if existing else "Added"
-    console.print(f"[green]{action}:[/green] {contact['name']} — {contact.get('title', '')} at {contact.get('company', '')}")
-
-
 # =============================================================================
 # Analytics Commands
 # =============================================================================
@@ -4190,117 +4107,102 @@ def applications_import_autoapply(resume_repo, include_queued):
 
 
 
-def _require_automation():
-    """Import the Playwright-backed automation stack lazily.
+class _SessionUnavailable(SystemExit):
+    pass
 
-    Returns a namespace dict of the modules/classes needed by automate
-    commands, or exits with an install hint when the extra is missing.
+
+def _pause_for_manual_login(page) -> bool:
+    """Hand the window to the person: automatic login failed, they finish it."""
+    console.print(
+        "[yellow]Automatic login failed — complete the login (and any checkpoint) in the browser window.[/yellow]\n"
+        "[dim]No credentials are stored unless you ran `linkedin-cli automate setup`; logging in by hand here is fine "
+        "and the session is saved afterwards.[/dim]"
+    )
+    click.pause("Press any key once you are logged in...")
+    return page.is_logged_in()
+
+
+@contextmanager
+def _open_session(headless: bool = False, dry_run: bool = False):
+    """A logged-in LinkedInSession, or a clear exit. Prints the selector-health report on close.
+
+    A LinkedIn markup change makes every verb come back skipped, which reads as
+    "nothing to do". Naming the selectors that matched nothing turns that
+    silence into something a person can act on.
     """
+    from linkedin.automation.session import AutomationUnavailable, LinkedInSession, LoginFailed
+
+    session = None
     try:
-        from linkedin.automation.browser import BrowserManager
-        from linkedin.automation.config import AutomationConfig
-        from linkedin.automation.linkedin_page import LinkedInPage
-    except ImportError:
+        with LinkedInSession.open(
+            _app.data_dir, headless=headless, dry_run=dry_run, on_login_needed=None if headless else _pause_for_manual_login
+        ) as session:
+            yield session
+    except AutomationUnavailable:
         console.print("[red]Browser automation requires extras:[/red] uv sync --extra automation && uv run playwright install chromium")
         raise SystemExit(1)
-    from linkedin.automation.actions import connect as connect_actions
-    from linkedin.automation.actions import easy_apply as easy_apply_actions
-    from linkedin.automation.actions import engage as engage_actions
-    from linkedin.automation.actions import inbox as inbox_actions
-    from linkedin.automation.actions import jobs as jobs_actions
-    from linkedin.automation.actions import login as login_actions
-    from linkedin.automation.actions import message as message_actions
-    from linkedin.automation.actions import post as post_actions
-    from linkedin.automation.actions import profile_sync as profile_sync_actions
-    from linkedin.automation.actions import scrape as scrape_actions
-    from linkedin.automation.rate_limiter import RateLimiter
-    from linkedin.automation.safety import PersistentSafetyLimits, SafetyLimits
-
-    return {
-        "BrowserManager": BrowserManager,
-        "AutomationConfig": AutomationConfig,
-        "LinkedInPage": LinkedInPage,
-        "RateLimiter": RateLimiter,
-        "SafetyLimits": SafetyLimits,
-        "PersistentSafetyLimits": PersistentSafetyLimits,
-        "connect": connect_actions,
-        "easy_apply": easy_apply_actions,
-        "engage": engage_actions,
-        "inbox": inbox_actions,
-        "jobs": jobs_actions,
-        "login": login_actions,
-        "message": message_actions,
-        "post": post_actions,
-        "profile_sync": profile_sync_actions,
-        "scrape": scrape_actions,
-    }
-
-
-def _open_linkedin_session(auto, headless: bool):
-    """Start a browser, restore/establish a LinkedIn login, return (browser, page_object).
-
-    Exits with guidance when login cannot be established. Caller must close
-    the returned browser manager.
-    """
-    config = auto["AutomationConfig"](headless=headless, cookies_path=str(_app.data_dir.li_session))
-    browser = auto["BrowserManager"](config)
-    page = browser.start()
-    linkedin_page = auto["LinkedInPage"](page)
-    if not auto["login"].login_action(browser):
-        if headless:
-            browser.close()
-            console.print("[red]Not logged in.[/red] Run: linkedin-cli automate login (headful) first, or store credentials with: linkedin-cli automate setup")
-            raise SystemExit(1)
-        console.print(
-            "[yellow]Automatic login failed — complete the login (and any checkpoint) in the browser window.[/yellow]\n"
-            "[dim]No credentials are stored unless you ran `linkedin-cli automate setup`; logging in by hand here is fine "
-            "and the session is saved afterwards.[/dim]"
-        )
-        click.pause("Press any key once you are logged in...")
-        if not linkedin_page.is_logged_in():
-            browser.close()
-            console.print("[red]Still not logged in — aborting.[/red]")
-            raise SystemExit(1)
-        browser.save_session()
-    return browser, linkedin_page
-
-def _close_linkedin_session(browser, linkedin_page) -> None:
-    """Close the browser, and say so when a selector stopped matching.
-
-    A LinkedIn markup change makes every action return 0/[]/False, which reads
-    as "nothing to do". Naming the selectors that matched nothing turns that
-    silence into something a human can act on.
-    """
-    try:
-        browser.close()
+    except LoginFailed:
+        console.print("[red]Not logged in.[/red] Run: linkedin-cli automate login (headful) first, or store credentials with: linkedin-cli automate setup")
+        raise SystemExit(1)
     finally:
-        if linkedin_page is None:
-            return
-        report = linkedin_page.selector_health()
-        if report["healthy"]:
-            return
-        console.print(
-            "[yellow]Warning: LinkedIn markup may have changed — "
-            f"{len(report['misses'])} selector(s) matched nothing.[/yellow]"
-        )
-        for name, selector in report["selectors"].items():
-            console.print(f"  [dim]{name}: {selector}[/dim]")
-        console.print("  [dim]Update src/linkedin/automation/selectors.py[/dim]")
+        if session is not None:
+            _report_selector_health(session.selector_health())
 
 
-def _safety_and_limiter(auto, dry_run: bool):
-    """Persistent daily limits for real runs; in-memory ones for dry runs."""
-    safety = auto["SafetyLimits"]() if dry_run else auto["PersistentSafetyLimits"](usage_file=_app.data_dir.automation_usage)
-    return safety, auto["RateLimiter"]()
+def _report_selector_health(report: dict) -> None:
+    if report.get("healthy", True):
+        return
+    console.print(
+        "[yellow]Warning: LinkedIn markup may have changed — "
+        f"{len(report['misses'])} selector(s) matched nothing.[/yellow]"
+    )
+    for name, selector in report["selectors"].items():
+        console.print(f"  [dim]{name}: {selector}[/dim]")
+    console.print("  [dim]Update src/linkedin/automation/selectors.py[/dim]")
+
+
+def _budget():
+    from linkedin.automation.budget import Budget
+
+    return Budget.load(_app.data_dir)
+
+
+def _load_ai_draft(draft_id: int) -> str:
+    """The text of a draft that is known to be the model's, or exit.
+
+    A template, or a row saved before provenance was recorded, is refused:
+    nobody knows it is fit to go out under the user's name.
+    """
+    draft = _app.draft_repo.get(draft_id)
+    if not draft:
+        console.print(f"[red]Draft #{draft_id} not found.[/red]")
+        raise SystemExit(1)
+    source = draft.get("source")
+    if source != "ai":
+        what = "an offline template" if source == "template" else "of unknown provenance"
+        console.print(f"[red]Refusing to use draft #{draft_id}: it is {what}, not an AI draft.[/red]")
+        console.print("[dim]  Regenerate it with AI available, or pass the text explicitly with --text.[/dim]")
+        raise SystemExit(1)
+    return draft.get("content", "")
+
+
+def _exit_unless_ok(result, *, dry_run_message: str, failure_prefix: str) -> None:
+    """Common tail: say what happened; exit nonzero unless the verb succeeded."""
+    if result.dry_run:
+        console.print(f"[cyan]Dry run:[/cyan] {dry_run_message}")
+        raise SystemExit(0)
+    if not result:
+        console.print(f"[red]{failure_prefix} ({result.status}: {result.reason}).[/red]")
+        raise SystemExit(1)
 
 
 @cli.group("automate")
 def automate():
     """Drive LinkedIn in a real browser: search, connect, message, post, engage, apply.
 
-    Uses your own logged-in session with conservative daily limits and
-    human-like delays. Note: browser automation is against LinkedIn's
-    Terms of Service — use deliberately and at your own risk.
+    Uses your own logged-in session with daily budgets and human-like pacing.
+    Note: browser automation is against LinkedIn's Terms of Service — use
+    deliberately and at your own risk.
     """
 
 
@@ -4309,8 +4211,9 @@ def automate():
 @click.option("--password", prompt=True, hide_input=True, help="LinkedIn password")
 def automate_setup(email, password):
     """Store LinkedIn credentials in the system keyring."""
-    auto = _require_automation()
-    auto["login"].setup_credentials(email, password)
+    from linkedin.automation.session import setup_credentials
+
+    setup_credentials(email, password)
     console.print("[green]Credentials stored in system keyring.[/green] Next: linkedin-cli automate login")
 
 
@@ -4318,31 +4221,43 @@ def automate_setup(email, password):
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def automate_login(headless):
     """Log in to LinkedIn and save the session for later commands."""
-    auto = _require_automation()
-    browser, _ = _open_linkedin_session(auto, headless=headless)
-    browser.close()
+    with _open_session(headless=headless):
+        pass
     console.print(f"[green]Logged in. Session saved to {_app.data_dir.li_session}.[/green]")
 
 
-@automate.command("limits")
-def automate_limits():
-    """Show today's automation usage vs daily safety limits."""
-    from linkedin.automation.safety import PersistentSafetyLimits
-
-    summary = PersistentSafetyLimits(usage_file=_app.data_dir.automation_usage).summary()
-    table = Table(title="Today's automation usage")
-    table.add_column("Action")
+@automate.group("limits", invoke_without_command=True)
+@click.pass_context
+def automate_limits(ctx):
+    """Show today's usage against the daily budget (caps live in limits.json)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    table = Table(title="Today's automation budget")
+    table.add_column("Kind")
     table.add_column("Used", justify="right")
+    table.add_column("Cap", justify="right")
     table.add_column("Remaining", justify="right")
-    table.add_row("Connections", str(summary["connections_sent"]), str(summary["connections_remaining"]))
-    table.add_row("Messages", str(summary["messages_sent"]), str(summary["messages_remaining"]))
-    table.add_row("Posts", str(summary["posts_created"]), str(summary["posts_remaining"]))
-    table.add_row("Reactions", str(summary["reactions"]), str(summary["reactions_remaining"]))
-    table.add_row("Comments", str(summary["comments_posted"]), str(summary["comments_remaining"]))
-    table.add_row("Easy Applies", str(summary["easy_applies"]), str(summary["easy_applies_remaining"]))
-    table.add_row("Profile views", str(summary["profile_views"]), "—")
-    table.add_row("Searches", str(summary["searches"]), "—")
+    for kind, row in _budget().summary().items():
+        table.add_row(kind, str(row["used"]), str(row["cap"]), str(row["remaining"]))
     console.print(table)
+    # soft_wrap: a path must survive copy-paste, and a narrow CI terminal split this one mid-name.
+    console.print(f"[dim]Caps: {_app.data_dir.limits}[/dim]", soft_wrap=True)
+
+
+@automate_limits.command("set")
+@click.argument("kind")
+@click.argument("cap", type=int)
+def automate_limits_set(kind, cap):
+    """Set a daily cap, e.g. `automate limits set reaction 10`. Step up only when metrics are clean."""
+    from linkedin.automation.budget import KINDS, UnknownKind
+
+    try:
+        budget = _budget()
+        budget.set_cap(kind, cap)
+    except UnknownKind:
+        console.print(f"[red]Unknown kind {kind!r}. One of: {', '.join(KINDS)}[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]{kind}: cap is now {budget.caps[kind]} per day.[/green]")
 
 
 @automate.command("search")
@@ -4351,21 +4266,16 @@ def automate_limits():
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def automate_search(query, limit, headless):
     """Preview LinkedIn people search results (no import)."""
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run=False)
-        results = auto["scrape"].search_and_collect(linkedin_page, query, limit=limit, rate_limiter=limiter, safety=safety)
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
-    if not results:
-        console.print("[dim]No results (or daily search limit reached).[/dim]")
+    with _open_session(headless=headless) as session:
+        result = session.search(query, limit=limit)
+    if not result or not result.data:
+        console.print(f"[dim]No results ({result.reason or 'empty page'}).[/dim]")
         return
     table = Table(title=f"Search: {query}")
     table.add_column("Name")
     table.add_column("Headline")
     table.add_column("URL")
-    for r in results:
+    for r in result.data:
         table.add_row(r.get("name", ""), r.get("headline", ""), r.get("linkedin_url", ""))
     console.print(table)
 
@@ -4376,14 +4286,12 @@ def automate_search(query, limit, headless):
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def automate_import_search(query, limit, headless):
     """Run a people search and import results into the CRM."""
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run=False)
-        results = auto["scrape"].search_and_collect(linkedin_page, query, limit=limit, rate_limiter=limiter, safety=safety)
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
-    added, skipped = auto["scrape"].import_search_results(results, _app.contact_repo)
+    with _open_session(headless=headless) as session:
+        result = session.search(query, limit=limit)
+    if not result:
+        console.print(f"[red]Search did not run ({result.status}: {result.reason}).[/red]")
+        raise SystemExit(1)
+    added, skipped = import_search_results(result.data, _app.contact_repo)
     console.print(f"[green]Imported {len(added)} contact(s)[/green] ({len(skipped)} already in CRM).")
     for c in added:
         console.print(f"  #{c['id']} {c['name']} — {c.get('title', '')}")
@@ -4394,15 +4302,11 @@ def automate_import_search(query, limit, headless):
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def automate_profile(url, headless):
     """Scrape a single LinkedIn profile into the CRM."""
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        _, limiter = _safety_and_limiter(auto, dry_run=False)
-        contact = auto["scrape"].scrape_and_import_profile(linkedin_page, url, _app.contact_repo, rate_limiter=limiter)
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
+    with _open_session(headless=headless) as session:
+        result = session.scrape(url)
+    contact = import_scraped_profile(result.data, url, _app.contact_repo) if result else None
     if not contact:
-        console.print("[red]Could not scrape that profile.[/red]")
+        console.print(f"[red]Could not scrape that profile ({result.status}: {result.reason}).[/red]")
         raise SystemExit(1)
     console.print(f"[green]Imported contact #{contact['id']}:[/green] {contact['name']} — {contact.get('title', '')}")
 
@@ -4423,33 +4327,14 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
         console.print(f"[red]Contact #{contact_id} has no linkedin_url. Set one with: contacts update {contact_id} --linkedin-url …[/red]")
         raise SystemExit(1)
     if draft_id is not None:
-        draft = _app.draft_repo.get(draft_id)
-        if not draft:
-            console.print(f"[red]Draft #{draft_id} not found.[/red]")
-            raise SystemExit(1)
-        note = draft.get("content", "")
+        note = _load_ai_draft(draft_id)
     if len(note) > 300:
         console.print(f"[yellow]Note is {len(note)} chars; LinkedIn caps notes at 300. Truncating.[/yellow]")
         note = note[:300]
 
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run)
-        if not safety.can_send_connection():
-            console.print("[red]Daily connection limit reached.[/red]")
-            raise SystemExit(1)
-        success = auto["connect"].send_connection(
-            linkedin_page, contact["linkedin_url"], note=note, rate_limiter=limiter, safety=safety, dry_run=dry_run
-        )
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
-    if dry_run:
-        console.print(f"[cyan]Dry run:[/cyan] would send connection request to {contact['name']}.")
-        return
-    if not success:
-        console.print("[red]Could not send the connection request (no Connect button, or already connected/pending).[/red]")
-        raise SystemExit(1)
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        result = session.connect(contact["linkedin_url"], note=note)
+    _exit_unless_ok(result, dry_run_message=f"would send connection request to {contact['name']}.", failure_prefix="Could not send the connection request")
     _app.contact_svc.update_contact(contact_id, status="connection_sent")
     console.print(f"[green]Connection request sent to {contact['name']}.[/green] Status → connection_sent")
 
@@ -4470,41 +4355,14 @@ def automate_message(contact_id, text, draft_id, dry_run, headless):
         console.print(f"[red]Contact #{contact_id} has no linkedin_url.[/red]")
         raise SystemExit(1)
     if draft_id is not None:
-        draft = _app.draft_repo.get(draft_id)
-        if not draft:
-            console.print(f"[red]Draft #{draft_id} not found.[/red]")
-            raise SystemExit(1)
-        source = draft.get("source")
-        if source != "ai":
-            # A template, or a row saved before provenance was recorded. Either
-            # way nobody knows it is fit to publish under the user's name.
-            what = "an offline template" if source == "template" else "of unknown provenance"
-            console.print(f"[red]Refusing to use draft #{draft_id}: it is {what}, not an AI draft.[/red]")
-            console.print("[dim]  Regenerate it with AI available, or pass the text explicitly with --text.[/dim]")
-            raise SystemExit(1)
-        text = draft.get("content", "")
+        text = _load_ai_draft(draft_id)
     if not text.strip():
         console.print("[red]Nothing to send — pass --text or --draft-id.[/red]")
         raise SystemExit(1)
 
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run)
-        if not safety.can_send_message():
-            console.print("[red]Daily message limit reached.[/red]")
-            raise SystemExit(1)
-        success = auto["message"].send_message(
-            linkedin_page, contact["linkedin_url"], text, rate_limiter=limiter, safety=safety, dry_run=dry_run
-        )
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
-    if dry_run:
-        console.print(f"[cyan]Dry run:[/cyan] would message {contact['name']}.")
-        return
-    if not success:
-        console.print("[red]Could not send the message (not connected, or dialog not found).[/red]")
-        raise SystemExit(1)
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        result = session.message(contact["linkedin_url"], text)
+    _exit_unless_ok(result, dry_run_message=f"would message {contact['name']}.", failure_prefix="Could not send the message")
     _app.contact_svc.update_contact(contact_id, status="messaged")
     console.print(f"[green]Message sent to {contact['name']}.[/green] Status → messaged")
 
@@ -4529,19 +4387,7 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
             console.print(f"[red]Calendar entry #{calendar_id} has no linked draft — pass --text as well.[/red]")
             raise SystemExit(1)
     if draft_id is not None:
-        draft = _app.draft_repo.get(draft_id)
-        if not draft:
-            console.print(f"[red]Draft #{draft_id} not found.[/red]")
-            raise SystemExit(1)
-        source = draft.get("source")
-        if source != "ai":
-            # A template, or a row saved before provenance was recorded. Either
-            # way nobody knows it is fit to publish under the user's name.
-            what = "an offline template" if source == "template" else "of unknown provenance"
-            console.print(f"[red]Refusing to use draft #{draft_id}: it is {what}, not an AI draft.[/red]")
-            console.print("[dim]  Regenerate it with AI available, or pass the text explicitly with --text.[/dim]")
-            raise SystemExit(1)
-        text = draft.get("content", "")
+        text = _load_ai_draft(draft_id)
     if not text.strip():
         console.print("[red]Nothing to post — pass --text, --draft-id, or --calendar-id.[/red]")
         raise SystemExit(1)
@@ -4551,19 +4397,9 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
         console.print("[dim]Cancelled.[/dim]")
         return
 
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run)
-        success, reason = auto["post"].publish_post(linkedin_page, text, rate_limiter=limiter, safety=safety, dry_run=dry_run)
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
-    if dry_run:
-        console.print("[cyan]Dry run:[/cyan] post not published.")
-        return
-    if not success:
-        console.print(f"[red]Post failed ({reason}).[/red]")
-        raise SystemExit(1)
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        result = session.post(text)
+    _exit_unless_ok(result, dry_run_message="post not published.", failure_prefix="Post failed")
     console.print("[green]Post published.[/green]")
     if calendar_entry is not None:
         _app.calendar_svc.mark_posted(calendar_id)
@@ -4620,25 +4456,19 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
             continue
         targets.append(contact)
 
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
+    verb = "would like" if dry_run else "liked"
     total = 0
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run)
+    with _open_session(headless=headless, dry_run=dry_run) as session:
         for contact in targets:
-            liked = auto["engage"].like_contact_posts(
-                linkedin_page, contact["linkedin_url"], count=likes, rate_limiter=limiter, safety=safety, dry_run=dry_run
-            )
+            result = session.react(likes, profile_url=contact["linkedin_url"])
+            liked = int(result.data or 0)
             total += liked
-            console.print(f"  {contact['name']}: {'would like' if dry_run else 'liked'} {liked} post(s)")
+            console.print(f"  {contact['name']}: {verb} {liked} post(s)" + ("" if result else f" [dim]({result.reason})[/dim]"))
         if feed and comments:
             results = _app.automation_svc.engage_feed(
-                linkedin_page,
+                session,
                 limit=max(likes, comments),
                 comment_count=comments,
-                safety=safety,
-                rate_limiter=limiter,
-                dry_run=dry_run,
                 approve_comment=publish_unreviewed if yes else _review_feed_comment,
             )
             liked = sum(1 for r in results if r["liked"])
@@ -4651,13 +4481,12 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
                     console.print(f"      [dim]{r['comment_text']}[/dim]")
                 elif r.get("skipped_reason"):
                     console.print(f"      [dim]no comment — {r['skipped_reason']}[/dim]")
-            console.print(f"  Feed: {'would like' if dry_run else 'liked'} {liked}, {'would comment' if dry_run else 'commented'} {commented}")
+            console.print(f"  Feed: {verb} {liked}, {'would comment' if dry_run else 'commented'} {commented}")
         elif feed:
-            liked = auto["engage"].like_feed_posts(linkedin_page, count=likes, rate_limiter=limiter, safety=safety, dry_run=dry_run)
+            result = session.react(likes)
+            liked = int(result.data or 0)
             total += liked
-            console.print(f"  Feed: {'would like' if dry_run else 'liked'} {liked} post(s)")
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
+            console.print(f"  Feed: {verb} {liked} post(s)" + ("" if result else f" [dim]({result.reason})[/dim]"))
     console.print(f"[green]{'Dry run — would react' if dry_run else 'Reacted'} to {total} post(s) total.[/green]")
 
 
@@ -4690,20 +4519,13 @@ def automate_sync_profile(headline, headline_from_profile, about, about_file, dr
         console.print("[dim]Cancelled.[/dim]")
         return
 
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        _, limiter = _safety_and_limiter(auto, dry_run)
-        results = auto["profile_sync"].sync_profile(
-            linkedin_page, headline=headline, about=about, rate_limiter=limiter, dry_run=dry_run
-        )
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
-    for field_name, status in results.items():
-        color = {"updated": "green", "dry_run": "cyan", "failed": "red"}.get(status, "dim")
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        result = session.sync_profile(headline=headline, about=about)
+    for field_name, status in (result.data or {}).items():
+        color = {"updated": "green", "dry_run": "cyan"}.get(status, "red")
         console.print(f"  {field_name}: [{color}]{status}[/{color}]")
-    if "failed" in results.values():
-        console.print("[yellow]LinkedIn's profile editor changes often — update the selectors in linkedin_page.py or edit manually.[/yellow]")
+    if not result and not result.dry_run:
+        console.print("[yellow]LinkedIn's profile editor changes often — update the selectors in selectors.py or edit manually.[/yellow]")
         raise SystemExit(1)
 
 
@@ -4739,51 +4561,35 @@ def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
         console.print(f"[yellow]Attached resume {resume_path} no longer exists — applying with your LinkedIn default resume.[/yellow]")
         resume_path = ""
 
-    auto = _require_automation()
     if dry_run:
         console.print(f"[cyan]Dry run:[/cyan] would Easy Apply to {app['url']} with resume: {resume_path or '(LinkedIn default)'}")
         return
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run)
-        result = auto["easy_apply"].apply_to_job(
-            linkedin_page,
-            app["url"],
-            resume_path=resume_path,
-            submit=submit,
-            rate_limiter=limiter,
-            safety=safety,
-        )
-        if result.get("status") == "ready_to_submit" and not headless:
+    with _open_session(headless=headless) as session:
+        result = session.easy_apply(app["url"], resume_path=resume_path, submit=submit)
+        if result.reason == "ready_to_submit" and not headless:
             console.print("[yellow]Stopped at the review step. Review the application in the browser window.[/yellow]")
             if click.confirm("Submit it now?"):
-                result = linkedin_page.easy_apply(resume_path="", submit=True, max_steps=2)
-                if result.get("status") == "submitted":
-                    safety.record_easy_apply()
-        elif result.get("status") == "needs_manual_input" and not headless:
+                result = session.record_easy_apply_outcome(session.page.easy_apply(resume_path="", submit=True, max_steps=2))
+        elif result.reason == "needs_manual_input" and not headless:
             # The automation never invents an answer, so a wizard that asks a
             # question stops here -- which is most of them. With a person at
             # the window that is a hand-off, not a failure: they finish the
             # form and press Submit themselves, and only their word records it.
-            console.print(f"[yellow]{result.get('detail', '')}[/yellow]")
+            console.print(f"[yellow]{(result.data or {}).get('detail', '')}[/yellow]")
             console.print("[yellow]Finish the remaining questions in the browser window and submit it yourself.[/yellow]")
             click.pause("Press any key once you are done (or have closed the form)...")
             if click.confirm("Did you submit the application?"):
-                result = {"status": "submitted", "detail": "Submitted by hand after automated fill"}
-                safety.record_easy_apply()
+                result = session.record_easy_apply_outcome({"status": "submitted", "detail": "Submitted by hand after automated fill"})
             else:
-                result = {"status": "ready_to_submit", "detail": "Left unsubmitted; still saved in the CRM"}
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
+                result = session.record_easy_apply_outcome({"status": "ready_to_submit", "detail": "Left unsubmitted; still saved in the CRM"})
 
-    status = result.get("status", "error")
-    detail = result.get("detail", "")
-    if status == "submitted":
+    detail = (result.data or {}).get("detail", result.reason)
+    if result:
         _app.application_svc.advance(application_id, "applied", notes="Submitted via LinkedIn Easy Apply")
         console.print(f"[green]Submitted![/green] Application #{application_id} → applied")
-    elif status == "ready_to_submit":
+    elif result.reason == "ready_to_submit":
         console.print(f"[yellow]{detail}[/yellow]")
-    elif status == "no_easy_apply":
+    elif result.reason == "no_easy_apply":
         console.print(f"[yellow]{detail}. This job needs an external application — the resume repo's autoapply pipeline may cover it.[/yellow]")
     else:
         console.print(f"[red]Easy Apply did not complete: {detail}[/red]")
@@ -4803,19 +4609,11 @@ def automate_jobs(query, location, limit, headless, dry_run):
     opportunities section, which reported "No postings above threshold" every
     morning because nothing had ever imported a posting.
     """
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run=dry_run)
-        results = auto["jobs"].search_jobs(
-            linkedin_page, query, location=location, limit=limit,
-            rate_limiter=limiter, safety=safety,
-        )
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
-
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        result = session.jobs(query, location=location, limit=limit)
+    results = result.data or []
     if not results:
-        console.print("[dim]No job results (or the daily search limit is reached).[/dim]")
+        console.print(f"[dim]No job results ({result.reason or 'empty page'}).[/dim]")
         return
 
     table = Table(title=f"Jobs: {query}")
@@ -4831,7 +4629,7 @@ def automate_jobs(query, location, limit, headless, dry_run):
         console.print(f"[yellow]Dry run — {len(results)} posting(s) not imported.[/yellow]")
         return
 
-    added, skipped = auto["jobs"].import_job_results(results, _app.market_svc)
+    added, skipped = _app.market_svc.import_job_results(results)
     console.print(f"[green]Imported {len(added)} posting(s)[/green]" + (f", skipped {skipped} duplicate(s)" if skipped else ""))
 
 
@@ -4850,15 +4648,11 @@ def inbox():
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def inbox_sync(limit, headless):
     """Read LinkedIn messaging and sent invitations; save proposed transitions."""
-    auto = _require_automation()
-    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
-    try:
-        safety, limiter = _safety_and_limiter(auto, dry_run=False)
-        signals = auto["inbox"].read_inbox(
-            linkedin_page, thread_limit=limit, rate_limiter=limiter, safety=safety
-        )
-    finally:
-        _close_linkedin_session(browser, linkedin_page)
+    with _open_session(headless=headless) as session:
+        result = session.inbox(thread_limit=limit)
+    signals = result.data or {"threads": [], "pending_invitations": None}
+    if not result:
+        console.print(f"[yellow]Inbox not read ({result.status}: {result.reason}).[/yellow]")
 
     pending = signals["pending_invitations"]
     if pending is None:

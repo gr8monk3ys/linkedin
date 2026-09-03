@@ -194,7 +194,8 @@ linkedin-cli calendar stats
 # One-time setup
 linkedin-cli automate setup                 # Store credentials in the system keyring
 linkedin-cli automate login                 # Log in (headful; handles 2FA) and save the session
-linkedin-cli automate limits                # Today's usage vs daily safety caps
+linkedin-cli automate limits                # Today's usage vs daily budget
+linkedin-cli automate limits set post 2     # Raise a daily cap (writes limits.json)
 
 # Import people into the CRM
 linkedin-cli automate search --query "ML Engineer at Stripe" --limit 20         # Preview results
@@ -223,8 +224,9 @@ linkedin-cli automate easy-apply 1              # Walk Easy Apply, stop at revie
 linkedin-cli automate easy-apply 1 --submit     # Actually submit, with the attached resume PDF
 ```
 
-Daily safety caps (persisted across runs in `~/.linkedin-cli/automation_usage.json`):
-20 connections, 25 messages, 3 posts, 30 reactions, 15 comments, 15 Easy Applies.
+Daily budgets live in `~/.linkedin-cli/limits.json` (usage in `automation_usage.json`). The defaults are a
+ramp for an account with no automated history — 0 connections, 25 messages, 1 post, 5 reactions,
+2 comments, 15 Easy Applies, 30 searches per day. Step one up with `linkedin-cli automate limits set reaction 10`.
 
 ### Resume Repo Integration
 
@@ -401,7 +403,8 @@ Everything is stored locally in `~/.linkedin-cli/`:
 ├── conversations.json # Message threads per contact
 ├── content_calendar.json # Scheduled posts
 ├── interview_prep.json # Saved interview prep
-├── automation_usage.json # Daily browser-automation counters
+├── limits.json       # Daily automation caps (seeded with the ramp defaults)
+├── automation_usage.json # Today's browser-automation counters
 ├── li_session.json   # Saved LinkedIn browser session (cookies)
 ├── run_daily_state.json # Completed idempotency keys
 ├── run_daily.log.jsonl  # Structured run history

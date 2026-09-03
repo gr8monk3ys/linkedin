@@ -1,42 +1,26 @@
-"""Rate limiter with random jitter for human-like delays."""
+"""Human-like pacing between actions: a random delay with jitter, declared once here."""
 
-import asyncio
 import random
 import time
 
+MIN_DELAY_SECONDS = 3.0
+MAX_DELAY_SECONDS = 8.0
+
 
 class RateLimiter:
-    """Rate limiter with configurable delays and random jitter."""
-
-    def __init__(self, min_delay: float = 3.0, max_delay: float = 8.0):
+    def __init__(self, min_delay: float = MIN_DELAY_SECONDS, max_delay: float = MAX_DELAY_SECONDS):
         self.min_delay = min_delay
         self.max_delay = max_delay
         self._last_action_time: float = 0
 
-    def _random_delay(self) -> float:
-        """Generate a random delay between min and max."""
-        return random.uniform(self.min_delay, self.max_delay)
-
     def wait(self) -> float:
-        """Wait for a random delay. Returns the actual wait time."""
-        delay = self._random_delay()
-        elapsed = time.time() - self._last_action_time
-        remaining = delay - elapsed
+        """Sleep so that at least a random delay has passed since the last action. Returns the delay."""
+        delay = random.uniform(self.min_delay, self.max_delay)
+        remaining = delay - (time.time() - self._last_action_time)
         if remaining > 0:
             time.sleep(remaining)
         self._last_action_time = time.time()
         return delay
 
-    async def async_wait(self) -> float:
-        """Async version of wait."""
-        delay = self._random_delay()
-        elapsed = time.time() - self._last_action_time
-        remaining = delay - elapsed
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        self._last_action_time = time.time()
-        return delay
-
     def reset(self) -> None:
-        """Reset the last action time."""
         self._last_action_time = 0

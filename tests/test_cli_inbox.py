@@ -1,15 +1,13 @@
 """CLI tests for the inbox group and `automate jobs`.
 
-Both drive a browser, so the automation stack is patched the way the rest of the
-CLI automation tests do it: `_require_automation` and `_open_linkedin_session`
-in `linkedin.cli`.
+Both drive a browser, so they go through the session port: `fake_session`
+yields a FakeSession with scripted `inbox` / `jobs` results.
 """
-
-from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
+from linkedin.automation.session import ActionResult
 from linkedin.cli import cli
 
 
@@ -36,31 +34,14 @@ def contact(runner):
     return record
 
 
-def _fake_automation(threads=None, pending=None, jobs=None):
-    auto = {
-        "inbox": MagicMock(),
-        "jobs": MagicMock(),
-        "SafetyLimits": MagicMock(),
-        "PersistentSafetyLimits": MagicMock(),
-        "RateLimiter": MagicMock(),
-    }
-    auto["inbox"].read_inbox.return_value = {
-        "threads": threads if threads is not None else [],
-        "pending_invitations": pending,
-    }
-    auto["jobs"].search_jobs.return_value = jobs or []
-    return auto
-
-
-def _run(runner, args, auto, input=None):
-    with patch("linkedin.cli._require_automation", return_value=auto), patch(
-        "linkedin.cli._open_linkedin_session", return_value=(MagicMock(), MagicMock())
-    ), patch("linkedin.cli._close_linkedin_session"):
-        return runner.invoke(cli, args, input=input)
+def _run(runner, args, fake_session, threads=None, pending=None, jobs=None, status="ok", input=None):
+    fake_session.results["inbox"] = ActionResult(status, data={"threads": threads or [], "pending_invitations": pending})
+    fake_session.results["jobs"] = ActionResult(status, data=jobs or [])
+    return runner.invoke(cli, args, input=input)
 
 
 class TestInboxSync:
-    def test_sync_saves_a_proposal_from_a_reply(self, runner, contact):
+    def test_sync_saves_a_proposal_from_a_reply(self, runner, contact, fake_session):
         threads = [{
             "name": "Ryan Barner",
             "url": "https://www.linkedin.com/in/ryanbarner",
@@ -69,21 +50,27 @@ class TestInboxSync:
             "unread": True,
             "last_from_them": True,
         }]
-        result = _run(runner, ["inbox", "sync"], _fake_automation(threads=threads, pending=[]))
+        result = _run(runner, ["inbox", "sync"], fake_session, threads=threads, pending=[])
 
         assert result.exit_code == 0
         assert "Ryan Barner" in result.output
         assert "responded" in result.output
 
-    def test_sync_warns_when_the_invitation_list_is_unreadable(self, runner, contact):
-        result = _run(runner, ["inbox", "sync"], _fake_automation(pending=None))
+    def test_sync_warns_when_the_invitation_list_is_unreadable(self, runner, contact, fake_session):
+        result = _run(runner, ["inbox", "sync"], fake_session, pending=None)
 
         assert result.exit_code == 0
         assert "Could not read the sent-invitation list" in result.output
 
-    def test_sync_reports_a_quiet_inbox(self, runner, contact):
-        result = _run(runner, ["inbox", "sync"], _fake_automation(pending=[]))
+    def test_sync_reports_a_quiet_inbox(self, runner, contact, fake_session):
+        result = _run(runner, ["inbox", "sync"], fake_session, pending=[])
         assert "No pipeline changes to propose" in result.output
+
+    def test_sync_refused_by_budget_proposes_nothing_and_says_why(self, runner, contact, fake_session):
+        result = _run(runner, ["inbox", "sync"], fake_session, pending=None, status="refused")
+        assert result.exit_code == 0
+        assert "Inbox not read" in result.output
+        assert "skipping acceptance checks" in result.output
 
 
 class TestInboxReview:
@@ -175,24 +162,26 @@ class TestAutomateJobs:
         "easy_apply": True,
     }
 
-    def test_imports_postings(self, runner):
-        auto = _fake_automation(jobs=[self.JOB])
-        auto["jobs"].import_job_results.return_value = ([self.JOB], 0)
+    def test_imports_postings(self, runner, fake_session):
+        from linkedin.cli import _app
 
-        result = _run(runner, ["automate", "jobs", "-q", "ML Engineer"], auto)
+        result = _run(runner, ["automate", "jobs", "-q", "ML Engineer"], fake_session, jobs=[self.JOB])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "ML Engineer" in result.output
         assert "Imported 1 posting" in result.output
+        assert _app.market_svc.list_postings()[0]["company"] == "Netflix"
+        assert fake_session.calls_to("jobs") == [(("ML Engineer",), {"location": "", "limit": 25})]
 
-    def test_dry_run_does_not_import(self, runner):
-        auto = _fake_automation(jobs=[self.JOB])
+    def test_dry_run_does_not_import(self, runner, fake_session):
+        from linkedin.cli import _app
 
-        result = _run(runner, ["automate", "jobs", "-q", "ML Engineer", "--dry-run"], auto)
+        result = _run(runner, ["automate", "jobs", "-q", "ML Engineer", "--dry-run"], fake_session, jobs=[self.JOB])
 
         assert "not imported" in result.output
-        auto["jobs"].import_job_results.assert_not_called()
+        assert _app.market_svc.list_postings() == []
+        assert fake_session.opened_with["dry_run"] is True
 
-    def test_no_results_says_so(self, runner):
-        result = _run(runner, ["automate", "jobs", "-q", "Nothing"], _fake_automation(jobs=[]))
+    def test_no_results_says_so(self, runner, fake_session):
+        result = _run(runner, ["automate", "jobs", "-q", "Nothing"], fake_session, jobs=[])
         assert "No job results" in result.output

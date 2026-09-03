@@ -1,17 +1,9 @@
-"""LinkedIn automation module (optional).
+"""LinkedIn automation (optional). Install with: uv sync --extra automation
 
-Install with: pip install linkedin[automation]
+Everything here imports without Playwright; only opening a session needs it.
 """
 
-from .config import AutomationConfig
-from .rate_limiter import RateLimiter
-from .safety import SafetyLimits
+from .budget import Budget
+from .session import ActionResult, LinkedInSession
 
-__all__ = ["AutomationConfig", "RateLimiter", "SafetyLimits"]
-
-try:
-    from .browser import BrowserManager
-
-    __all__.append("BrowserManager")
-except ImportError:
-    BrowserManager = None  # type: ignore[assignment,misc]
+__all__ = ["ActionResult", "Budget", "LinkedInSession"]

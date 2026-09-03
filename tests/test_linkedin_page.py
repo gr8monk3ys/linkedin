@@ -484,56 +484,28 @@ class TestSelectorWarningReachesTheUser:
     """A breakage must reach the terminal, not just an attribute."""
 
     def test_cli_warns_and_names_the_broken_selectors(self, capsys):
-        from linkedin.cli import _close_linkedin_session
+        from linkedin.cli import _report_selector_health
 
         page = FakePage()
         lp = LinkedInPage(page)
         lp.get_feed_posts(max_posts=3)  # empty feed -> feed_card miss
 
-        class Browser:
-            closed = False
-
-            def close(self):
-                Browser.closed = True
-
-        _close_linkedin_session(Browser(), lp)
+        _report_selector_health(lp.selector_health())
         out = capsys.readouterr().out
-        assert Browser.closed is True
         assert "markup may have changed" in out
         assert sel.FEED_CARD in out
         assert "selectors.py" in out
 
     def test_healthy_session_says_nothing(self, capsys):
-        from linkedin.cli import _close_linkedin_session
+        from linkedin.cli import _report_selector_health
 
         page = FakePage()
         _with_feed(page, [_feed_card()])
         lp = LinkedInPage(page)
         lp.get_feed_posts(max_posts=1)
 
-        class Browser:
-            def close(self):
-                pass
-
-        _close_linkedin_session(Browser(), lp)
+        _report_selector_health(lp.selector_health())
         assert capsys.readouterr().out == ""
-
-    def test_browser_is_closed_even_if_reporting_fails(self):
-        from linkedin.cli import _close_linkedin_session
-
-        class Broken:
-            def selector_health(self):
-                raise RuntimeError("boom")
-
-        class Browser:
-            closed = False
-
-            def close(self):
-                Browser.closed = True
-
-        with pytest.raises(RuntimeError):
-            _close_linkedin_session(Browser(), Broken())
-        assert Browser.closed is True
 
 
 def _thread_card(name="Ryan Barner", snippet="Happy to chat.", timestamp="Aug 29", href="/in/ryanbarner", unread=True):

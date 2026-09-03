@@ -2,7 +2,6 @@
 
 import pytest
 
-import linkedin.data.json_store as js
 from linkedin.ai.client import AIClientError
 from linkedin.data.json_store import (
     JsonApplicationRepo,
@@ -19,11 +18,7 @@ def _raise_ai_error(*args, **kwargs):
 
 @pytest.fixture
 def interview_repos(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "APPLICATIONS_FILE", tmp_path / "applications.json")
-    monkeypatch.setattr(js, "INTERVIEW_PREP_FILE", tmp_path / "interview_prep.json")
-    monkeypatch.setattr(js, "PROFILE_FILE", tmp_path / "profile.json")
-    return JsonApplicationRepo(), JsonInterviewPrepRepo(), JsonProfileRepo()
+    return JsonApplicationRepo(tmp_path / "applications.json"), JsonInterviewPrepRepo(tmp_path / "interview_prep.json"), JsonProfileRepo(tmp_path / "profile.json")
 
 
 @pytest.fixture

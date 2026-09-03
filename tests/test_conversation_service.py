@@ -2,7 +2,6 @@
 
 import pytest
 
-import linkedin.data.json_store as js
 from linkedin.data.json_store import JsonContactRepo, JsonConversationRepo
 from linkedin.services.conversation_service import ConversationService
 from tests.conftest import sample_contact
@@ -10,13 +9,9 @@ from tests.conftest import sample_contact
 
 @pytest.fixture
 def conv_repos(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "CONVERSATIONS_FILE", tmp_path / "conversations.json")
-    monkeypatch.setattr(js, "CONTACTS_FILE", tmp_path / "contacts.json")
-    monkeypatch.setattr(js, "COMPANIES_FILE", tmp_path / "companies.json")
-    contact_repo = JsonContactRepo()
+    contact_repo = JsonContactRepo(tmp_path / "contacts.json")
     contact_repo.add({**sample_contact(), "id": 1})
-    return JsonConversationRepo(), contact_repo
+    return JsonConversationRepo(tmp_path / "conversations.json"), contact_repo
 
 
 @pytest.fixture

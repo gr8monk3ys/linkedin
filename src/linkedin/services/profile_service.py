@@ -2,12 +2,12 @@
 
 from datetime import datetime
 
-from linkedin.data.repository import ProfileRepo
+from linkedin.data.json_store import JsonProfileRepo
 from linkedin.types import ProfileDict
 
 
 class ProfileService:
-    def __init__(self, repo: ProfileRepo):
+    def __init__(self, repo: JsonProfileRepo):
         self.repo = repo
 
     def get_profile(self) -> ProfileDict:

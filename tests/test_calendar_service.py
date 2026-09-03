@@ -2,16 +2,13 @@
 
 import pytest
 
-import linkedin.data.json_store as js
 from linkedin.data.json_store import JsonCalendarRepo
 from linkedin.services.calendar_service import ContentCalendarService
 
 
 @pytest.fixture
 def cal_repo(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "CALENDAR_FILE", tmp_path / "content_calendar.json")
-    return JsonCalendarRepo()
+    return JsonCalendarRepo(tmp_path / "content_calendar.json")
 
 
 @pytest.fixture

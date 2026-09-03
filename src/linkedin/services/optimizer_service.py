@@ -1,11 +1,11 @@
 """AI profile optimizer service — headline, about, skills, experience improvements."""
 
 from linkedin.ai.client import ai_call
-from linkedin.data.repository import ProfileRepo
+from linkedin.data.json_store import JsonProfileRepo
 
 
 class OptimizerService:
-    def __init__(self, profile_repo: ProfileRepo):
+    def __init__(self, profile_repo: JsonProfileRepo):
         self.profiles = profile_repo
 
     def optimize_headline(self) -> tuple[str | None, str]:

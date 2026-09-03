@@ -10,12 +10,13 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta
 
-import linkedin.data.json_store as json_store
+from linkedin.data.json_store import load_json, save_json
+from linkedin.data.paths import DataDir
 
 
-def load_run_state() -> dict:
-    raw = json_store.load_json(
-        json_store.RUN_DAILY_STATE_FILE,
+def load_run_state(data_dir: DataDir) -> dict:
+    raw = load_json(
+        data_dir.run_daily_state,
         {"completed_idempotency_keys": [], "alerts": {}},
     )
     if not isinstance(raw, dict):
@@ -58,8 +59,8 @@ def load_run_state() -> dict:
     }
 
 
-def save_run_state(state: dict) -> None:
-    json_store.save_json(json_store.RUN_DAILY_STATE_FILE, state)
+def save_run_state(data_dir: DataDir, state: dict) -> None:
+    save_json(data_dir.run_daily_state, state)
 
 
 def failure_streak(entries: list[dict]) -> int:
@@ -74,8 +75,8 @@ def failure_streak(entries: list[dict]) -> int:
     return streak
 
 
-def get_last_failure_streak_notified() -> int:
-    state = load_run_state()
+def get_last_failure_streak_notified(data_dir: DataDir) -> int:
+    state = load_run_state(data_dir)
     alerts = state.get("alerts", {})
     if not isinstance(alerts, dict):
         return 0
@@ -85,9 +86,9 @@ def get_last_failure_streak_notified() -> int:
         return 0
 
 
-def set_last_failure_streak_notified(streak: int) -> None:
+def set_last_failure_streak_notified(data_dir: DataDir, streak: int) -> None:
     streak = max(0, int(streak))
-    state = load_run_state()
+    state = load_run_state(data_dir)
     alerts = state.get("alerts", {})
     if not isinstance(alerts, dict):
         alerts = {}
@@ -97,21 +98,21 @@ def set_last_failure_streak_notified(streak: int) -> None:
         return
     alerts["last_failure_streak_notified"] = streak
     state["alerts"] = alerts
-    save_run_state(state)
+    save_run_state(data_dir, state)
 
 
-def idempotency_key_seen(key: str) -> bool:
+def idempotency_key_seen(data_dir: DataDir, key: str) -> bool:
     if not key:
         return False
-    state = load_run_state()
+    state = load_run_state(data_dir)
     completed = state.get("completed_idempotency_keys", [])
     return any(item.get("key") == key for item in completed if isinstance(item, dict))
 
 
-def record_idempotency_key(key: str, run_id: str) -> None:
+def record_idempotency_key(data_dir: DataDir, key: str, run_id: str) -> None:
     if not key:
         return
-    state = load_run_state()
+    state = load_run_state(data_dir)
     completed = state.get("completed_idempotency_keys", [])
     if not isinstance(completed, list):
         completed = []
@@ -121,19 +122,18 @@ def record_idempotency_key(key: str, run_id: str) -> None:
         "run_id": run_id,
     })
     state["completed_idempotency_keys"] = completed[-1000:]
-    save_run_state(state)
+    save_run_state(data_dir, state)
 
 
-def append_run_log(entry: dict) -> None:
-    json_store.ensure_dirs()
-    path = json_store.RUN_DAILY_LOG_FILE
+def append_run_log(data_dir: DataDir, entry: dict) -> None:
+    path = data_dir.run_daily_log
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, default=str) + "\n")
 
 
-def load_run_history_entries() -> list[dict]:
-    path = json_store.RUN_DAILY_LOG_FILE
+def load_run_history_entries(data_dir: DataDir) -> list[dict]:
+    path = data_dir.run_daily_log
     if not path.exists():
         return []
 
@@ -167,8 +167,8 @@ def parse_iso_datetime(value: str) -> datetime | None:
         return None
 
 
-def health_lock_check(lock_ttl_minutes: int) -> dict:
-    lock_path = json_store.RUN_DAILY_LOCK_FILE
+def health_lock_check(data_dir: DataDir, lock_ttl_minutes: int) -> dict:
+    lock_path = data_dir.run_daily_lock
     if not lock_path.exists():
         return {"status": "ok", "detail": "No active run lock."}
 
@@ -202,9 +202,8 @@ def health_lock_check(lock_ttl_minutes: int) -> dict:
     }
 
 
-def acquire_run_lock(lock_ttl_minutes: int = 180) -> tuple[bool, str]:
-    json_store.ensure_dirs()
-    lock_path = json_store.RUN_DAILY_LOCK_FILE
+def acquire_run_lock(data_dir: DataDir, lock_ttl_minutes: int = 180) -> tuple[bool, str]:
+    lock_path = data_dir.run_daily_lock
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
     max_age = timedelta(minutes=max(1, lock_ttl_minutes))
@@ -257,9 +256,9 @@ def acquire_run_lock(lock_ttl_minutes: int = 180) -> tuple[bool, str]:
     return True, ""
 
 
-def release_run_lock() -> None:
+def release_run_lock(data_dir: DataDir) -> None:
     try:
-        json_store.RUN_DAILY_LOCK_FILE.unlink(missing_ok=True)
+        data_dir.run_daily_lock.unlink(missing_ok=True)
     except OSError:
         pass
 

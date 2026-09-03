@@ -2,17 +2,17 @@
 
 from datetime import datetime
 
-from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo
+from linkedin.data.json_store import JsonCompanyRepo, JsonContactRepo, JsonDraftRepo, JsonProfileRepo
 from linkedin.services.contact_service import STATUS_RULES, parse_iso_date
 
 
 class DashboardService:
     def __init__(
         self,
-        profile_repo: ProfileRepo,
-        contact_repo: ContactRepo,
-        company_repo: CompanyRepo,
-        draft_repo: DraftRepo,
+        profile_repo: JsonProfileRepo,
+        contact_repo: JsonContactRepo,
+        company_repo: JsonCompanyRepo,
+        draft_repo: JsonDraftRepo,
     ):
         self.profiles = profile_repo
         self.contacts = contact_repo

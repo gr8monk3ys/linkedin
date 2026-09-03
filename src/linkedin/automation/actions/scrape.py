@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from linkedin.automation.rate_limiter import RateLimiter
 from linkedin.automation.safety import SafetyLimits
-from linkedin.data.repository import ContactRepo
+from linkedin.data.json_store import JsonContactRepo
 from linkedin.services.contact_service import cadence_follow_up_date
 from linkedin.types import ContactDict
 
@@ -44,7 +44,7 @@ def search_and_collect(
 
 def import_search_results(
     results: list[dict[str, str]],
-    contact_repo: ContactRepo,
+    contact_repo: JsonContactRepo,
     skip_existing_urls: bool = True,
 ) -> tuple[list[ContactDict], list[str]]:
     """Persist search results into the contact repo.
@@ -90,7 +90,7 @@ def import_search_results(
 def scrape_and_import_profile(
     linkedin: LinkedInPage,
     url: str,
-    contact_repo: ContactRepo,
+    contact_repo: JsonContactRepo,
     rate_limiter: RateLimiter | None = None,
 ) -> ContactDict | None:
     """Scrape a single LinkedIn profile and add/update in contact repo.

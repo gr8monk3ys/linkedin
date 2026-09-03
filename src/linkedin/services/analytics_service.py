@@ -3,7 +3,7 @@
 from collections import Counter
 from datetime import datetime, timedelta
 
-from linkedin.data.repository import ContactRepo, DraftRepo
+from linkedin.data.json_store import JsonContactRepo, JsonDraftRepo
 
 
 def _parse_created_at(value: str) -> datetime | None:
@@ -17,7 +17,7 @@ def _parse_created_at(value: str) -> datetime | None:
 
 
 class AnalyticsService:
-    def __init__(self, contact_repo: ContactRepo, draft_repo: DraftRepo):
+    def __init__(self, contact_repo: JsonContactRepo, draft_repo: JsonDraftRepo):
         self.contacts = contact_repo
         self.drafts = draft_repo
 

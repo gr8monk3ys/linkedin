@@ -2,52 +2,31 @@
 
 import pytest
 
-from linkedin.data.json_store import (
-    JsonApplicationRepo,
-    JsonCalendarRepo,
-    JsonCompanyRepo,
-    JsonContactRepo,
-    JsonConversationRepo,
-    JsonDraftRepo,
-    JsonInterviewPrepRepo,
-    JsonProfileRepo,
-    JsonResearchRepo,
-)
+from linkedin.data.factory import create_repos
+from linkedin.data.paths import DataDir
+
+
+@pytest.fixture(autouse=True)
+def isolated_data_dir(tmp_path, monkeypatch) -> DataDir:
+    """Every test runs against its own data directory.
+
+    One env var and one reset replace the twenty-two monkeypatches that used
+    to be copy-pasted per file — and had drifted, so nine daily-plan tests were
+    reading the developer's real applications file.
+    """
+    root = tmp_path / ".linkedin-cli"
+    monkeypatch.setenv("LINKEDIN_DATA_DIR", str(root))
+    from linkedin.cli import _app
+
+    _app.reset()
+    yield DataDir(root)
+    _app.reset()
 
 
 @pytest.fixture
-def json_repos(tmp_path, monkeypatch):
-    """Full set of JSON repos using temp directory."""
-    import linkedin.data.json_store as js
-
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "PROFILE_FILE", tmp_path / "profile.json")
-    monkeypatch.setattr(js, "CONTACTS_FILE", tmp_path / "contacts.json")
-    monkeypatch.setattr(js, "COMPANIES_FILE", tmp_path / "companies.json")
-    monkeypatch.setattr(js, "DRAFTS_FILE", tmp_path / "drafts.json")
-    monkeypatch.setattr(js, "RESEARCH_FILE", tmp_path / "research.json")
-    monkeypatch.setattr(js, "TEMPLATES_FILE", tmp_path / "templates.json")
-    monkeypatch.setattr(js, "JOB_POSTINGS_FILE", tmp_path / "job_postings.json")
-    monkeypatch.setattr(js, "RUN_DAILY_STATE_FILE", tmp_path / "run_daily_state.json")
-    monkeypatch.setattr(js, "RUN_DAILY_LOG_FILE", tmp_path / "run_daily.log.jsonl")
-    monkeypatch.setattr(js, "RUN_DAILY_LOCK_FILE", tmp_path / "run_daily.lock")
-    monkeypatch.setattr(js, "BACKUPS_DIR", tmp_path / "backups")
-    monkeypatch.setattr(js, "APPLICATIONS_FILE", tmp_path / "applications.json")
-    monkeypatch.setattr(js, "CONVERSATIONS_FILE", tmp_path / "conversations.json")
-    monkeypatch.setattr(js, "CALENDAR_FILE", tmp_path / "content_calendar.json")
-    monkeypatch.setattr(js, "INTERVIEW_PREP_FILE", tmp_path / "interview_prep.json")
-
-    return (
-        JsonContactRepo(),
-        JsonCompanyRepo(),
-        JsonProfileRepo(),
-        JsonDraftRepo(),
-        JsonResearchRepo(),
-        JsonApplicationRepo(),
-        JsonConversationRepo(),
-        JsonCalendarRepo(),
-        JsonInterviewPrepRepo(),
-    )
+def json_repos(tmp_path):
+    """Full set of JSON repos over a temp directory, in factory order."""
+    return create_repos(DataDir(tmp_path)).as_tuple()
 
 
 def sample_contact(**overrides):

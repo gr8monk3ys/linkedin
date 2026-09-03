@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from linkedin.ai.client import AIResult, ai_call
-from linkedin.data.repository import DraftRepo, ProfileRepo, ResearchRepo
+from linkedin.data.json_store import JsonDraftRepo, JsonProfileRepo, JsonResearchRepo
 
 ENGAGEMENT_CONTENT = """
 # LinkedIn Engagement Strategies
@@ -71,7 +71,7 @@ STYLE_INSTRUCTIONS = {
 
 
 class ResearchService:
-    def __init__(self, profile_repo: ProfileRepo, research_repo: ResearchRepo, draft_repo: DraftRepo):
+    def __init__(self, profile_repo: JsonProfileRepo, research_repo: JsonResearchRepo, draft_repo: JsonDraftRepo):
         self.profiles = profile_repo
         self.research = research_repo
         self.drafts = draft_repo

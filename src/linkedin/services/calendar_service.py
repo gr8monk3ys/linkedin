@@ -2,12 +2,12 @@
 
 from datetime import datetime, timedelta
 
-from linkedin.data.repository import CalendarRepo
+from linkedin.data.json_store import JsonCalendarRepo
 from linkedin.types import ContentPostDict
 
 
 class ContentCalendarService:
-    def __init__(self, calendar_repo: CalendarRepo):
+    def __init__(self, calendar_repo: JsonCalendarRepo):
         self.calendar = calendar_repo
 
     def add(

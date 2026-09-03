@@ -11,7 +11,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-import linkedin.data.json_store as json_store
+from linkedin.data.paths import DataDir
 from linkedin.scheduling.schedule import parse_schedule_time
 
 # The CLI owns exactly one delimited block in the crontab; unmanaged lines
@@ -21,8 +21,8 @@ AUTOMATION_CRON_END = "# <<< linkedin-cli run-daily managed <<<"
 AUTOMATION_ENV_KEYS = ("ANTHROPIC_API_KEY", "LINKEDIN_RUN_NOTIFY_WEBHOOK")
 
 
-def default_automation_env_file() -> Path:
-    return json_store.DATA_DIR / "cron.env"
+def default_automation_env_file(data_dir: DataDir) -> Path:
+    return data_dir.cron_env
 
 
 def sanitize_env_key(name: str) -> str:

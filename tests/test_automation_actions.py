@@ -161,12 +161,9 @@ class TestPersistentSafetyLimits:
         assert PersistentSafetyLimits(usage_file=usage_file).connections_sent == 1
 
     def test_in_memory_limits_do_not_write(self, tmp_path, monkeypatch):
-        import linkedin.automation.safety as safety_mod
-
-        usage_file = tmp_path / "usage.json"
-        monkeypatch.setattr(safety_mod, "USAGE_FILE", usage_file)
+        monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path))
         SafetyLimits().record_connection()
-        assert not usage_file.exists()
+        assert not (tmp_path / "automation_usage.json").exists()
 
     def test_summary_includes_new_actions(self):
         summary = SafetyLimits().summary()

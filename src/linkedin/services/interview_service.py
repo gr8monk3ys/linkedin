@@ -3,16 +3,16 @@
 from datetime import datetime
 
 from linkedin.ai.client import ai_call
-from linkedin.data.repository import ApplicationRepo, InterviewPrepRepo, ProfileRepo
+from linkedin.data.json_store import JsonApplicationRepo, JsonInterviewPrepRepo, JsonProfileRepo
 from linkedin.types import InterviewPrepDict
 
 
 class InterviewService:
     def __init__(
         self,
-        application_repo: ApplicationRepo,
-        prep_repo: InterviewPrepRepo,
-        profile_repo: ProfileRepo,
+        application_repo: JsonApplicationRepo,
+        prep_repo: JsonInterviewPrepRepo,
+        profile_repo: JsonProfileRepo,
     ):
         self.applications = application_repo
         self.prep_repo = prep_repo

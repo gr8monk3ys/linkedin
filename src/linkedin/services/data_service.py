@@ -6,31 +6,17 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 
-from linkedin.data.json_store import (
-    APPLICATIONS_FILE,
-    BACKUPS_DIR,
-    CALENDAR_FILE,
-    COMPANIES_FILE,
-    CONTACTS_FILE,
-    CONVERSATIONS_FILE,
-    DRAFTS_FILE,
-    INTERVIEW_PREP_FILE,
-    JOB_POSTINGS_FILE,
-    PROFILE_FILE,
-    RESEARCH_FILE,
-    RUN_DAILY_LOG_FILE,
-    RUN_DAILY_STATE_FILE,
-    TEMPLATES_FILE,
-    ensure_dirs,
-    load_json,
-    save_json,
-)
+from linkedin.data.json_store import load_json, save_json
+from linkedin.data.paths import DataDir
 
 
 class DataService:
+    def __init__(self, data_dir: DataDir):
+        self.dirs = data_dir
+
     def export_contacts(self, output: str | None = None, fmt: str = "csv") -> tuple[int, str]:
         """Export contacts. Returns (count, output_file)."""
-        contacts = load_json(CONTACTS_FILE)
+        contacts = load_json(self.dirs.contacts)
         if not contacts:
             return 0, ""
 
@@ -52,7 +38,7 @@ class DataService:
 
     def export_companies(self, output: str | None = None, fmt: str = "csv") -> tuple[int, str]:
         """Export companies. Returns (count, output_file)."""
-        companies = load_json(COMPANIES_FILE)
+        companies = load_json(self.dirs.companies)
         if not companies:
             return 0, ""
 
@@ -75,7 +61,7 @@ class DataService:
     def import_contacts(self, file_path: str, merge: bool = False) -> int:
         """Import contacts. Returns count imported."""
         path = Path(file_path)
-        existing = load_json(CONTACTS_FILE) if merge else []
+        existing = load_json(self.dirs.contacts) if merge else []
 
         if path.suffix == ".csv":
             with open(path, newline="") as f:
@@ -106,13 +92,13 @@ class DataService:
         else:
             final = imported
 
-        save_json(CONTACTS_FILE, final)
+        save_json(self.dirs.contacts, final)
         return len(imported)
 
     def import_companies(self, file_path: str, merge: bool = False) -> int:
         """Import companies. Returns count imported."""
         path = Path(file_path)
-        existing = load_json(COMPANIES_FILE) if merge else []
+        existing = load_json(self.dirs.companies) if merge else []
 
         if path.suffix == ".csv":
             with open(path, newline="") as f:
@@ -138,31 +124,17 @@ class DataService:
         else:
             final = imported
 
-        save_json(COMPANIES_FILE, final)
+        save_json(self.dirs.companies, final)
         return len(imported)
 
     def create_backup(self, output: str | None = None) -> tuple[str, int]:
         """Create backup. Returns (backup_path, files_backed_up)."""
-        BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+        self.dirs.backups.mkdir(parents=True, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_name = output or str(BACKUPS_DIR / f"linkedin_cli_backup_{timestamp}.zip")
+        backup_name = output or str(self.dirs.backups / f"linkedin_cli_backup_{timestamp}.zip")
 
-        files_to_backup = [
-            PROFILE_FILE,
-            CONTACTS_FILE,
-            COMPANIES_FILE,
-            DRAFTS_FILE,
-            RESEARCH_FILE,
-            TEMPLATES_FILE,
-            JOB_POSTINGS_FILE,
-            APPLICATIONS_FILE,
-            CONVERSATIONS_FILE,
-            CALENDAR_FILE,
-            INTERVIEW_PREP_FILE,
-            RUN_DAILY_STATE_FILE,
-            RUN_DAILY_LOG_FILE,
-        ]
+        files_to_backup = self.dirs.backup_members()
 
         backed_up = 0
         with zipfile.ZipFile(backup_name, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -197,9 +169,7 @@ class DataService:
             result["errors"].append("Not a zip archive.")
             return result
 
-        from linkedin.data.json_store import DATA_DIR
-
-        data_dir = DATA_DIR.resolve()
+        data_dir = self.dirs.root.resolve()
         try:
             with zipfile.ZipFile(backup_path, "r") as zipf:
                 for member in zipf.infolist():
@@ -236,12 +206,10 @@ class DataService:
         if not zipfile.is_zipfile(backup_path):
             return None
 
-        ensure_dirs()
+        self.dirs.ensure()
 
         restored = 0
-        from linkedin.data.json_store import DATA_DIR
-
-        data_dir = DATA_DIR.resolve()
+        data_dir = self.dirs.root.resolve()
         with zipfile.ZipFile(backup_path, "r") as zipf:
             for member in zipf.infolist():
                 target_path = self._validate_backup_member_path(member.filename, data_dir)
@@ -274,10 +242,10 @@ class DataService:
 
     def list_backups(self) -> list[dict]:
         """List available backups. Returns list of {name, size_kb, created}."""
-        if not BACKUPS_DIR.exists():
+        if not self.dirs.backups.exists():
             return []
 
-        backups = list(BACKUPS_DIR.glob("*.zip"))
+        backups = list(self.dirs.backups.glob("*.zip"))
         if not backups:
             return []
 

@@ -1,12 +1,12 @@
 """AI-powered networking discovery service."""
 
 from linkedin.ai.client import ai_call
-from linkedin.data.repository import CompanyRepo, ContactRepo, ProfileRepo
+from linkedin.data.json_store import JsonCompanyRepo, JsonContactRepo, JsonProfileRepo
 from linkedin.types import ProfileDict
 
 
 class DiscoverService:
-    def __init__(self, profile_repo: ProfileRepo, company_repo: CompanyRepo, contact_repo: ContactRepo):
+    def __init__(self, profile_repo: JsonProfileRepo, company_repo: JsonCompanyRepo, contact_repo: JsonContactRepo):
         self.profiles = profile_repo
         self.companies = company_repo
         self.contacts = contact_repo

@@ -43,7 +43,11 @@ START_POST_BUTTON = re.compile("Start a post", re.I)
 POST_EDITOR_TEXTBOX = re.compile("Text editor", re.I)
 POST_SUBMIT_BUTTON = re.compile(r"^Post$", re.I)
 
-LIKE_BUTTON = re.compile(r"^React Like|^Like\b", re.I)
+#: The feed's like control was relabelled "Reaction button state: no reaction"
+#: (verified 2026-09-03); recent-activity pages still say "React Like". A label
+#: that does not say "no reaction" and is not a plain Like means we already reacted.
+LIKE_BUTTON = re.compile(r"^React Like|^Like\b|^Reaction button state", re.I)
+LIKE_ALREADY_REACTED = re.compile(r"^Reaction button state:(?!\s*no reaction)", re.I)
 COMMENT_BUTTON = re.compile(r"^Comment\b", re.I)
 COMMENT_TEXTBOX = re.compile("Add a comment", re.I)
 COMMENT_SUBMIT_BUTTON = re.compile(r"^Post\b", re.I)
@@ -191,6 +195,42 @@ JOB_EASY_APPLY = (
 #: The old Quill editor. Present in the catalogue so a page that shows it can be
 #: named, never typed into: a post goes out publicly under the user's name, and
 #: an editor we no longer recognise is a page we do not understand.
+#: The home feed moved to obfuscated component divs (verified 2026-09-03: no
+#: `feed-shared-update-v2`, no data-urn). Cards are found by shape — the
+#: smallest ancestor of a reaction button that also holds a Comment button —
+#: and tagged with this attribute so like/comment can address them by index.
+FEED_CARD_TAG = "data-linkedin-cli-card"
+FEED_POSTS_SCRIPT = """(maxPosts) => {
+  const TAG = 'data-linkedin-cli-card';
+  const isReact = b => /^Reaction button state|^React Like|^Like\\b/i.test(b.getAttribute('aria-label') || b.innerText.trim());
+  const isComment = b => /^Comment\\b/i.test(b.getAttribute('aria-label') || b.innerText.trim());
+  const out = []; const seen = new Set();
+  for (const b of document.querySelectorAll('main button')) {
+    if (!isReact(b)) continue;
+    let el = b, card = null;
+    for (let k = 0; k < 14 && el; k++) {
+      el = el.parentElement; if (!el) break;
+      if ([...el.querySelectorAll('button')].some(isComment) && el.innerText.split('\\n').filter(x => x.trim()).length >= 4) { card = el; break; }
+    }
+    if (!card || seen.has(card)) continue;
+    seen.add(card);
+    const idx = out.length;
+    card.setAttribute(TAG, String(idx));
+    const lines = card.innerText.split('\\n').map(x => x.trim()).filter(Boolean).filter(x => x !== 'Feed post');
+    // author, degree, headline, age, then the body until the reaction counts
+    const author = lines[0] || '';
+    let i = 1; if (/^•/.test(lines[i] || '')) i++;
+    const headline = lines[i] || ''; i++;
+    if (/\\d+\\s*(h|d|w|mo|yr)s?\\b|•/.test(lines[i] || '')) i++;
+    if (/^Follow$/i.test(lines[i] || '')) i++;
+    const body = [];
+    for (; i < lines.length; i++) { const l = lines[i]; if (/^(… more|Like|Comment|Repost|Send|Reaction button)/i.test(l) || /^\\d[\\d,]*$/.test(l)) break; body.push(l); }
+    out.push({ element_index: idx, author, headline, content: body.join(' ').slice(0, 500) });
+    if (out.length >= maxPosts) break;
+  }
+  return out;
+}"""
+
 POST_EDITOR_FALLBACK = "div.ql-editor[contenteditable='true']"
 #: After a successful post LinkedIn shows a "View post" link whose href carries
 #: the activity URN. It is the only way to join a published post to its metrics.

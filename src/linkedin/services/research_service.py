@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from linkedin.ai.client import generate_with_ai
+from linkedin.ai.client import AIResult, ai_call
 from linkedin.data.repository import DraftRepo, ProfileRepo, ResearchRepo
 
 ENGAGEMENT_CONTENT = """
@@ -79,7 +79,7 @@ class ResearchService:
     def get_engagement_strategies(self) -> str:
         return ENGAGEMENT_CONTENT
 
-    def generate_ideas(self, topic: str | None = None) -> tuple[str, str]:
+    def generate_ideas(self, topic: str | None = None) -> tuple[str, AIResult]:
         """Returns (focus_topic, ideas_text)."""
         profile = self.profiles.get()
 
@@ -108,8 +108,7 @@ Focus on posts that:
 
 Format as a numbered list."""
 
-        ideas = generate_with_ai(prompt, max_tokens=800)
-        return focus, ideas
+        return focus, ai_call(prompt, max_tokens=800)
 
     def save_ideas(self, topic: str, ideas: str) -> None:
         research_data = self.research.get()
@@ -122,7 +121,7 @@ Format as a numbered list."""
         })
         self.research.save(research_data)
 
-    def generate_post_draft(self, topic: str, style: str = "story") -> str:
+    def generate_post_draft(self, topic: str, style: str = "story") -> AIResult:
         profile = self.profiles.get()
         instruction = STYLE_INSTRUCTIONS.get(style, STYLE_INSTRUCTIONS["story"])
 
@@ -146,7 +145,7 @@ Requirements:
 
 Write the post now:"""
 
-        return generate_with_ai(prompt, max_tokens=500)
+        return ai_call(prompt, max_tokens=500)
 
     def save_post_draft(self, topic: str, style: str, content: str) -> None:
         draft = {
@@ -154,12 +153,13 @@ Write the post now:"""
             "contact_id": None,
             "type": f"post_{style}",
             "content": content,
+            "source": "ai",
             "topic": topic,
             "created_at": datetime.now().isoformat(),
         }
         self.drafts.add(draft)
 
-    def generate_hashtags(self, topic: str) -> str:
+    def generate_hashtags(self, topic: str) -> AIResult:
         prompt = f"""Suggest the best LinkedIn hashtags for a post about: {topic}
 
 Provide:
@@ -171,4 +171,4 @@ For each, briefly explain why it's good.
 
 Format as a clean list."""
 
-        return generate_with_ai(prompt, max_tokens=300)
+        return ai_call(prompt, max_tokens=300)

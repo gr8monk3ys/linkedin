@@ -82,6 +82,9 @@ class DraftDict(TypedDict, total=False):
     target_contact_id: int | None
     type: str
     content: str
+    #: "ai" or "template". Absent on rows saved before provenance was recorded;
+    #: readers treat absent as unknown, never as "ai".
+    source: str
     topic: str
     created_at: str
 

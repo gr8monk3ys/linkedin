@@ -383,53 +383,53 @@ class TestDraftService:
         contact_repo, _, profile_repo, draft_repo, *_= json_repos
         return DraftService(draft_repo, contact_repo, profile_repo)
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Hi Alice!")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Hi Alice!")
     def test_generate_connection(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        error, draft = svc.generate_connection(1)
-        assert error is None
-        assert draft == "Hi Alice!"
+        result = svc.generate_connection(1)
+        assert result.error is None
+        assert result.text == "Hi Alice!"
 
     def test_generate_connection_no_profile(self, json_repos):
         svc = self._svc(json_repos)
         contact_repo = json_repos[0]
         contact_repo.add(sample_contact(id=1))
 
-        error, draft = svc.generate_connection(1)
-        assert error is not None
-        assert "profile" in error.lower()
+        result = svc.generate_connection(1)
+        assert not result
+        assert "profile" in result.error.lower()
 
     def test_generate_connection_contact_not_found(self, json_repos):
         svc = self._svc(json_repos)
         _, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
 
-        error, draft = svc.generate_connection(999)
-        assert error is not None
-        assert "not found" in error.lower()
+        result = svc.generate_connection(999)
+        assert not result
+        assert "not found" in result.error.lower()
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Great message")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Great message")
     def test_generate_message(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        error, draft = svc.generate_message(1, context="Discuss job opening")
-        assert error is None
-        assert draft == "Great message"
+        result = svc.generate_message(1, context="Discuss job opening")
+        assert result.error is None
+        assert result.text == "Great message"
 
     def test_generate_message_contact_not_found(self, json_repos):
         svc = self._svc(json_repos)
-        error, draft = svc.generate_message(999)
-        assert error is not None
+        result = svc.generate_message(999)
+        assert not result
 
     def test_generate_connection_fallback_when_ai_unavailable(self, json_repos, monkeypatch):
-        from linkedin.services.draft_service import AIClientError
+        from linkedin.ai.client import AIClientError
 
         monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
         svc = self._svc(json_repos)
@@ -437,13 +437,13 @@ class TestDraftService:
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
-            error, draft = svc.generate_connection(1)
-        assert error is None
-        assert "Alice" in draft
+        with patch("linkedin.ai.client.generate_with_ai", side_effect=AIClientError("AI down")):
+            result = svc.generate_connection(1)
+        assert result.was_fallback is True
+        assert "Alice" in result.text
 
     def test_generate_connection_fallback_disabled_returns_error(self, json_repos, monkeypatch):
-        from linkedin.services.draft_service import AIClientError
+        from linkedin.ai.client import AIClientError
 
         monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "0")
         svc = self._svc(json_repos)
@@ -451,10 +451,11 @@ class TestDraftService:
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
-            error, draft = svc.generate_connection(1)
-        assert error is not None
-        assert draft == ""
+        with patch("linkedin.ai.client.generate_with_ai", side_effect=AIClientError("AI down")):
+            result = svc.generate_connection(1)
+        assert not result
+        assert result.error is not None
+        assert result.was_fallback is False
 
     def test_fallback_is_reported_not_silent(self, json_repos, monkeypatch):
         """A template must never be handed back as if the AI wrote it.
@@ -462,7 +463,7 @@ class TestDraftService:
         The API key lives in cron.env, so scheduled runs get real drafts while
         every interactive command quietly degrades — with no way to tell.
         """
-        from linkedin.services.draft_service import AIClientError
+        from linkedin.ai.client import AIClientError
 
         monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
         svc = self._svc(json_repos)
@@ -470,20 +471,23 @@ class TestDraftService:
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
-            svc.generate_connection(1)
-        assert svc.last_draft_was_fallback is True
-        assert "AI down" in (svc.last_draft_error or "")
+        with patch("linkedin.ai.client.generate_with_ai", side_effect=AIClientError("AI down")):
+            result = svc.generate_connection(1)
+        assert result.was_fallback is True
+        assert result.source == "template"
+        assert "AI down" in (result.error or "")
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Real draft")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Real draft")
     def test_ai_success_is_not_flagged_as_fallback(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        svc.generate_connection(1)
-        assert svc.last_draft_was_fallback is False
+        result = svc.generate_connection(1)
+        assert result.was_fallback is False
+        assert result.source == "ai"
+        assert result.ok
 
     def test_fallback_does_not_paste_context_into_the_message(self, json_repos, monkeypatch):
         """`context` is prompt input, not body text.
@@ -492,7 +496,7 @@ class TestDraftService:
         verbatim, so a --context of instructions became the message itself —
         addressed to a real person, under the user's real name.
         """
-        from linkedin.services.draft_service import AIClientError
+        from linkedin.ai.client import AIClientError
 
         monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
         svc = self._svc(json_repos)
@@ -501,16 +505,16 @@ class TestDraftService:
         contact_repo.add(sample_contact(name="Alice", id=1))
         instructions = "Keep it brief and warm — thank him and give three days"
 
-        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
-            error, draft = svc.generate_message(1, context=instructions)
+        with patch("linkedin.ai.client.generate_with_ai", side_effect=AIClientError("AI down")):
+            result = svc.generate_message(1, context=instructions)
 
-        assert error is None
-        assert instructions not in draft
-        assert "Keep it brief" not in draft
-        assert "Alice" in draft
+        assert result.was_fallback
+        assert instructions not in result.text
+        assert "Keep it brief" not in result.text
+        assert "Alice" in result.text
 
     def test_fallback_thank_you_also_drops_context(self, json_repos, monkeypatch):
-        from linkedin.services.draft_service import AIClientError
+        from linkedin.ai.client import AIClientError
 
         monkeypatch.setenv("LINKEDIN_AI_FALLBACK_ENABLED", "1")
         svc = self._svc(json_repos)
@@ -518,12 +522,12 @@ class TestDraftService:
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        with patch("linkedin.services.draft_service.generate_with_ai", side_effect=AIClientError("AI down")):
-            _, draft = svc.generate_thank_you(1, context="mention the ML platform team specifically")
+        with patch("linkedin.ai.client.generate_with_ai", side_effect=AIClientError("AI down")):
+            result = svc.generate_thank_you(1, context="mention the ML platform team specifically")
 
-        assert "mention the ML platform team" not in draft
+        assert "mention the ML platform team" not in result.text
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Intro message")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Intro message")
     def test_generate_intro_request(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
@@ -531,46 +535,46 @@ class TestDraftService:
         contact_repo.add(sample_contact(name="Alice", id=1))
         contact_repo.add(sample_contact(name="Bob", id=2))
 
-        error, draft = svc.generate_intro_request(1, 2)
-        assert error is None
-        assert draft == "Intro message"
+        result = svc.generate_intro_request(1, 2)
+        assert result.error is None
+        assert result.text == "Intro message"
 
     def test_generate_intro_no_profile(self, json_repos):
         svc = self._svc(json_repos)
         contact_repo = json_repos[0]
         contact_repo.add(sample_contact(id=1))
-        error, _ = svc.generate_intro_request(1, 1)
-        assert error is not None
+        result = svc.generate_intro_request(1, 1)
+        assert not result
 
     def test_generate_intro_target_not_found(self, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(id=1))
-        error, _ = svc.generate_intro_request(1, 999)
-        assert error is not None
+        result = svc.generate_intro_request(1, 999)
+        assert not result
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Thanks!")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Thanks!")
     def test_generate_thank_you(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        error, draft = svc.generate_thank_you(1)
-        assert error is None
+        result = svc.generate_thank_you(1)
+        assert result.ok
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Follow up")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Follow up")
     def test_generate_follow_up(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
         contact_repo.add(sample_contact(name="Alice", id=1))
 
-        error, draft = svc.generate_follow_up(1, attempt=2)
-        assert error is None
+        result = svc.generate_follow_up(1, attempt=2)
+        assert result.ok
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Connect!")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Connect!")
     def test_generate_batch_connections(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         contact_repo, _, profile_repo, *_ = json_repos
@@ -581,6 +585,7 @@ class TestDraftService:
         error, results = svc.generate_batch_connections(limit=2)
         assert error is None
         assert len(results) == 2
+        assert all(r.ok for _, r in results)
 
     def test_generate_batch_no_profile(self, json_repos):
         svc = self._svc(json_repos)
@@ -591,20 +596,27 @@ class TestDraftService:
         svc = self._svc(json_repos)
         contact_repo = json_repos[0]
         contact_repo.add(sample_contact(name="Alice", id=1))
-        svc.save_draft(1, "connection", "Hello!")
+        svc.save_draft(1, "connection", "Hello!", source="ai")
         drafts = svc.list_drafts()
         assert len(drafts) == 1
         assert drafts[0]["contact_name"] == "Alice"
 
     def test_save_draft(self, json_repos):
         svc = self._svc(json_repos)
-        saved = svc.save_draft(1, "connection", "Hello!")
+        saved = svc.save_draft(1, "connection", "Hello!", source="ai")
         assert saved["content"] == "Hello!"
+        assert saved["source"] == "ai"
         assert svc.get_draft(saved["id"]) is not None
+
+    def test_save_draft_records_template_provenance(self, json_repos):
+        """The row must say it is a template, or nothing downstream can refuse it."""
+        svc = self._svc(json_repos)
+        saved = svc.save_draft(1, "connection", "Hi there", source="template")
+        assert svc.get_draft(saved["id"])["source"] == "template"
 
 
 class TestDiscoverService:
-    @patch("linkedin.services.discover_service.generate_with_ai", return_value="Suggestion 1\nSuggestion 2")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Suggestion 1\nSuggestion 2")
     def test_discover_contacts_by_role(self, mock_ai, json_repos):
         from linkedin.services.discover_service import DiscoverService
 
@@ -616,7 +628,7 @@ class TestDiscoverService:
         assert error is None
         assert "Suggestion" in result
 
-    @patch("linkedin.services.discover_service.generate_with_ai", return_value="People at Google")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="People at Google")
     def test_discover_contacts_by_company(self, mock_ai, json_repos):
         from linkedin.services.discover_service import DiscoverService
 
@@ -644,7 +656,7 @@ class TestDiscoverService:
         error, _ = svc.discover_contacts()
         assert error is not None
 
-    @patch("linkedin.services.discover_service.generate_with_ai", return_value="Company suggestions")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Company suggestions")
     def test_discover_companies(self, mock_ai, json_repos):
         from linkedin.services.discover_service import DiscoverService
 
@@ -668,26 +680,27 @@ class TestResearchService:
         content = svc.get_engagement_strategies()
         assert len(content) > 0
 
-    @patch("linkedin.services.research_service.generate_with_ai", return_value="Post idea 1")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Post idea 1")
     def test_generate_ideas(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         _, _, profile_repo, *_ = json_repos
         profile_repo.save(sample_profile())
 
         topic, ideas = svc.generate_ideas()
-        assert "idea" in ideas.lower()
+        assert "idea" in ideas.text.lower()
 
-    @patch("linkedin.services.research_service.generate_with_ai", return_value="Ideas about AI")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Ideas about AI")
     def test_generate_ideas_with_topic(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         topic, ideas = svc.generate_ideas(topic="AI")
         assert topic == "AI"
 
-    @patch("linkedin.services.research_service.generate_with_ai", return_value="A great post about tech")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="A great post about tech")
     def test_generate_post_draft(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         content = svc.generate_post_draft("AI trends", style="story")
-        assert len(content) > 0
+        assert content.ok
+        assert len(content.text) > 0
 
     def test_save_ideas(self, json_repos):
         svc = self._svc(json_repos)
@@ -697,7 +710,7 @@ class TestResearchService:
         assert len(data["ideas"]) == 1
         assert data["ideas"][0]["topic"] == "AI"
 
-    @patch("linkedin.services.research_service.generate_with_ai", return_value="A great post")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="A great post")
     def test_save_post_draft(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         svc.save_post_draft("AI", "story", "A great post")
@@ -705,12 +718,13 @@ class TestResearchService:
         drafts = draft_repo.list_all()
         assert len(drafts) == 1
         assert drafts[0]["type"] == "post_story"
+        assert drafts[0]["source"] == "ai"
 
-    @patch("linkedin.services.research_service.generate_with_ai", return_value="#AI #ML #Tech")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="#AI #ML #Tech")
     def test_generate_hashtags(self, mock_ai, json_repos):
         svc = self._svc(json_repos)
         result = svc.generate_hashtags("artificial intelligence")
-        assert "#" in result
+        assert "#" in result.text
 
 
 class TestDashboardService:

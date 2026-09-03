@@ -1,6 +1,6 @@
 """AI profile optimizer service — headline, about, skills, experience improvements."""
 
-from linkedin.ai.client import AIClientError, generate_with_ai
+from linkedin.ai.client import ai_call
 from linkedin.data.repository import ProfileRepo
 
 
@@ -31,11 +31,8 @@ Requirements:
 Format: Number. Headline text
 Just the headlines, no explanations."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=300)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=300)
+        return result.error, result.text
 
     def optimize_about(self) -> tuple[str | None, str]:
         """Generate an optimized About section."""
@@ -64,11 +61,8 @@ Requirements:
 
 Just write the About section, no explanations."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=600)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=600)
+        return result.error, result.text
 
     def optimize_skills(self) -> tuple[str | None, str]:
         """Analyze skills and suggest improvements."""
@@ -92,11 +86,8 @@ Provide:
 
 Be specific and actionable. Under 400 words."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=500)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=500)
+        return result.error, result.text
 
     def optimize_full(self) -> tuple[str | None, str]:
         """Full profile optimization review."""
@@ -124,8 +115,5 @@ Score each section (1-10) and provide specific improvement suggestions:
 
 Be specific and actionable. Under 500 words."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=700)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=700)
+        return result.error, result.text

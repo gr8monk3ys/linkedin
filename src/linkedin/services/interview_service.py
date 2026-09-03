@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from linkedin.ai.client import AIClientError, generate_with_ai
+from linkedin.ai.client import ai_call
 from linkedin.data.repository import ApplicationRepo, InterviewPrepRepo, ProfileRepo
 from linkedin.types import InterviewPrepDict
 
@@ -47,10 +47,10 @@ For each: Situation -> Task -> Action -> Result
 
 Keep answers concise and specific to this role."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=1200)
-        except AIClientError as exc:
-            return str(exc), ""
+        generated = ai_call(prompt, max_tokens=1200)
+        if generated.error:
+            return generated.error, ""
+        result = generated.text
 
         existing = self.prep_repo.get_by_application(application_id) or {}
         prep_data: InterviewPrepDict = {
@@ -92,10 +92,10 @@ Include:
 
 Keep under 400 words. Be factual - note if information is likely rather than confirmed."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=800)
-        except AIClientError as exc:
-            return str(exc), ""
+        generated = ai_call(prompt, max_tokens=800)
+        if generated.error:
+            return generated.error, ""
+        result = generated.text
 
         existing = self.prep_repo.get_by_application(application_id) or {}
         prep_data: InterviewPrepDict = {
@@ -135,10 +135,10 @@ For each:
 
 Keep each scaffold to 4-5 sentences max. Leave [FILL IN] markers where candidate should personalize."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=1000)
-        except AIClientError as exc:
-            return str(exc), ""
+        generated = ai_call(prompt, max_tokens=1000)
+        if generated.error:
+            return generated.error, ""
+        result = generated.text
 
         existing = self.prep_repo.get_by_application(application_id) or {}
         prep_data: InterviewPrepDict = {
@@ -170,10 +170,10 @@ Format: numbered list. Each question should be specific and show genuine curiosi
 Avoid generic questions like "What does success look like?" unless made specific.
 Under 300 words."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=400)
-        except AIClientError as exc:
-            return str(exc), ""
+        generated = ai_call(prompt, max_tokens=400)
+        if generated.error:
+            return generated.error, ""
+        result = generated.text
 
         existing = self.prep_repo.get_by_application(application_id) or {}
         prep_data: InterviewPrepDict = {

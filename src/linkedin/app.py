@@ -17,6 +17,7 @@ from linkedin.services.automation_service import AutomationService
 from linkedin.services.calendar_service import ContentCalendarService
 from linkedin.services.company_service import CompanyService
 from linkedin.services.contact_service import ContactService
+from linkedin.services.content_service import ContentService
 from linkedin.services.conversation_service import ConversationService
 from linkedin.services.dashboard_service import DashboardService
 from linkedin.services.data_service import DataService
@@ -62,6 +63,7 @@ class App:
         self.calendar_svc = ContentCalendarService(r.calendar)
         self.post_svc = PostService(r.posts)
         self.metrics_svc = MetricsService(d.metrics, r.posts)
+        self.content_svc = ContentService(r.profile, r.drafts, r.calendar, r.posts)
         self.automation_svc = AutomationService(r.profile)
         self.inbox_svc = InboxService()
 

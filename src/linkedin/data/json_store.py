@@ -162,6 +162,11 @@ class JsonDraftRepo(_JsonRepo):
         save_json(self.path, drafts)
         return draft
 
+    def update(self, draft: DraftDict) -> DraftDict:
+        drafts = [draft if d["id"] == draft["id"] else d for d in self.list_all()]
+        save_json(self.path, drafts)
+        return draft
+
     def next_id(self) -> int:
         drafts = self.list_all()
         return _next_id(drafts)

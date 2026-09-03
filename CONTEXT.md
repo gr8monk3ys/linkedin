@@ -47,3 +47,7 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
   invitations. **Pinned** contacts are exempt: always first, never in the bottom list, always followed.
 - **Metric row**: one day's account numbers (followers, connections, profile views, post impressions,
   search appearances, SSI). A number that could not be read is None, never 0.
+- **Fleet facts**: a week of public GitHub activity (merged PRs, pushed repos), the only thing the
+  post drafter may see. **Candidate**: an AI draft of type `post_fleet` awaiting review.
+  **Skip rule**: publishing stops by default when the last three measured posts all underperform
+  the earlier median.

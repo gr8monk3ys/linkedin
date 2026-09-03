@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 
 DEFAULT_MODEL = "claude-opus-5"
+AI_DISABLED = "AI is disabled in settings.json (ai_enabled: false); drafts are written by hand"
 
 
 class AIClientError(RuntimeError):
@@ -57,6 +58,12 @@ def ai_call(prompt: str, *, max_tokens: int = 500, fallback: str | None = None) 
     call returns the fallback text with `was_fallback=True` and the error kept.
     Without a fallback, a failed call returns an empty result carrying the error.
     """
+    from linkedin.settings import ai_enabled
+
+    if not ai_enabled():
+        # A choice, not a failure: no retries, no network, no template either —
+        # the person who turned AI off writes their own text.
+        return AIResult(error=AI_DISABLED)
     try:
         return AIResult(text=generate_with_ai(prompt, max_tokens=max_tokens))
     except AIClientError as exc:

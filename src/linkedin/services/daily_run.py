@@ -258,6 +258,9 @@ class DailyRun:
     def cycle(self) -> dict:
         """One plan, with drafts and recap as configured. No lifecycle."""
         cfg = self.config
+        from linkedin.settings import ai_enabled
+
+        drafting = (cfg.generate_drafts or cfg.save_drafts) and ai_enabled(self.app.data_dir)
         if cfg.collect_metrics and self.metrics_collector is not None:
             # Before the plan, so today's row is what the plan's metrics section shows.
             # A collection failure is recorded, not raised: the plan must still run.
@@ -270,10 +273,12 @@ class DailyRun:
         data = self.plan_data()
         if data_metrics is not None:
             data["metrics_collected"] = data_metrics
-        if cfg.generate_drafts or cfg.save_drafts:
+        if drafting:
             data["drafts"] = self.draft_for_actions(data["actions"], save=cfg.save_drafts)
         else:
             data["drafts"] = {"generated": 0, "saved": 0, "failed": 0, "templates": 0, "drafts": []}
+            if cfg.generate_drafts or cfg.save_drafts:
+                data["drafts"]["skipped"] = "AI disabled in settings; drafts are written by hand"
         if cfg.save_recap:
             out_dir = Path(cfg.recap_dir) if cfg.recap_dir else self.app.data_dir.recaps
             out_dir.mkdir(parents=True, exist_ok=True)

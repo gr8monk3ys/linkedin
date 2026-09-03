@@ -134,6 +134,10 @@ class DataDir:
     def limits(self) -> Path:
         return self.root / "limits.json"
 
+    @property
+    def settings(self) -> Path:
+        return self.root / "settings.json"
+
     # -- backups
     @property
     def backups(self) -> Path:

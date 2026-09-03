@@ -112,9 +112,14 @@ def diagnostics(
     else:
         checks.append(check("env_file", "warn", f"{env.get('path')} not found."))
 
+    from linkedin.settings import ai_enabled
+
     shell_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
     cron_key = bool(env.get("has_anthropic_api_key"))
-    if shell_key and cron_key:
+    if not ai_enabled(d):
+        checks.append(check("anthropic_api_key", "ok", "AI disabled by choice (settings.json ai_enabled: false); drafts are written by hand."))
+        probe_ai = False
+    elif shell_key and cron_key:
         checks.append(check("anthropic_api_key", "ok", "Configured in shell and cron env file."))
     elif shell_key:
         checks.append(check("anthropic_api_key", "warn", "Configured in shell only; sync cron env for scheduled runs."))

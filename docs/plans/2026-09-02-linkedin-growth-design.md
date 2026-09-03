@@ -96,6 +96,15 @@ post has a baseline. Without it the skip-by-default rule never fires.
 - Metrics scraper: done and verified live — 2,498 followers, 2,506 connections, 46 profile views, 70 search appearances, 0 post impressions. **SSI is discontinued for this account**; the plan's SSI metric is dropped.
 - Baseline: `automation schedule` now installs `run-daily --collect-metrics`; reinstall the schedule to start the 14 days.
 
+## Decision 2026-09-03: no API key
+
+The user chose to run without an Anthropic key and have Claude (in-session, through Chrome) write
+messages and post candidates by hand. `settings ai off` makes that a first-class state: the daily
+run skips drafting and stays green, the doctor stops nagging, and `drafts add` / `posts add-candidate`
+feed hand-written text into the same review-and-publish pipeline. The Sunday batch becomes a session
+with Claude: `posts facts`, write two or three candidates, queue them, review, then `posts publish-due`
+on Tuesday.
+
 ## Kill criteria
 
 If by **2026-12-01** inbound is under 3/month **and** follower growth is

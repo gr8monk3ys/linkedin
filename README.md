@@ -197,6 +197,9 @@ linkedin-cli automate login                 # Log in (headful; handles 2FA) and 
 linkedin-cli contacts rank                  # Who the connection budget should go to (★ = pinned, exempt)
 linkedin-cli contacts pin 12                # Keep following #12 whatever the rank says
 linkedin-cli automate engage --pinned       # Like recent posts of every pinned contact
+linkedin-cli settings ai off                # No API key: drafts are written by hand; run-daily skips drafting
+linkedin-cli drafts add 12 --file reply.txt # Save a hand-written message for contact #12
+linkedin-cli posts add-candidate --file p.md # Queue a hand-written post for Sunday review
 linkedin-cli posts facts                    # What the public fleet did this week (the drafter's only input)
 linkedin-cli posts draft-week               # Sunday batch 1/3: AI candidates from those facts
 linkedin-cli posts review                   # Sunday batch 2/3: approve (schedules Tuesday) or reject

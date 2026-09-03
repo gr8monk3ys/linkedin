@@ -89,6 +89,7 @@ from linkedin.services.run_state import (
     load_run_history_entries,
     release_run_lock,
 )
+from linkedin.settings import load_settings, set_setting
 
 console = Console()
 
@@ -1318,6 +1319,24 @@ def drafts_batch_connections(limit, save_all):
             generated += 1
 
     console.print(f"\n[green]✓ Generated and saved {generated} drafts![/green]")
+
+
+@drafts.command("add")
+@click.argument("contact_id", type=int)
+@click.option("--file", "path", type=click.Path(exists=True), default=None, help="Read the message from a file")
+@click.option("--text", default="", help="Message text (or pipe it on stdin)")
+@click.option("--type", "draft_type", default="message", help="Draft type (message, connection, follow_up_1, ...)")
+def drafts_add(contact_id, path, text, draft_type):
+    """Save a hand-written draft for a contact so automate message/connect can send it."""
+    if not _app.contact_repo.get(contact_id):
+        console.print(f"[red]Contact #{contact_id} not found[/red]")
+        raise SystemExit(1)
+    body = Path(path).read_text() if path else (text or click.get_text_stream("stdin").read())
+    if not body.strip():
+        console.print("[red]No text given.[/red]")
+        raise SystemExit(1)
+    draft = _app.draft_svc.save_draft(contact_id, draft_type, body.strip(), source="ai", generated_from="hand-written")
+    console.print(f"[green]Draft #{draft['id']} saved for contact #{contact_id}.[/green] Send with: linkedin-cli automate message {contact_id} --draft-id {draft['id']}", soft_wrap=True)
 
 
 @drafts.command("delete")
@@ -3564,6 +3583,25 @@ def _publish(text: str, *, draft_id: int | None, calendar_id: int | None, dry_ru
         console.print(f"Calendar entry #{calendar_id} marked posted.")
 
 
+@cli.group("settings")
+def settings():
+    """Per-installation choices (settings.json in the data dir)."""
+
+
+@settings.command("show")
+def settings_show():
+    for key, value in load_settings(_app.data_dir).items():
+        console.print(f"{key}: {value}")
+
+
+@settings.command("ai")
+@click.argument("state", type=click.Choice(["on", "off"]))
+def settings_ai(state):
+    """Turn model calls on or off. Off means drafts are written by hand and the daily run does not draft."""
+    current = set_setting("ai_enabled", state == "on", _app.data_dir)
+    console.print(f"[green]ai_enabled: {current['ai_enabled']}[/green]" + ("" if state == "on" else "  (run-daily skips drafting; posts add-candidate and drafts add take hand-written text)"))
+
+
 @cli.group("posts")
 def posts():
     """Posts that went out through this tool, with the IDs that join them to metrics."""
@@ -3596,6 +3634,21 @@ def posts_draft_week(count, days):
         console.print("[red]No candidates. A template is never a post, so nothing was saved. Check: linkedin-cli automation doctor --probe-ai[/red]")
         raise SystemExit(1)
     console.print(f"[green]{saved} candidate(s) saved.[/green] Review with: linkedin-cli posts review")
+
+
+@posts.command("add-candidate")
+@click.option("--file", "path", type=click.Path(exists=True), default=None, help="Read the post text from a file")
+@click.option("--text", default="", help="Post text (or pipe it on stdin)")
+@click.option("--style", default="story", help="Angle label kept with the draft")
+def posts_add_candidate(path, text, style):
+    """Queue a hand-written post for the Sunday review, the same way draft-week queues a model's."""
+    body = Path(path).read_text() if path else (text or click.get_text_stream("stdin").read())
+    if not body.strip():
+        console.print("[red]No text given.[/red]")
+        raise SystemExit(1)
+    facts = {"since": "hand", "until": datetime.now().date().isoformat()}
+    draft = _app.content_svc.save_candidate(body, style, facts)
+    console.print(f"[green]Candidate #{draft['id']} queued.[/green] Review with: linkedin-cli posts review")
 
 
 @posts.command("review")

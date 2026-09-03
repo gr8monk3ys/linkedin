@@ -5,81 +5,22 @@ from datetime import datetime
 from linkedin.ai.client import ai_call
 from linkedin.data.repository import ApplicationRepo, ContactRepo, ProfileRepo
 from linkedin.services.contact_service import parse_iso_date
+from linkedin.services.planner import (
+    APPLICATION_STATUS_RULES,
+    APPLICATION_STATUSES,
+    REPAIR_APPLICATION,
+    TERMINAL_APPLICATION_STATUSES,
+    _check_application_status_coverage,
+)
 from linkedin.types import ApplicationDict, ApplicationEventDict
 
-APPLICATION_STATUSES = [
-    "saved",
-    "applied",
-    "phone_screen",
-    "technical",
-    "onsite",
-    "offer_received",
-    "accepted",
-    "rejected",
-    "ghosted",
+__all__ = [
+    "APPLICATION_STATUS_RULES",
+    "APPLICATION_STATUSES",
+    "TERMINAL_APPLICATION_STATUSES",
+    "_check_application_status_coverage",
+    "ApplicationService",
 ]
-
-# Statuses that end the lifecycle; they generate no actions.
-TERMINAL_APPLICATION_STATUSES = frozenset({"accepted", "rejected", "ghosted"})
-
-# What the planner knows about an application status: how long to leave it
-# alone, and what to do once that wait has elapsed. Built the way
-# `contact_service.STATUS_RULES` is, and checked against `APPLICATION_STATUSES`
-# for the same reason — a status with no rule is invisible to the planner
-# forever, which is the hole that made twenty applications unplannable.
-APPLICATION_STATUS_RULES: dict[str, dict] = {
-    "saved": {
-        "after_days": 0,
-        "priority": 60,
-        "action": "apply_to_saved",
-        "reason": "Saved {age} day(s) ago and never applied",
-    },
-    "applied": {
-        "after_days": 10,
-        "priority": 70,
-        "action": "chase_application",
-        "reason": "Applied {age} day(s) ago with no response; follow up or mark ghosted",
-    },
-    "phone_screen": {
-        "after_days": 5,
-        "priority": 85,
-        "action": "chase_interview",
-        "reason": "Phone screen {age} day(s) ago with no next step",
-    },
-    "technical": {
-        "after_days": 5,
-        "priority": 88,
-        "action": "chase_interview",
-        "reason": "Technical round {age} day(s) ago with no next step",
-    },
-    "onsite": {
-        "after_days": 5,
-        "priority": 90,
-        "action": "chase_interview",
-        "reason": "Onsite {age} day(s) ago with no decision",
-    },
-    "offer_received": {
-        "after_days": 2,
-        "priority": 95,
-        "action": "respond_to_offer",
-        "reason": "Offer received {age} day(s) ago; respond",
-    },
-}
-
-
-def _check_application_status_coverage() -> None:
-    """Fail loudly if an application status is neither terminal nor planned for."""
-    covered = set(APPLICATION_STATUS_RULES) | set(TERMINAL_APPLICATION_STATUSES)
-    declared = set(APPLICATION_STATUSES)
-    if covered != declared:
-        raise RuntimeError(
-            "Application status tables disagree with APPLICATION_STATUSES — a status "
-            f"with no rule is invisible to the planner. Missing a rule: {sorted(declared - covered)}; "
-            f"rule for an unknown status: {sorted(covered - declared)}"
-        )
-
-
-_check_application_status_coverage()
 
 
 class ApplicationService:
@@ -183,7 +124,7 @@ class ApplicationService:
                 # No usable timestamp at all. Surface it rather than skipping,
                 # the way a contact with no dates yields `repair_contact`.
                 actions.append(self._application_action(
-                    app, 50, "repair_application",
+                    app, 50, REPAIR_APPLICATION,
                     "No applied_date/created_at; re-import or set a date",
                 ))
                 continue

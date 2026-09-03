@@ -608,6 +608,35 @@ class TestDraftService:
         assert saved["source"] == "ai"
         assert svc.get_draft(saved["id"]) is not None
 
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Hi Alice, may we connect?")
+    def test_generate_for_action_uses_the_planner_row(self, mock_ai, json_repos):
+        """`send_connection` had a rule and no draft branch; run-daily skipped it silently."""
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1))
+
+        drafted = svc.generate_for_action({"action": "send_connection", "contact_id": 1})
+        assert drafted is not None
+        draft_type, result = drafted
+        assert draft_type == "connection"
+        assert result.ok and result.text == "Hi Alice, may we connect?"
+
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Following up")
+    def test_generate_for_action_follow_up_messaged(self, mock_ai, json_repos):
+        svc = self._svc(json_repos)
+        contact_repo, _, profile_repo, *_ = json_repos
+        profile_repo.save(sample_profile())
+        contact_repo.add(sample_contact(name="Alice", id=1, status="messaged"))
+
+        draft_type, result = svc.generate_for_action({"action": "follow_up_messaged", "contact_id": 1})
+        assert draft_type == "follow_up_1"
+        assert result.ok
+
+    def test_generate_for_action_returns_none_when_the_row_has_no_draft(self, json_repos):
+        svc = self._svc(json_repos)
+        assert svc.generate_for_action({"action": "repair_contact", "contact_id": 1}) is None
+
     def test_save_draft_records_template_provenance(self, json_repos):
         """The row must say it is a template, or nothing downstream can refuse it."""
         svc = self._svc(json_repos)
@@ -896,15 +925,15 @@ class TestFollowUpCadence:
 
     def test_a_status_missing_its_rule_raises(self, monkeypatch):
         """Adding a status to the enum and to neither table is what must fail."""
-        from linkedin.services import contact_service
+        from linkedin.services import planner
 
         class Ghosted(str, Enum):
             GHOSTED = "ghosted"
             HIRED = "hired"
 
-        monkeypatch.setattr(contact_service, "ContactStatus", Ghosted)
+        monkeypatch.setattr(planner, "ContactStatus", Ghosted)
         with pytest.raises(RuntimeError, match="invisible to the planner"):
-            contact_service._check_status_coverage()
+            planner._check_status_coverage()
 
     def test_cadence_and_action_cannot_drift_apart(self):
         """Both live in one row, so a status can never have one without the other."""
@@ -913,18 +942,65 @@ class TestFollowUpCadence:
         for status, rule in STATUS_RULES.items():
             assert {"cadence_days", "after_days", "priority", "action", "reason"} <= set(rule), status
 
-    def test_every_rule_action_is_renderable_by_the_cli(self):
-        """A rule whose action has no label/command renders as a bare slug."""
-        from linkedin.cli import NEXT_ACTION_COMMANDS, NEXT_ACTION_LABELS
-        from linkedin.services.contact_service import STATUS_RULES
+    def test_every_emittable_action_has_a_complete_row(self):
+        """An action with a rule but no row rendered as a bare slug and drafted
+        nothing: `send_connection` and `follow_up_messaged` were exactly that."""
+        from linkedin.services.planner import ACTIONS, _check_action_coverage, emittable_actions
 
-        actions = {r["action"] for r in STATUS_RULES.values()} | {
-            "follow_up_overdue",
-            "follow_up_today",
-            "repair_contact",
-        }
-        assert actions <= set(NEXT_ACTION_LABELS)
-        assert actions <= set(NEXT_ACTION_COMMANDS)
+        assert emittable_actions() == set(ACTIONS)
+        for name, row in ACTIONS.items():
+            assert {"label", "command", "draft"} <= set(row), name
+        _check_action_coverage()
+
+    def test_an_action_with_a_rule_and_no_row_raises(self, monkeypatch):
+        from linkedin.services import planner
+
+        rules = dict(planner.STATUS_RULES)
+        rules["not_contacted"] = {**rules["not_contacted"], "action": "wave_hello"}
+        monkeypatch.setattr(planner, "STATUS_RULES", rules)
+        with pytest.raises(RuntimeError, match="wave_hello"):
+            planner._check_action_coverage()
+
+    def test_a_row_nothing_emits_raises(self, monkeypatch):
+        from linkedin.services import planner
+
+        actions = dict(planner.ACTIONS)
+        actions["retired"] = {"label": "x", "command": "x", "draft": None}
+        monkeypatch.setattr(planner, "ACTIONS", actions)
+        with pytest.raises(RuntimeError, match="retired"):
+            planner._check_action_coverage()
+
+    def test_date_driven_actions_are_in_the_table(self, json_repos):
+        """The overdue/today/repair actions come from date branches, not rules,
+        so the import-time check cannot see them; walk the branches instead."""
+        from linkedin.services.contact_service import ContactService
+        from linkedin.services.planner import ACTIONS
+
+        contact_repo, company_repo, *_ = json_repos
+        svc = ContactService(contact_repo, company_repo)
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        today = datetime.now().strftime("%Y-%m-%d")
+        contact_repo.add(sample_contact(id=1, status="connected", follow_up_date=yesterday))
+        contact_repo.add(sample_contact(id=2, status="connected", follow_up_date=today))
+        stranded = sample_contact(id=3, status="connected")
+        stranded.pop("created_at", None)
+        stranded.pop("last_contact", None)
+        stranded.pop("follow_up_date", None)
+        contact_repo.add(stranded)
+
+        emitted = {a["action"] for a in svc.get_next_actions(limit=50)}
+        assert {"follow_up_overdue", "follow_up_today", "repair_contact"} <= emitted
+        assert emitted <= set(ACTIONS)
+
+    def test_every_status_rule_action_can_draft_or_says_so(self):
+        """The two that used to draft nothing must now draft; the two that
+        legitimately have no draft say None rather than being absent."""
+        from linkedin.services.planner import draft_spec_for
+
+        assert draft_spec_for("send_connection")["generator"] == "generate_connection"
+        assert draft_spec_for("follow_up_messaged")["generator"] == "generate_follow_up"
+        assert draft_spec_for("call_follow_up") is None
+        assert draft_spec_for("repair_contact") is None
 
 
 class TestRepairContacts:

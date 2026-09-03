@@ -5,84 +5,18 @@ import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from linkedin.constants import ContactStatus
 from linkedin.data.repository import CompanyRepo, ContactRepo
+from linkedin.services.planner import (
+    FOLLOW_UP_OVERDUE,
+    FOLLOW_UP_TODAY,
+    REPAIR_CONTACT,
+    STATUS_RULES,
+    TERMINAL_STATUSES,
+    _check_status_coverage,
+)
 from linkedin.types import ContactDict
 
-# Statuses that end the pipeline; they carry no follow-up and generate no actions.
-TERMINAL_STATUSES = frozenset({"hired", "rejected"})
-
-# Everything the planner knows about a pipeline status, in one row per status:
-# how long to wait before the contact is due (`cadence_days`, which seeds
-# `follow_up_date` on add and on every status change), and what to do once that
-# wait has elapsed. Keeping cadence and action in the same row is what makes a
-# status with one and not the other unrepresentable — that hole is what made
-# `messaged` contacts invisible to the planner. `_check_status_coverage()` closes
-# the other half: a status added to `ContactStatus` and to neither table here.
-STATUS_RULES: dict[str, dict] = {
-    "not_contacted": {
-        "cadence_days": 0,
-        "after_days": 0,
-        "priority": 60,
-        "action": "send_connection",
-        "reason": "Added {age} day(s) ago; send a connection request",
-    },
-    "connection_sent": {
-        "cadence_days": 7,
-        "after_days": 14,
-        "priority": 85,
-        "action": "stale_connection_sent",
-        "reason": "Connection request sent {age} day(s) ago with no response",
-    },
-    "connected": {
-        "cadence_days": 2,
-        "after_days": 7,
-        "priority": 70,
-        "action": "send_first_message",
-        "reason": "Connected {age} day(s) ago; send first message",
-    },
-    "messaged": {
-        "cadence_days": 5,
-        "after_days": 5,
-        "priority": 75,
-        "action": "follow_up_messaged",
-        "reason": "Messaged {age} day(s) ago with no reply; follow up",
-    },
-    "responded": {
-        "cadence_days": 2,
-        "after_days": 3,
-        "priority": 65,
-        "action": "schedule_call",
-        "reason": "Responded {age} day(s) ago; propose a call",
-    },
-    "call_scheduled": {
-        "cadence_days": 7,
-        "after_days": 7,
-        "priority": 68,
-        "action": "call_follow_up",
-        "reason": "Call scheduled {age} day(s) ago; confirm or debrief",
-    },
-}
-
-
-def _check_status_coverage() -> None:
-    """Fail loudly if a pipeline status is neither terminal nor planned for.
-
-    `ContactStatus` is where a new status gets added, and a status the planner has
-    no rule for is invisible to it forever. Checking the tables against the enum
-    rather than against each other is what makes that impossible to ship.
-    """
-    known = set(STATUS_RULES) | set(TERMINAL_STATUSES)
-    declared = {status.value for status in ContactStatus}
-    if known != declared:
-        raise RuntimeError(
-            "Pipeline status tables disagree with ContactStatus — a status with no "
-            f"rule is invisible to the planner. Missing a rule: {sorted(declared - known)}; "
-            f"rule for an unknown status: {sorted(known - declared)}"
-        )
-
-
-_check_status_coverage()
+__all__ = ["STATUS_RULES", "TERMINAL_STATUSES", "_check_status_coverage", "ContactService", "parse_iso_date"]
 
 CAMPAIGN_LIBRARY: dict[str, list[dict]] = {
     "networking_21d": [
@@ -373,12 +307,12 @@ class ContactService:
 
         for contact, _, days_overdue in due_data["overdue"]:
             actions.append(self._action(
-                contact, 100 + min(days_overdue, 30), "follow_up_overdue",
+                contact, 100 + min(days_overdue, 30), FOLLOW_UP_OVERDUE,
                 f"Follow-up overdue by {days_overdue} day(s)",
             ))
 
         for contact, _, _ in due_data["due_today"]:
-            actions.append(self._action(contact, 95, "follow_up_today", "Follow-up due today"))
+            actions.append(self._action(contact, 95, FOLLOW_UP_TODAY, "Follow-up due today"))
 
         # No loop over due_data["stale"]: STATUS_RULES["connection_sent"] emits the
         # same action from the same threshold, and the dedupe below discarded one of
@@ -392,7 +326,7 @@ class ContactService:
                 # No timestamps at all — the contact is stranded rather than fresh.
                 # Surface it so `contacts repair` gets run instead of it sitting invisible.
                 actions.append(self._action(
-                    contact, 50, "repair_contact",
+                    contact, 50, REPAIR_CONTACT,
                     "No created_at/last_contact; run `linkedin-cli contacts repair`",
                 ))
                 continue

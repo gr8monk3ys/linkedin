@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/gr8monk3ys/linkedin/compare/v0.1.0...v0.1.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* read the rebuilt home feed and profile page by shape ([#63](https://github.com/gr8monk3ys/linkedin/issues/63)) ([1483dbe](https://github.com/gr8monk3ys/linkedin/commit/1483dbe840a1722b813e9833305cfb340b632e9d))
+* scroll before reading a profile, and never mistake the footer for About ([#64](https://github.com/gr8monk3ys/linkedin/issues/64)) ([9d1fa26](https://github.com/gr8monk3ys/linkedin/commit/9d1fa26769e5db41b216e8c1744b652a5f6d6a51))
+
 ## 0.1.0 (2026-09-03)
 
 

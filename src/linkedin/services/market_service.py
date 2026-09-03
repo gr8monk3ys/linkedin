@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 
 import linkedin.data.json_store as json_store
-from linkedin.ai.client import AIClientError, generate_with_ai
+from linkedin.ai.client import ai_call
 from linkedin.data.repository import ProfileRepo
 
 
@@ -42,11 +42,8 @@ Include:
 
         Keep it actionable and under 400 words."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=600)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=600)
+        return result.error, result.text
 
     def estimate_salary(self, role: str = "", location: str = "") -> tuple[str | None, str]:
         """Get AI salary estimate."""
@@ -72,11 +69,8 @@ Provide:
 
         Be specific with numbers. Keep under 300 words."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=500)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=500)
+        return result.error, result.text
 
     def analyze_trends(self, industry: str = "") -> tuple[str | None, str]:
         """Get AI hiring trend analysis."""
@@ -100,11 +94,8 @@ Include:
 
         Keep it actionable and under 350 words."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=500)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=500)
+        return result.error, result.text
 
     def add_posting(self, posting: dict) -> dict:
         """Add a manually tracked job posting."""

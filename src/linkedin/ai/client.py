@@ -1,11 +1,68 @@
-"""AI client for generating text using Claude API."""
+"""AI client for generating text using Claude API.
+
+Two functions. `generate_with_ai` is the raw call: it raises `AIClientError`
+and is what tests patch. `ai_call` is what services use: it never raises, and
+returns an `AIResult` that says whether the text came from the model or from
+an offline fallback. Fallback-ness is a property of the value, not of a flag
+somewhere else — the flag was how 150 scheduled runs saved templates as drafts.
+"""
 
 import os
 import time
+from dataclasses import dataclass
+
+DEFAULT_MODEL = "claude-opus-5"
 
 
 class AIClientError(RuntimeError):
     """Raised when AI text generation fails."""
+
+
+@dataclass(frozen=True)
+class AIResult:
+    """What every model call returns.
+
+    `text` is the model output, or the fallback text when `was_fallback` is
+    True. `error` is set when there is no text at all; a fallback result keeps
+    the underlying error in `error` *and* carries text, so callers can say why
+    they are showing a template. Truthy only when there is text.
+    """
+
+    text: str = ""
+    error: str | None = None
+    was_fallback: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.text) and not self.was_fallback
+
+    @property
+    def source(self) -> str:
+        """The provenance to stamp on anything persisted from this result."""
+        return "template" if self.was_fallback else "ai"
+
+    def __bool__(self) -> bool:
+        return bool(self.text)
+
+
+def fallback_enabled() -> bool:
+    value = os.environ.get("LINKEDIN_AI_FALLBACK_ENABLED", "1").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def ai_call(prompt: str, *, max_tokens: int = 500, fallback: str | None = None) -> AIResult:
+    """Call the model and return an `AIResult`; never raises.
+
+    With `fallback` given and `LINKEDIN_AI_FALLBACK_ENABLED` not off, a failed
+    call returns the fallback text with `was_fallback=True` and the error kept.
+    Without a fallback, a failed call returns an empty result carrying the error.
+    """
+    try:
+        return AIResult(text=generate_with_ai(prompt, max_tokens=max_tokens))
+    except AIClientError as exc:
+        if fallback is not None and fallback_enabled():
+            return AIResult(text=fallback, error=str(exc), was_fallback=True)
+        return AIResult(error=str(exc))
 
 
 def _int_env(name: str, default: int) -> int:
@@ -61,12 +118,13 @@ def generate_with_ai(
     except Exception as exc:
         raise AIClientError(f"AI generation failed: {exc}. Make sure ANTHROPIC_API_KEY is set.") from exc
 
+    model = os.environ.get("LINKEDIN_AI_MODEL", "").strip() or DEFAULT_MODEL
     attempts = retry_count + 1
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=model,
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
                 timeout=timeout,

@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from linkedin.ai.client import AIClientError, generate_with_ai
+from linkedin.ai.client import ai_call
 from linkedin.data.repository import ApplicationRepo, ContactRepo, ProfileRepo
 from linkedin.services.contact_service import parse_iso_date
 from linkedin.types import ApplicationDict, ApplicationEventDict
@@ -293,11 +293,8 @@ Instructions:
 - Do not add fake achievements
 - Maximum 8 bullets"""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=800)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=800)
+        return result.error, result.text
 
     def cover_letter(self, application_id: int) -> tuple[str | None, str]:
         """AI-generate a cover letter for this application."""
@@ -330,11 +327,8 @@ Requirements:
 - Do not start with "I am writing to apply"
 Output only the letter text."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=800)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=800)
+        return result.error, result.text
 
     def skills_gap(self, application_id: int) -> tuple[str | None, str]:
         """AI-generate a structured skills gap analysis vs the job description."""
@@ -377,8 +371,5 @@ Output a structured analysis:
 
 Be specific and actionable. Do not hallucinate skills the candidate hasn't mentioned."""
 
-        try:
-            result = generate_with_ai(prompt, max_tokens=600)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, result
+        result = ai_call(prompt, max_tokens=600)
+        return result.error, result.text

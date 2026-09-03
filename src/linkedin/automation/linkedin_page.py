@@ -968,8 +968,18 @@ class LinkedInPage:
                 else:
                     self._record_miss("profile_about")
                 return data
-            main = self.page.locator("main")
-            data = _profile_from_text(main.first.inner_text() if main.count() else "")
+            # Sections below the fold are lazy-loaded: without scrolling, About is
+            # absent and the footer's "About" link list is the only match (2026-09-03).
+            for y in sel.PROFILE_SCROLL_STOPS:
+                try:
+                    self.page.evaluate(f"window.scrollTo(0, {y})")
+                    self.page.wait_for_timeout(sel.PROFILE_SCROLL_PAUSE_MS)
+                except Exception:
+                    break
+            root = self.page.locator("main")
+            if root.count() == 0:
+                root = self.page.locator("body")
+            data = _profile_from_text(root.first.inner_text() if root.count() else "")
             if not data.get("name"):
                 for name in ("profile_name", "profile_headline", "profile_about"):
                     self._record_miss(name)
@@ -995,6 +1005,9 @@ def _metric_from_text(text: str, name: str) -> int | None:
 
 
 _PRONOUNS_OR_DEGREE = re.compile(r"^(\w+/\w+|[•·]\s*(1st|2nd|3rd)\+?)$", re.I)
+#: The page footer also has a line reading "About"; a block that starts with
+#: one of these is the footer's link list, not the profile's About section.
+_FOOTER_LINES = {"Accessibility", "Talent Solutions", "Community Guidelines", "Careers", "Privacy & Terms", "User Agreement", "Ad Choices"}
 _PROFILE_SECTION_HEADINGS = {"Activity", "Experience", "Education", "Skills", "Projects", "Show all", "Analytics", "Featured", "Licenses & certifications"}
 
 
@@ -1012,13 +1025,13 @@ def _profile_from_text(text: str) -> dict[str, str]:
         i += 1
     if i < len(lines) and lines[i] not in _PROFILE_SECTION_HEADINGS:
         data["location"] = lines[i]
-    if "About" in lines:
-        start = lines.index("About") + 1
+    for start in (i + 1 for i, l in enumerate(lines) if l == "About"):
         body = []
         for l in lines[start:]:
-            if l in _PROFILE_SECTION_HEADINGS or l.startswith("…"):
+            if l in _PROFILE_SECTION_HEADINGS or l.startswith("…") or l in _FOOTER_LINES:
                 break
             body.append(l)
-        if body:
+        if body and lines[start] not in _FOOTER_LINES:
             data["about"] = "\n\n".join(body)
+            break
     return data

@@ -199,6 +199,10 @@ JOB_EASY_APPLY = (
 #: `feed-shared-update-v2`, no data-urn). Cards are found by shape — the
 #: smallest ancestor of a reaction button that also holds a Comment button —
 #: and tagged with this attribute so like/comment can address them by index.
+#: Profile sections lazy-load on scroll; these stops reach About on a long profile.
+PROFILE_SCROLL_STOPS = (600, 1200, 2000, 3000)
+PROFILE_SCROLL_PAUSE_MS = 700
+
 FEED_CARD_TAG = "data-linkedin-cli-card"
 FEED_POSTS_SCRIPT = """(maxPosts) => {
   const TAG = 'data-linkedin-cli-card';

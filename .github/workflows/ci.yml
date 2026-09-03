@@ -43,5 +43,5 @@ jobs:
         run: |
           mkdir -p "$HOME"
           uv run linkedin-cli --version
-          uv run linkedin-cli health --json --time 09:00
+          uv run linkedin-cli automation doctor --json --time 09:00
           uv run linkedin-cli run-daily --json --idempotency-key ci-smoke --retry-attempts 0 --retry-backoff-seconds 0

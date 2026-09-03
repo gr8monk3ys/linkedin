@@ -541,7 +541,7 @@ class TestDashboard:
         assert payload["actions"] == []
 
     @patch("urllib.request.urlopen")
-    @patch("linkedin.cli._run_daily_cycle", side_effect=RuntimeError("boom"))
+    @patch("linkedin.services.daily_run.DailyRun.cycle", side_effect=RuntimeError("boom"))
     def test_run_daily_failure_triggers_webhook(self, _mock_run_daily_cycle, mock_urlopen, runner, temp_data_dir):
         """run-daily should notify webhook on failures."""
         mock_resp = MagicMock()
@@ -558,7 +558,7 @@ class TestDashboard:
         mock_urlopen.assert_called_once()
 
     @patch("urllib.request.urlopen")
-    @patch("linkedin.cli._run_daily_cycle", side_effect=RuntimeError("boom"))
+    @patch("linkedin.services.daily_run.DailyRun.cycle", side_effect=RuntimeError("boom"))
     def test_run_daily_failure_streak_alert(self, _mock_run_daily_cycle, mock_urlopen, runner, temp_data_dir):
         """run-daily should escalate webhook payload when failure streak threshold is reached."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
@@ -630,7 +630,7 @@ class TestDashboard:
         body = json.loads(req.data.decode("utf-8"))
         assert body["payload"]["status"] == "recovered_after_failure_streak"
 
-    @patch("linkedin.cli._run_daily_with_reliability")
+    @patch("linkedin.services.daily_run.DailyRun._attempt")
     def test_run_daily_retries_until_success(self, mock_run_reliable, runner, temp_data_dir):
         """run-daily should retry failed runs and return success if recovered."""
         mock_run_reliable.side_effect = [
@@ -656,7 +656,7 @@ class TestDashboard:
         assert payload["attempts"] == 2
         assert mock_run_reliable.call_count == 2
 
-    @patch("linkedin.cli._run_daily_with_reliability")
+    @patch("linkedin.services.daily_run.DailyRun._attempt")
     def test_run_daily_retry_exhaustion(self, mock_run_reliable, runner, temp_data_dir):
         """run-daily should return failed after retries are exhausted."""
         mock_run_reliable.return_value = {"status": "failed", "error": "still failing"}
@@ -672,28 +672,33 @@ class TestDashboard:
         assert mock_run_reliable.call_count == 3
 
     @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
-    def test_health_json_reports_schedule_and_api_key(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
-        """health should report schedule validity and API key state."""
+    def test_doctor_json_reports_schedule_and_api_key(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
+        """doctor is the one check list (health was a second copy with its own names)."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        result = runner.invoke(cli, ["health", "--json", "--time", "09:00"])
+        result = runner.invoke(cli, ["automation", "doctor", "--json", "--time", "09:00"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
         checks = {check["name"]: check for check in payload["checks"]}
         assert checks["schedule_time"]["status"] == "ok"
         assert checks["anthropic_api_key"]["status"] == "warn"
 
+    def test_health_command_is_gone(self, runner):
+        """There is one check list now; a second command over it drifted once and would again."""
+        assert runner.invoke(cli, ["health", "--json"]).exit_code != 0
+
     @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
-    def test_health_detects_active_lock(self, _mock_read_cron, runner, temp_data_dir):
-        """health should flag an active run lock."""
+    def test_doctor_detects_active_lock(self, _mock_read_cron, runner, temp_data_dir):
+        """doctor should flag an active run lock."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
         lock_file = temp_data_dir / "run_daily.lock"
         lock_file.write_text(json.dumps({"pid": 5678, "created_at": datetime.now().isoformat()}))
 
-        result = runner.invoke(cli, ["health", "--json"])
+        result = runner.invoke(cli, ["automation", "doctor", "--json"])
         assert result.exit_code == 0
         payload = json.loads(result.output)
         checks = {check["name"]: check for check in payload["checks"]}
         assert checks["run_lock"]["status"] == "warn"
+        assert {"data_dir", "schedule_time", "crontab", "env_file", "anthropic_api_key", "run_lock", "idempotency_state", "run_history", "notify_webhook"} <= set(checks)
 
     def test_run_history_empty(self, runner, temp_data_dir):
         """run-history should show empty-state guidance without logs."""

@@ -102,7 +102,7 @@ class ApplicationService:
         """Return prioritized next actions across the application lifecycle.
 
         Deliberately separate from `contact_service.get_next_actions`: the two
-        walk different id spaces, and `cli._daily_run_status` classifies a run by
+        walk different id spaces, and `DailyRun.classify` classifies a run by
         whether the *contact* planner produced anything. Merging these in would
         let a due application mask a broken contact planner — the exact failure
         that guard was added to catch.

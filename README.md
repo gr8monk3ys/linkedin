@@ -296,7 +296,7 @@ linkedin-cli automation env sync  # Sync shell secrets to cron env file (~/.link
 linkedin-cli automation env status  # Verify cron env file + key presence
 linkedin-cli automation doctor --fix --run-smoke  # Diagnose, repair, and smoke-test automation
 linkedin-cli automation unschedule  # Remove managed schedule
-linkedin-cli health --json  # Preflight checks (API key, lock, schedule, history, webhook)
+linkedin-cli automation doctor --json  # Preflight checks (API key, lock, schedule, history, webhook); --fix applies safe ones
 linkedin-cli run-history --status failed --limit 50 --json  # Inspect recent failed runs
 ```
 

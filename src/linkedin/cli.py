@@ -13,7 +13,6 @@ import json
 import os
 import shlex
 import time
-import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
@@ -46,12 +45,8 @@ from linkedin.scheduling.crontab import (
     build_cron_shell_command,
     build_managed_cron_block,
     build_managed_cron_job_line,
-    cron_env_file_from_job_line,
-    cron_schedule_time_from_job_line,
     default_automation_env_file,
     env_file_status,
-    extract_managed_cron_job_line,
-    find_unmanaged_run_daily_cron_jobs,
     read_user_crontab_lines,
     strip_legacy_scheduler_comment_lines,
     strip_managed_cron_block,
@@ -74,6 +69,8 @@ from linkedin.services.contact_service import (
     import_search_results,
     parse_iso_date,
 )
+from linkedin.services.daily_run import DailyRun, RunConfig, build_plan
+from linkedin.services.diagnostics import diagnostics, overall_status
 from linkedin.services.inbox_service import inbound_from_strangers, review_proposals, update_thread_index
 from linkedin.services.planner import command_for, label_for
 from linkedin.services.resume_service import (
@@ -87,18 +84,9 @@ from linkedin.services.resume_service import (
 from linkedin.services.run_state import (
     acquire_run_lock,
     append_run_log,
-    effective_idempotency_key,
     entry_timestamp,
-    failure_streak,
-    get_last_failure_streak_notified,
-    health_lock_check,
-    idempotency_key_seen,
     load_run_history_entries,
-    load_run_state,
-    record_idempotency_key,
     release_run_lock,
-    send_run_notification,
-    set_last_failure_streak_notified,
 )
 
 console = Console()
@@ -166,319 +154,76 @@ def save_inbox_proposals(proposals: list[dict]) -> None:
     save_json(_app.data_dir.inbox_proposals, proposals)
 
 
-def _save_daily_plan_recap(
-    profile: dict,
-    actions: list[dict],
-    postings: list[dict],
-    template_rows: list[tuple[str, dict]],
-    recap_dir: str = "",
-    application_actions: list[dict] | None = None,
-    proposals: list[dict] | None = None,
-) -> Path:
-    """Persist a markdown snapshot of the daily plan and return its path."""
-    application_actions = application_actions or []
-    proposals = proposals or []
-    out_dir = Path(recap_dir) if recap_dir else _app.data_dir.recaps
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _daily_run(config: RunConfig, *, show_drafts: bool = True, as_json: bool = False) -> DailyRun:
+    """A DailyRun wired to this process's App and console."""
+    def on_draft(entry: dict) -> None:
+        console.print(f"\n[bold cyan]Auto Draft for #{entry['contact_id']} ({entry['name']}):[/bold cyan]")
+        console.print(Panel(entry["content"], border_style="cyan"))
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    recap_path = out_dir / f"daily_plan_{timestamp}.md"
+    def on_draft_failure(contact_id: int, why: str) -> None:
+        console.print(f"[yellow]Could not generate draft for contact #{contact_id}: {why}[/yellow]")
 
-    lines = [
-        "# Daily Plan",
-        f"- Generated: {datetime.now().isoformat(timespec='seconds')}",
-        "",
-        "## Focus",
-        f"- Name: {profile.get('name', 'Not set')}" if profile else "- Name: Not set",
-        f"- Target Role: {profile.get('target_role', 'Not set')}" if profile else "- Target Role: Not set",
-        "",
-        "## Priority Actions",
-    ]
+    def on_retry(attempt: int, max_attempts: int, backoff: float) -> None:
+        console.print(f"[yellow]Run failed (attempt {attempt}/{max_attempts}); retrying in {backoff:.1f}s...[/yellow]")
 
-    if not actions:
-        lines.append("- No urgent contact actions today.")
-    else:
-        for action in actions:
-            lines.append(
-                f"- [{action['priority']}] {action.get('name', 'Unknown')} ({action.get('company', '')})"
-                f" | {label_for(action['action'])}"
-                f" | `{command_for(action['action'], action['contact_id'])}`"
-            )
-
-    lines.extend(["", "## Inbound (needs your confirmation)"])
-    if not proposals:
-        lines.append("- Nothing new. Run `linkedin-cli inbox sync` to check.")
-    else:
-        for proposal in proposals:
-            flag = " [low confidence]" if proposal.get("confidence") == "low" else ""
-            lines.append(
-                f"- {proposal.get('name', 'Unknown')}: {proposal.get('from_status', '')}"
-                f" -> {proposal.get('to_status', '')}{flag} | {proposal.get('evidence', '')}"
-            )
-        lines.append("- Review with: `linkedin-cli inbox review`")
-
-    lines.extend(["", "## Applications"])
-    if not application_actions:
-        lines.append("- No applications need attention today.")
-    else:
-        for action in application_actions:
-            lines.append(
-                f"- [{action['priority']}] {action.get('title', 'Unknown')} @ {action.get('company', '')}"
-                f" | {label_for(action['action'])}"
-                f" | `{command_for(action['action'], action['application_id'])}`"
-            )
-
-    lines.extend(["", "## Best-Match Opportunities"])
-    if not postings:
-        lines.append("- No postings above threshold.")
-    else:
-        for posting in postings:
-            reason = posting.get("match_reasons", ["-"])[0]
-            lines.append(
-                f"- [{posting.get('match_score', 0)}] {posting.get('title', 'Unknown')} @ {posting.get('company', 'Unknown')}"
-                f" ({posting.get('location', '-')}) - {reason}"
-            )
-
-    lines.extend(["", "## Best Templates"])
-    if not template_rows:
-        lines.append("- No template performance data yet.")
-    else:
-        for template_type, template in template_rows:
-            lines.append(
-                f"- {template_type}: #{template.get('id')} {template.get('name', '')} "
-                f"(variant {template.get('variant', 'A')}, rate {template.get('response_rate', '0%')}, "
-                f"uses {template.get('usage_count', 0)})"
-            )
-
-    recap_path.write_text("\n".join(lines) + "\n")
-    return recap_path
-
-
-def _response_rate_from_counts(template: dict) -> str:
-    usage = template.get("usage_count", 0)
-    responses = template.get("response_count", 0)
-    if not usage:
-        return "0%"
-    return f"{(responses / usage * 100):.1f}%"
-
-
-def _build_daily_plan_data(actions_limit: int, postings_limit: int, min_posting_score: int) -> tuple[dict, list[tuple[str, dict]]]:
-    profile = _app.profile_svc.get_profile()
-    actions = _app.contact_svc.get_next_actions(limit=actions_limit)
-    postings = _app.market_svc.list_postings(limit=postings_limit, min_score=min_posting_score)
-    application_actions = _app.application_svc.get_application_actions(limit=actions_limit)
-    proposals = load_inbox_proposals()
-
-    template_rows: list[tuple[str, dict]] = []
-    template_recommendations: list[dict] = []
-    for template_type in ("connection", "message", "follow_up"):
-        best = _app.template_svc.suggest_best(template_type)
-        if not best:
-            continue
-        best_entry = dict(best)
-        best_entry["response_rate"] = best_entry.get("response_rate") or _response_rate_from_counts(best_entry)
-        template_rows.append((template_type, best_entry))
-        template_recommendations.append({"type": template_type, **best_entry})
-
-    return {
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "profile": profile,
-        "actions": actions,
-        "application_actions": application_actions,
-        "inbox_proposals": proposals,
-        "postings": postings,
-        "templates": template_recommendations,
-    }, template_rows
+    return DailyRun(
+        _app.get(),
+        config,
+        on_draft=on_draft if show_drafts else None,
+        on_draft_failure=on_draft_failure if show_drafts else None,
+        on_retry=None if as_json else on_retry,
+    )
 
 
 def _render_daily_plan(data: dict) -> None:
-    profile = data["profile"]
-    actions = data["actions"]
-    postings = data["postings"]
-    template_recommendations = data["templates"]
-
+    """The terminal view: one Rich table per section, numbering the ones that always show."""
+    plan = build_plan(data)
+    profile = data.get("profile")
     console.print("\n[bold]📌 Daily Plan[/bold]\n")
     if profile:
-        console.print(
-            f"[bold]Focus:[/bold] {profile.get('target_role', 'Role not set')} | "
-            f"{profile.get('name', 'Profile')}"
-        )
+        console.print(f"[bold]Focus:[/bold] {profile.get('target_role', 'Role not set')} | {profile.get('name', 'Profile')}")
     else:
         console.print("[yellow]Set up profile for better recommendations: linkedin-cli profile setup[/yellow]")
 
-    console.print("\n[bold]1) Priority Actions[/bold]")
-    if not actions:
-        console.print("  [dim]No urgent contact actions today.[/dim]")
-    else:
-        action_table = Table()
-        action_table.add_column("Priority", style="dim")
-        action_table.add_column("Contact", style="cyan")
-        action_table.add_column("Action", style="yellow")
-        action_table.add_column("Command", style="green")
-        for action in actions:
-            action_table.add_row(
-                str(action["priority"]),
-                f"{action['name']} ({action.get('company', '')})".strip(),
-                label_for(action["action"]),
-                command_for(action["action"], action["contact_id"]),
-            )
-        console.print(action_table)
-
-    proposals = data.get("inbox_proposals") or []
-    if proposals:
-        console.print("\n[bold]Inbound — needs your confirmation[/bold]")
-        inbound_table = Table()
-        inbound_table.add_column("Contact", style="cyan")
-        inbound_table.add_column("Transition", style="yellow")
-        inbound_table.add_column("Evidence", style="dim")
-        for proposal in proposals:
-            marker = " [red](low)[/red]" if proposal.get("confidence") == "low" else ""
-            inbound_table.add_row(
-                proposal.get("name", "Unknown"),
-                f"{proposal.get('from_status', '')} → {proposal.get('to_status', '')}{marker}",
-                proposal.get("evidence", ""),
-            )
-        console.print(inbound_table)
-        console.print("  [dim]Apply with: linkedin-cli inbox review[/dim]")
-
-    application_actions = data.get("application_actions") or []
-    if application_actions:
-        console.print("\n[bold]Applications[/bold]")
-        app_table = Table()
-        app_table.add_column("Priority", style="dim")
-        app_table.add_column("Role", style="cyan")
-        app_table.add_column("Action", style="yellow")
-        app_table.add_column("Command", style="green")
-        for action in application_actions:
-            app_table.add_row(
-                str(action["priority"]),
-                f"{action.get('title', '')} @ {action.get('company', '')}",
-                label_for(action["action"]),
-                command_for(action["action"], action["application_id"]),
-            )
-        console.print(app_table)
-
-    console.print("\n[bold]2) Best-Match Opportunities[/bold]")
-    if not postings:
-        console.print("  [dim]No postings above score threshold. Add/import postings in market commands.[/dim]")
-    else:
-        postings_table = Table()
-        postings_table.add_column("Score", style="green")
-        postings_table.add_column("Role", style="cyan")
-        postings_table.add_column("Company", style="white")
-        postings_table.add_column("Why", style="yellow")
-        for posting in postings:
-            reason = posting.get("match_reasons", ["-"])[0]
-            postings_table.add_row(
-                str(posting.get("match_score", 0)),
-                posting.get("title", "")[:35],
-                posting.get("company", "")[:20],
-                reason[:55],
-            )
-        console.print(postings_table)
-
-    console.print("\n[bold]3) Best Templates[/bold]")
-    if not template_recommendations:
-        console.print("  [dim]No template performance data yet. Use templates and record responses.[/dim]")
-    else:
-        template_table = Table()
-        template_table.add_column("Type", style="cyan")
-        template_table.add_column("Template", style="white")
-        template_table.add_column("Variant", style="dim")
-        template_table.add_column("Rate", style="green")
-        template_table.add_column("Uses", style="yellow")
-        for template in template_recommendations:
-            template_table.add_row(
-                template["type"],
-                f"#{template['id']} {template.get('name', '')[:24]}",
-                template.get("variant", "A"),
-                template.get("response_rate", "0%"),
-                str(template.get("usage_count", 0)),
-            )
-        console.print(template_table)
-
-
-def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show_output: bool = True) -> dict:
-    """Draft for each planned action.
-
-    A template counts as a failure here, not a draft: this path runs
-    unattended, and nobody is at the keyboard to edit a template before it is
-    sent. Failing the run is what makes an invalid API key visible.
-    """
-    generated = 0
-    saved = 0
-    failed = 0
-    templates = 0
-    drafts: list[dict] = []
-
-    for action in actions:
-        contact_id = action["contact_id"]
-        drafted = _app.draft_svc.generate_for_action(action)
-        if drafted is None:
+    number = 0
+    for section in plan.sections:
+        if section.optional and not section.rows:
             continue
-        draft_type, result = drafted
-
-        if not result.ok:
-            failed += 1
-            templates += int(result.was_fallback)
-            if show_output:
-                why = result.error or "no text"
-                what = "only an offline template" if result.was_fallback else "no draft"
-                console.print(f"[yellow]Could not generate draft for contact #{contact_id}: {what} ({why})[/yellow]")
+        if section.optional:
+            console.print(f"\n[bold]{section.title}[/bold]")
+        else:
+            number += 1
+            console.print(f"\n[bold]{number}) {section.title}[/bold]")
+        if not section.rows:
+            console.print(f"  [dim]{section.empty}[/dim]")
             continue
-        draft_text = result.text
-
-        generated += 1
-        draft_entry = {
-            "contact_id": contact_id,
-            "name": action.get("name", ""),
-            "generated_from": action["action"],
-            "draft_type": draft_type,
-            "content": draft_text,
-        }
-        drafts.append(draft_entry)
-
-        if show_output:
-            console.print(f"\n[bold cyan]Auto Draft for #{contact_id} ({action['name']}):[/bold cyan]")
-            console.print(Panel(draft_text, border_style="cyan"))
-
-        if save_drafts:
-            _app.draft_svc.save_draft(
-                contact_id, draft_type, draft_text, source=result.source, generated_from=action["action"]
-            )
-            saved += 1
-
-    if show_output:
-        console.print(
-            f"\n[green]Generated {generated} draft(s)[/green]"
-            + (f", saved {saved}" if save_drafts else "")
-            + (f", failed {failed}" if failed else "")
-        )
-
-    return {"generated": generated, "saved": saved, "failed": failed, "templates": templates, "drafts": drafts}
+        table = Table()
+        for column in section.columns:
+            table.add_column(column)
+        for row in section.rows:
+            table.add_row(*row)
+        console.print(table)
+        if section.hint:
+            console.print(f"  [dim]{section.hint}[/dim]")
 
 
 def _render_generated_drafts(draft_summary: dict) -> None:
     drafts = draft_summary.get("drafts", [])
+    console.print("\n[bold]Generated Drafts[/bold]")
     if not drafts:
-        console.print("\n[bold]4) Generated Drafts[/bold]")
         console.print("  [dim]No drafts generated from current actions.[/dim]")
         return
-
-    console.print("\n[bold]4) Generated Drafts[/bold]")
     for draft in drafts:
-        console.print(
-            f"[bold cyan]Auto Draft for #{draft['contact_id']} ({draft.get('name', 'Unknown')}):[/bold cyan]"
-        )
+        console.print(f"[bold cyan]Auto Draft for #{draft['contact_id']} ({draft.get('name', 'Unknown')}):[/bold cyan]")
         console.print(Panel(draft["content"], border_style="cyan"))
+    _print_draft_summary(draft_summary)
 
-    generated = draft_summary.get("generated", 0)
-    saved = draft_summary.get("saved", 0)
-    failed = draft_summary.get("failed", 0)
+
+def _print_draft_summary(summary: dict) -> None:
     console.print(
-        f"\n[green]Generated {generated} draft(s)[/green]"
-        + (f", saved {saved}" if saved else "")
-        + (f", failed {failed}" if failed else "")
+        f"\n[green]Generated {summary.get('generated', 0)} draft(s)[/green]"
+        + (f", saved {summary['saved']}" if summary.get("saved") else "")
+        + (f", failed {summary['failed']}" if summary.get("failed") else "")
     )
 
 
@@ -486,309 +231,37 @@ def _emit_daily_run_output(data: dict, as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps(data, indent=2))
         return
-
     _render_daily_plan(data)
     draft_summary = data.get("drafts", {})
     if draft_summary.get("generated", 0) or draft_summary.get("drafts"):
         _render_generated_drafts(draft_summary)
-
-    recap_path = data.get("recap_path")
-    if recap_path:
-        console.print(f"\n[green]✓ Saved recap: {recap_path}[/green]")
-
-
-def _run_daily_cycle(
-    actions_limit: int,
-    postings_limit: int,
-    min_posting_score: int,
-    save_recap: bool = False,
-    recap_dir: str = "",
-    generate_drafts: bool = False,
-    save_drafts: bool = False,
-    show_draft_output: bool = True,
-) -> dict:
-    data, template_rows = _build_daily_plan_data(actions_limit, postings_limit, min_posting_score)
-
-    if generate_drafts or save_drafts:
-        data["drafts"] = _generate_action_drafts(
-            data["actions"],
-            save_drafts=save_drafts,
-            show_output=show_draft_output,
-        )
-    else:
-        data["drafts"] = {"generated": 0, "saved": 0, "failed": 0, "templates": 0, "drafts": []}
-
-    if save_recap:
-        recap_path = _save_daily_plan_recap(
-            data["profile"],
-            data["actions"],
-            data["postings"],
-            template_rows,
-            recap_dir=recap_dir,
-            application_actions=data["application_actions"],
-            proposals=data["inbox_proposals"],
-        )
-        data["recap_path"] = str(recap_path)
-
-    return data
-
-
-def _daily_run_status(data: dict) -> tuple[str, list[dict]]:
-    """Classify a completed cycle, returning (status, stalled_contacts).
-
-    Planning nothing is only a success when every active contact is scheduled for
-    a future date — a genuinely quiet day. If a contact is due, overdue, or has no
-    follow-up date at all and the planner still produced nothing, the planner is
-    broken. That is how this job logged 136 consecutive green runs while
-    generating zero drafts.
-    """
-    if data.get("drafts", {}).get("templates"):
-        # AI was asked for and answered with the offline template. Nobody is at
-        # the keyboard to fix a template, so the run has produced nothing usable
-        # — and an invalid key in cron.env is otherwise invisible for months.
-        return "failed", []
-    if data.get("actions"):
-        return "success", []
-    stalled = _app.contact_svc.stalled_contacts()
-    return ("no_actions" if stalled else "success"), stalled
-
-
-def _run_daily_with_reliability(
-    *,
-    trigger: str,
-    run_at: datetime,
-    idempotency_key: str,
-    allow_duplicate: bool,
-    watch_mode: bool,
-    schedule_time: str,
-    actions_limit: int,
-    postings_limit: int,
-    min_posting_score: int,
-    save_recap: bool,
-    recap_dir: str,
-    generate_drafts: bool,
-    save_drafts: bool,
-    notify_webhook: str,
-    notify_on_success: bool,
-    notify_on_failure: bool,
-    failure_streak_threshold: int,
-    notify_on_recovery: bool,
-) -> dict:
-    run_id = uuid.uuid4().hex
-    started_at = datetime.now()
-    effective_key = effective_idempotency_key(idempotency_key, watch_mode, schedule_time, run_at)
-
-    if effective_key and not allow_duplicate and idempotency_key_seen(_app.data_dir, effective_key):
-        result = {
-            "status": "skipped_duplicate",
-            "run_id": run_id,
-            "trigger": trigger,
-            "idempotency_key": effective_key,
-            "started_at": started_at.isoformat(timespec="seconds"),
-            "finished_at": datetime.now().isoformat(timespec="seconds"),
-            "reason": "Idempotency key already completed.",
-        }
-        append_run_log(_app.data_dir, result)
-        return result
-
-    streak_threshold = max(1, int(failure_streak_threshold))
-
-    try:
-        data = _run_daily_cycle(
-            actions_limit=actions_limit,
-            postings_limit=postings_limit,
-            min_posting_score=min_posting_score,
-            save_recap=save_recap,
-            recap_dir=recap_dir,
-            generate_drafts=generate_drafts,
-            save_drafts=save_drafts,
-            show_draft_output=False,
-        )
-    except Exception as exc:  # pragma: no cover - exercised via CLI failure paths
-        failed = {
-            "status": "failed",
-            "run_id": run_id,
-            "trigger": trigger,
-            "idempotency_key": effective_key,
-            "started_at": started_at.isoformat(timespec="seconds"),
-            "finished_at": datetime.now().isoformat(timespec="seconds"),
-            "error": str(exc),
-        }
-        append_run_log(_app.data_dir, failed)
-        history = load_run_history_entries(_app.data_dir)
-        current_streak = failure_streak(history)
-        failed["failure_streak"] = current_streak
-
-        notification_error = None
-        streak_mode = streak_threshold > 1 and current_streak >= streak_threshold
-        if (
-            notify_webhook
-            and notify_on_failure
-            and streak_mode
-        ):
-            last_notified = get_last_failure_streak_notified(_app.data_dir)
-            if current_streak > last_notified:
-                alert_payload = dict(failed)
-                alert_payload["status"] = "failed_streak"
-                alert_payload["failure_streak_threshold"] = streak_threshold
-                notification_error = send_run_notification(notify_webhook, alert_payload)
-                if not notification_error:
-                    set_last_failure_streak_notified(_app.data_dir, current_streak)
-
-        if (not streak_mode) and notification_error is None and notify_webhook and notify_on_failure:
-            notification_error = send_run_notification(notify_webhook, failed)
-
-        if notification_error:
-            failed["notification_error"] = notification_error
-        return failed
-
-    history_before_success = load_run_history_entries(_app.data_dir)
-    prior_failure_streak = failure_streak(history_before_success)
-    finished_at = datetime.now()
-    data["status"], stalled = _daily_run_status(data)
-    data["run_id"] = run_id
-    data["trigger"] = trigger
-    data["idempotency_key"] = effective_key
-    data["started_at"] = started_at.isoformat(timespec="seconds")
-    data["finished_at"] = finished_at.isoformat(timespec="seconds")
-
-    if data["status"] == "no_actions":
-        data["stalled_contact_ids"] = [c["id"] for c in stalled]
-        data["reason"] = (
-            f"{len(stalled)} contact(s) are due or have no follow-up date, "
-            "but the planner produced no actions."
-        )
-    elif data["status"] == "failed" and data.get("drafts", {}).get("templates"):
-        n = data["drafts"]["templates"]
-        data["reason"] = f"AI unavailable: {n} draft(s) came back as offline templates and were not saved."
-
-    log_entry = {
-        "status": data["status"],
-        "run_id": run_id,
-        "trigger": trigger,
-        "idempotency_key": effective_key,
-        "started_at": data["started_at"],
-        "finished_at": data["finished_at"],
-        "actions_count": len(data.get("actions", [])),
-        "postings_count": len(data.get("postings", [])),
-        "templates_count": len(data.get("templates", [])),
-        "drafts_generated": int(data.get("drafts", {}).get("generated", 0)),
-        "drafts_saved": int(data.get("drafts", {}).get("saved", 0)),
-        "recap_path": data.get("recap_path", ""),
-    }
-    append_run_log(_app.data_dir, log_entry)
-
-    if effective_key:
-        record_idempotency_key(_app.data_dir, effective_key, run_id)
-
-    if prior_failure_streak > 0:
-        data["recovered_from_failure_streak"] = prior_failure_streak
-    set_last_failure_streak_notified(_app.data_dir, 0)
-
-    notify_error = None
-    if notify_webhook and streak_threshold > 1 and prior_failure_streak >= streak_threshold and notify_on_recovery:
-        recovery_payload = dict(log_entry)
-        recovery_payload["status"] = "recovered_after_failure_streak"
-        recovery_payload["prior_failure_streak"] = prior_failure_streak
-        recovery_payload["failure_streak_threshold"] = streak_threshold
-        notify_error = send_run_notification(notify_webhook, recovery_payload)
-    elif notify_webhook and notify_on_success:
-        notify_error = send_run_notification(notify_webhook, log_entry)
-
-    if notify_error:
-        data["notification_error"] = notify_error
-
-    return data
+    if data.get("recap_path"):
+        console.print(f"\n[green]✓ Saved recap: {data['recap_path']}[/green]")
 
 
 def _emit_run_status(result: dict, as_json: bool) -> None:
     if as_json:
         click.echo(json.dumps(result, indent=2))
         return
-
     status = result.get("status", "unknown")
     if status == "skipped_duplicate":
-        console.print(
-            f"[yellow]Skipped duplicate run for key '{result.get('idempotency_key', '')}'.[/yellow]"
-        )
-        return
-    if status == "skipped_locked":
+        console.print(f"[yellow]Skipped duplicate run for key '{result.get('idempotency_key', '')}'.[/yellow]")
+    elif status == "skipped_locked":
         console.print(f"[yellow]{result.get('reason', 'Run skipped due to lock.')}[/yellow]")
-        return
-    if status == "no_actions":
+    elif status == "no_actions":
         console.print(f"[red]run-daily planned nothing: {result.get('reason', '')}[/red]")
         console.print("[yellow]Try `linkedin-cli contacts repair`, then `contacts next-actions`.[/yellow]")
-        return
-    if status == "failed":
-        console.print(f"[red]run-daily failed: {result.get('error', 'Unknown error')}[/red]")
+    elif status == "failed":
+        console.print(f"[red]run-daily failed: {result.get('error') or result.get('reason') or 'Unknown error'}[/red]")
         if result.get("notification_error"):
             console.print(f"[yellow]Notification failed: {result['notification_error']}[/yellow]")
 
 
-def _execute_run_with_retries(
-    *,
-    retry_attempts: int,
-    retry_backoff_seconds: float,
-    as_json: bool,
-    trigger: str,
-    run_at: datetime,
-    idempotency_key: str,
-    allow_duplicate: bool,
-    watch_mode: bool,
-    schedule_time: str,
-    actions_limit: int,
-    postings_limit: int,
-    min_posting_score: int,
-    save_recap: bool,
-    recap_dir: str,
-    generate_drafts: bool,
-    save_drafts: bool,
-    notify_webhook: str,
-    notify_on_success: bool,
-    failure_streak_threshold: int,
-    notify_on_recovery: bool,
-) -> dict:
-    max_attempts = max(1, retry_attempts + 1)
-    result: dict = {}
-    for attempt in range(max_attempts):
-        result = _run_daily_with_reliability(
-            trigger=trigger,
-            run_at=run_at,
-            idempotency_key=idempotency_key,
-            allow_duplicate=allow_duplicate,
-            watch_mode=watch_mode,
-            schedule_time=schedule_time,
-            actions_limit=actions_limit,
-            postings_limit=postings_limit,
-            min_posting_score=min_posting_score,
-            save_recap=save_recap,
-            recap_dir=recap_dir,
-            generate_drafts=generate_drafts,
-            save_drafts=save_drafts,
-            notify_webhook=notify_webhook,
-            notify_on_success=notify_on_success,
-            notify_on_failure=(attempt == max_attempts - 1),
-            failure_streak_threshold=failure_streak_threshold,
-            notify_on_recovery=notify_on_recovery,
-        )
-        result["attempts"] = attempt + 1
-        if result.get("status") != "failed":
-            if attempt > 0:
-                result["recovered_after_retries"] = attempt
-            return result
-
-        if attempt >= max_attempts - 1:
-            return result
-
-        sleep_for = max(0.0, retry_backoff_seconds) * (2 ** attempt)
-        if not as_json:
-            console.print(
-                f"[yellow]Run failed (attempt {attempt + 1}/{max_attempts}); retrying in {sleep_for:.1f}s...[/yellow]"
-            )
-        if sleep_for > 0:
-            time.sleep(sleep_for)
-
-    return result
+def _emit_run_result(result: dict, as_json: bool) -> None:
+    if result.get("status") == "success":
+        _emit_daily_run_output(result, as_json=as_json)
+    else:
+        _emit_run_status(result, as_json=as_json)
 
 
 # =============================================================================
@@ -1367,7 +840,8 @@ def contacts_next_actions(limit, generate_drafts, save_drafts):
     if not generate_drafts:
         return
 
-    _generate_action_drafts(actions, save_drafts=save_drafts, show_output=True)
+    summary = _daily_run(RunConfig(save_drafts=save_drafts)).draft_for_actions(actions, save=save_drafts)
+    _print_draft_summary(summary)
 
 
 @contacts.command("dedupe")
@@ -2167,14 +1641,8 @@ def dashboard():
 @click.option("--json", "as_json", is_flag=True, help="Output the daily plan as JSON")
 def daily_plan(actions_limit, postings_limit, min_posting_score, save_recap, recap_dir, as_json):
     """Show an operational daily plan: actions, opportunities, and best templates."""
-    data = _run_daily_cycle(
-        actions_limit=actions_limit,
-        postings_limit=postings_limit,
-        min_posting_score=min_posting_score,
-        save_recap=save_recap,
-        recap_dir=recap_dir,
-    )
-    _emit_daily_run_output(data, as_json=as_json)
+    config = RunConfig(actions_limit=actions_limit, postings_limit=postings_limit, min_posting_score=min_posting_score, save_recap=save_recap, recap_dir=recap_dir)
+    _emit_daily_run_output(_daily_run(config).cycle(), as_json=as_json)
 
 
 @cli.command("run-daily")
@@ -2249,48 +1717,28 @@ def run_daily(
         generate_drafts = True
 
     notify_target = notify_webhook.strip() or os.environ.get("LINKEDIN_RUN_NOTIFY_WEBHOOK", "").strip()
+    config = RunConfig(
+        actions_limit=actions_limit, postings_limit=postings_limit, min_posting_score=min_posting_score,
+        save_recap=save_recap, recap_dir=recap_dir, generate_drafts=generate_drafts, save_drafts=save_drafts,
+        schedule_time=schedule_time, idempotency_key=idempotency_key, allow_duplicate=allow_duplicate,
+        notify_webhook=notify_target, notify_on_success=notify_on_success,
+        failure_streak_threshold=failure_streak_threshold, notify_on_recovery=notify_on_recovery,
+        retry_attempts=retry_attempts, retry_backoff_seconds=retry_backoff_seconds,
+    )
+    run = _daily_run(config, show_drafts=False, as_json=as_json)
 
     lock_acquired, lock_error = acquire_run_lock(_app.data_dir, lock_ttl_minutes=lock_ttl_minutes)
     if not lock_acquired:
-        skipped = {
-            "status": "skipped_locked",
-            "trigger": "startup",
-            "reason": lock_error,
-            "started_at": datetime.now().isoformat(timespec="seconds"),
-            "finished_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        now = datetime.now().isoformat(timespec="seconds")
+        skipped = {"status": "skipped_locked", "trigger": "startup", "reason": lock_error, "started_at": now, "finished_at": now}
         append_run_log(_app.data_dir, skipped)
         _emit_run_status(skipped, as_json=as_json)
         return
 
     try:
         if not watch:
-            result = _execute_run_with_retries(
-                retry_attempts=retry_attempts,
-                retry_backoff_seconds=retry_backoff_seconds,
-                as_json=as_json,
-                trigger="manual",
-                run_at=datetime.now(),
-                idempotency_key=idempotency_key,
-                allow_duplicate=allow_duplicate,
-                watch_mode=False,
-                schedule_time=schedule_time,
-                actions_limit=actions_limit,
-                postings_limit=postings_limit,
-                min_posting_score=min_posting_score,
-                save_recap=save_recap,
-                recap_dir=recap_dir,
-                generate_drafts=generate_drafts,
-                save_drafts=save_drafts,
-                notify_webhook=notify_target,
-                notify_on_success=notify_on_success,
-                failure_streak_threshold=failure_streak_threshold,
-                notify_on_recovery=notify_on_recovery,
-            )
-            if result.get("status") == "success":
-                _emit_daily_run_output(result, as_json=as_json)
-                return
-            _emit_run_status(result, as_json=as_json)
+            result = run.execute("manual", datetime.now())
+            _emit_run_result(result, as_json)
             # A stalled planner and a crashed run must both be visible to whatever
             # scheduled us. Reporting exit 0 is how five months of empty runs hid.
             if result.get("status") in ("no_actions", "failed"):
@@ -2305,72 +1753,19 @@ def run_daily(
 
         runs_completed = 0
         if not as_json:
-            console.print(
-                "[bold]Daily runner started[/bold] "
-                f"(time={schedule_time}, max_runs={'unlimited' if max_runs == 0 else max_runs})"
-            )
+            console.print(f"[bold]Daily runner started[/bold] (time={schedule_time}, max_runs={'unlimited' if max_runs == 0 else max_runs})")
 
         if catch_up_missed and not run_now:
             now = datetime.now()
             scheduled_today = scheduled_run_for_date(schedule_time, now.date())
             if now >= scheduled_today:
-                result = _execute_run_with_retries(
-                    retry_attempts=retry_attempts,
-                    retry_backoff_seconds=retry_backoff_seconds,
-                    as_json=as_json,
-                    trigger="watch_catch_up",
-                    run_at=scheduled_today,
-                    idempotency_key=idempotency_key,
-                    allow_duplicate=allow_duplicate,
-                    watch_mode=True,
-                    schedule_time=schedule_time,
-                    actions_limit=actions_limit,
-                    postings_limit=postings_limit,
-                    min_posting_score=min_posting_score,
-                    save_recap=save_recap,
-                    recap_dir=recap_dir,
-                    generate_drafts=generate_drafts,
-                    save_drafts=save_drafts,
-                    notify_webhook=notify_target,
-                    notify_on_success=notify_on_success,
-                    failure_streak_threshold=failure_streak_threshold,
-                    notify_on_recovery=notify_on_recovery,
-                )
-                if result.get("status") == "success":
-                    _emit_daily_run_output(result, as_json=as_json)
-                else:
-                    _emit_run_status(result, as_json=as_json)
+                _emit_run_result(run.execute("watch_catch_up", scheduled_today, watch_mode=True), as_json)
                 runs_completed += 1
                 if max_runs and runs_completed >= max_runs:
                     return
 
         if run_now:
-            result = _execute_run_with_retries(
-                retry_attempts=retry_attempts,
-                retry_backoff_seconds=retry_backoff_seconds,
-                as_json=as_json,
-                trigger="watch_run_now",
-                run_at=datetime.now(),
-                idempotency_key=idempotency_key,
-                allow_duplicate=allow_duplicate,
-                watch_mode=True,
-                schedule_time=schedule_time,
-                actions_limit=actions_limit,
-                postings_limit=postings_limit,
-                min_posting_score=min_posting_score,
-                save_recap=save_recap,
-                recap_dir=recap_dir,
-                generate_drafts=generate_drafts,
-                save_drafts=save_drafts,
-                notify_webhook=notify_target,
-                notify_on_success=notify_on_success,
-                failure_streak_threshold=failure_streak_threshold,
-                notify_on_recovery=notify_on_recovery,
-            )
-            if result.get("status") == "success":
-                _emit_daily_run_output(result, as_json=as_json)
-            else:
-                _emit_run_status(result, as_json=as_json)
+            _emit_run_result(run.execute("watch_run_now", datetime.now(), watch_mode=True), as_json)
             runs_completed += 1
             if max_runs and runs_completed >= max_runs:
                 return
@@ -2379,39 +1774,9 @@ def run_daily(
             next_run = next_scheduled_run(schedule_time)
             wait_seconds = max(1, int((next_run - datetime.now()).total_seconds()))
             if not as_json:
-                console.print(
-                    f"\n[dim]Next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')} "
-                    f"(in {wait_seconds} sec)[/dim]"
-                )
+                console.print(f"\n[dim]Next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')} (in {wait_seconds} sec)[/dim]")
             time.sleep(wait_seconds)
-
-            result = _execute_run_with_retries(
-                retry_attempts=retry_attempts,
-                retry_backoff_seconds=retry_backoff_seconds,
-                as_json=as_json,
-                trigger="watch_scheduled",
-                run_at=next_run,
-                idempotency_key=idempotency_key,
-                allow_duplicate=allow_duplicate,
-                watch_mode=True,
-                schedule_time=schedule_time,
-                actions_limit=actions_limit,
-                postings_limit=postings_limit,
-                min_posting_score=min_posting_score,
-                save_recap=save_recap,
-                recap_dir=recap_dir,
-                generate_drafts=generate_drafts,
-                save_drafts=save_drafts,
-                notify_webhook=notify_target,
-                notify_on_success=notify_on_success,
-                failure_streak_threshold=failure_streak_threshold,
-                notify_on_recovery=notify_on_recovery,
-            )
-            if result.get("status") == "success":
-                _emit_daily_run_output(result, as_json=as_json)
-            else:
-                _emit_run_status(result, as_json=as_json)
-
+            _emit_run_result(run.execute("watch_scheduled", next_run, watch_mode=True), as_json)
             runs_completed += 1
             if max_runs and runs_completed >= max_runs:
                 if not as_json:
@@ -2422,167 +1787,6 @@ def run_daily(
             console.print("\n[yellow]Stopped run-daily.[/yellow]")
     finally:
         release_run_lock(_app.data_dir)
-
-
-@cli.command("health")
-@click.option("--time", "schedule_time", default="09:00", help="Schedule time to validate (HH:MM)")
-@click.option("--lock-ttl-minutes", type=int, default=180, help="Minutes before lock is considered stale")
-@click.option("--webhook", "webhook_url", default="", help="Optional webhook URL to validate")
-@click.option("--json", "as_json", is_flag=True, help="Output checks as JSON")
-def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
-    """Run automation health checks for daily operations."""
-    checks: list[dict] = []
-    shell_api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    cron_env_path: Path | None = None
-    cron_env_status: dict | None = None
-
-    try:
-        _app.data_dir.ensure()
-        probe = _app.data_dir.root / ".healthcheck.tmp"
-        probe.write_text("ok")
-        probe.unlink(missing_ok=True)
-        checks.append({"name": "data_dir", "status": "ok", "detail": f"Writable: {_app.data_dir.root}"})
-    except Exception as exc:
-        checks.append({"name": "data_dir", "status": "fail", "detail": f"Not writable: {exc}"})
-
-    try:
-        next_run = next_scheduled_run(schedule_time)
-        checks.append({
-            "name": "schedule_time",
-            "status": "ok",
-            "detail": f"Valid; next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')}.",
-        })
-    except ValueError as exc:
-        checks.append({"name": "schedule_time", "status": "fail", "detail": str(exc)})
-
-    cron_lines, cron_error = read_user_crontab_lines()
-    if cron_error:
-        checks.append({
-            "name": "managed_schedule",
-            "status": "warn",
-            "detail": f"Could not inspect crontab: {cron_error}",
-        })
-    else:
-        managed_job = extract_managed_cron_job_line(cron_lines)
-        unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(cron_lines)
-        active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-        cron_env_path = cron_env_file_from_job_line(active_job) or default_automation_env_file(_app.data_dir)
-        cron_env_status = env_file_status(cron_env_path)
-
-        if managed_job:
-            managed_time = cron_schedule_time_from_job_line(active_job)
-            checks.append({
-                "name": "managed_schedule",
-                "status": "ok",
-                "detail": f"Configured via cron at {managed_time or 'custom'}",
-            })
-        else:
-            if unmanaged_jobs:
-                detected_time = cron_schedule_time_from_job_line(unmanaged_jobs[0]) or "custom"
-                checks.append({
-                    "name": "managed_schedule",
-                    "status": "warn",
-                    "detail": f"Unmanaged run-daily cron detected at {detected_time}. Run automation schedule to manage it.",
-                })
-            else:
-                checks.append({
-                    "name": "managed_schedule",
-                    "status": "warn",
-                    "detail": "No run-daily schedule found. Use: linkedin-cli automation schedule",
-                })
-
-    has_shell_key = bool(shell_api_key)
-    has_cron_key = bool(cron_env_status and cron_env_status.get("has_anthropic_api_key"))
-    if has_shell_key and has_cron_key:
-        checks.append({"name": "anthropic_api_key", "status": "ok", "detail": "Configured in shell and cron env file."})
-    elif has_shell_key:
-        checks.append({"name": "anthropic_api_key", "status": "warn", "detail": "Configured in shell only; sync cron env for scheduled runs."})
-    elif has_cron_key:
-        checks.append({"name": "anthropic_api_key", "status": "ok", "detail": "Configured in cron env file."})
-    else:
-        checks.append({
-            "name": "anthropic_api_key",
-            "status": "warn",
-            "detail": "Missing. Use: linkedin-cli automation env sync (or set key manually).",
-        })
-
-    if cron_env_status is None:
-        checks.append({
-            "name": "automation_env_file",
-            "status": "warn",
-            "detail": "Could not infer cron env file path.",
-        })
-    else:
-        if cron_env_status.get("exists"):
-            key_status = "has ANTHROPIC_API_KEY" if cron_env_status.get("has_anthropic_api_key") else "missing ANTHROPIC_API_KEY"
-            checks.append({
-                "name": "automation_env_file",
-                "status": "ok" if cron_env_status.get("has_anthropic_api_key") else "warn",
-                "detail": f"{cron_env_status.get('path')} ({key_status}, mode={cron_env_status.get('mode') or 'unknown'})",
-            })
-        else:
-            checks.append({
-                "name": "automation_env_file",
-                "status": "warn",
-                "detail": f"{cron_env_status.get('path')} not found.",
-            })
-
-    checks.append({"name": "run_lock", **health_lock_check(_app.data_dir, lock_ttl_minutes)})
-
-    try:
-        state = load_run_state(_app.data_dir)
-        completed = state.get("completed_idempotency_keys", [])
-        count = len(completed) if isinstance(completed, list) else 0
-        checks.append({"name": "idempotency_state", "status": "ok", "detail": f"{count} key(s) tracked."})
-    except Exception as exc:
-        checks.append({"name": "idempotency_state", "status": "warn", "detail": f"Could not load state: {exc}"})
-
-    history = load_run_history_entries(_app.data_dir)
-    if not history:
-        checks.append({"name": "run_history", "status": "warn", "detail": "No run history yet."})
-    else:
-        last = history[-1]
-        checks.append({
-            "name": "run_history",
-            "status": "ok",
-            "detail": f"{len(history)} runs logged; latest status={last.get('status', 'unknown')}.",
-        })
-
-    effective_webhook = webhook_url.strip() or os.environ.get("LINKEDIN_RUN_NOTIFY_WEBHOOK", "").strip()
-    if not effective_webhook:
-        checks.append({"name": "notify_webhook", "status": "ok", "detail": "Not configured (optional)."})
-    elif effective_webhook.startswith(("https://", "http://")):
-        checks.append({"name": "notify_webhook", "status": "ok", "detail": "Looks valid."})
-    else:
-        checks.append({"name": "notify_webhook", "status": "warn", "detail": "URL should start with http:// or https://"})
-
-    overall = "ok"
-    if any(check["status"] == "fail" for check in checks):
-        overall = "fail"
-    elif any(check["status"] == "warn" for check in checks):
-        overall = "warn"
-
-    result = {
-        "overall_status": overall,
-        "generated_at": datetime.now().isoformat(timespec="seconds"),
-        "checks": checks,
-    }
-
-    if as_json:
-        click.echo(json.dumps(result, indent=2))
-        return
-
-    table = Table(title="Automation Health")
-    table.add_column("Check", style="cyan")
-    table.add_column("Status", style="white")
-    table.add_column("Detail", style="dim")
-    for check in checks:
-        status = check["status"]
-        style = "green" if status == "ok" else "yellow" if status == "warn" else "red"
-        table.add_row(check["name"], f"[{style}]{status}[/{style}]", check["detail"])
-    console.print(table)
-    color = "green" if overall == "ok" else "yellow" if overall == "warn" else "red"
-    console.print(f"[{color}]Overall: {overall}[/{color}]")
 
 
 @cli.command("run-history")
@@ -2667,97 +1871,48 @@ def automation():
     pass
 
 
+def _render_checks(title: str, checks: list[dict]) -> None:
+    table = Table(title=title)
+    table.add_column("Check", style="cyan")
+    table.add_column("Status", style="white")
+    table.add_column("Detail", style="dim")
+    for c in checks:
+        status = c.get("status", "unknown")
+        style = "green" if status in ("ok", "success") else "yellow" if status == "warn" else "red"
+        table.add_row(str(c.get("name", "")), f"[{style}]{status}[/{style}]", str(c.get("detail", "")))
+    console.print(table)
+
+
 @automation.command("status")
 @click.option("--json", "as_json", is_flag=True, help="Output schedule status as JSON")
 def automation_status(as_json):
     """Show managed schedule status and latest run health."""
-    lines, cron_error = read_user_crontab_lines()
-    managed_job = extract_managed_cron_job_line(lines) if not cron_error else ""
-    unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(lines) if not cron_error else []
-    active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-    schedule_time = cron_schedule_time_from_job_line(active_job) if active_job else ""
-    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file(_app.data_dir)
-    env_status = env_file_status(env_file)
-    history = load_run_history_entries(_app.data_dir)
-    latest = history[-1] if history else None
-    lock_check = health_lock_check(_app.data_dir, lock_ttl_minutes=180)
-
+    cron_lines, cron_error = read_user_crontab_lines()
+    checks, facts = diagnostics(_app.get(), cron_lines=cron_lines, cron_error=cron_error)
+    latest = facts["latest_run"]
     result = {
         "backend": "cron",
-        "configured": bool(active_job),
-        "managed": bool(managed_job),
-        "schedule_time": schedule_time,
-        "job_line": active_job,
-        "unmanaged_jobs": unmanaged_jobs,
-        "env_file": env_status,
-        "crontab_error": cron_error or "",
+        "configured": bool(facts["active_job"]),
+        "managed": bool(facts["managed_job"]),
+        "schedule_time": facts["schedule_time"],
+        "job_line": facts["active_job"],
+        "unmanaged_jobs": facts["unmanaged_jobs"],
+        "env_file": facts["env_status"],
+        "crontab_error": facts["cron_error"],
         "run_log_file": str(_app.data_dir.run_daily_log),
-        "latest_run": {
-            "status": latest.get("status", ""),
-            "finished_at": latest.get("finished_at", ""),
-            "run_id": latest.get("run_id", ""),
-            "trigger": latest.get("trigger", ""),
-        } if latest else {},
-        "run_lock": lock_check,
+        "latest_run": {k: latest.get(k, "") for k in ("status", "finished_at", "run_id", "trigger")} if latest else {},
+        "run_lock": next(c for c in checks if c["name"] == "run_lock"),
+        "checks": checks,
     }
-
     if as_json:
         click.echo(json.dumps(result, indent=2))
         return
-
-    table = Table(title="Automation Status")
-    table.add_column("Check", style="cyan")
-    table.add_column("Status", style="white")
-    table.add_column("Detail", style="dim")
-
-    if cron_error:
-        table.add_row("cron", "[red]fail[/red]", cron_error)
-    elif managed_job:
-        detail = f"Managed schedule active ({schedule_time or 'custom'})."
-        table.add_row("cron", "[green]ok[/green]", detail)
-    elif unmanaged_jobs:
-        detected_time = cron_schedule_time_from_job_line(unmanaged_jobs[0]) or "custom"
-        table.add_row(
-            "cron",
-            "[yellow]warn[/yellow]",
-            f"Unmanaged run-daily cron detected ({detected_time}). Run automation schedule to manage it.",
-        )
-    else:
-        table.add_row(
-            "cron",
-            "[yellow]warn[/yellow]",
-            "No run-daily schedule configured. Run: linkedin-cli automation schedule",
-        )
-
-    if env_status.get("exists"):
-        has_key = env_status.get("has_anthropic_api_key")
-        style = "green" if has_key else "yellow"
-        key_status = "has ANTHROPIC_API_KEY" if has_key else "missing ANTHROPIC_API_KEY"
-        table.add_row(
-            "env_file",
-            f"[{style}]{'ok' if has_key else 'warn'}[/{style}]",
-            f"{env_status.get('path')} ({key_status}, mode={env_status.get('mode') or 'unknown'})",
-        )
-    else:
-        table.add_row(
-            "env_file",
-            "[yellow]warn[/yellow]",
-            f"{env_status.get('path')} not found.",
-        )
-
+    shown = [c for c in checks if c["name"] in ("crontab", "env_file", "run_lock")]
     if latest:
-        table.add_row(
-            "latest_run",
-            f"[green]{latest.get('status', 'unknown')}[/green]" if latest.get("status") == "success" else f"[yellow]{latest.get('status', 'unknown')}[/yellow]",
-            f"{latest.get('finished_at', '-')[:19]} | trigger={latest.get('trigger', '-')}",
-        )
+        shown.append({"name": "latest_run", "status": latest.get("status", "unknown"), "detail": f"{str(latest.get('finished_at', '-'))[:19]} | trigger={latest.get('trigger', '-')}"})
     else:
-        table.add_row("latest_run", "[yellow]warn[/yellow]", "No run history yet.")
-
-    lock_status = lock_check.get("status", "unknown")
-    style = "green" if lock_status == "ok" else "yellow" if lock_status == "warn" else "red"
-    table.add_row("run_lock", f"[{style}]{lock_status}[/{style}]", lock_check.get("detail", "-"))
-    console.print(table)
+        shown.append({"name": "latest_run", "status": "warn", "detail": "No run history yet."})
+    _render_checks("Automation Status", shown)
 
 
 @automation.group("env")
@@ -2856,97 +2011,58 @@ def automation_env_set_anthropic_key(env_file, key, as_json):
 
 @automation.command("doctor")
 @click.option("--time", "schedule_time", default="09:00", help="Desired daily schedule time (HH:MM)")
+@click.option("--lock-ttl-minutes", type=int, default=180, help="Minutes before a lock is considered stale")
+@click.option("--webhook", "webhook_url", default="", help="Optional webhook URL to validate")
 @click.option("--fix", is_flag=True, help="Apply safe automatic fixes")
 @click.option("--run-smoke", is_flag=True, help="Run a one-shot smoke execution after checks")
 @click.option("--json", "as_json", is_flag=True, help="Output doctor report as JSON")
-def automation_doctor(schedule_time, fix, run_smoke, as_json):
-    """Diagnose automation health and optionally apply fixes."""
-    checks: list[dict] = []
+def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smoke, as_json):
+    """Diagnose daily-run health and optionally apply fixes. The one check list; `health` was a second copy."""
     fixes: list[str] = []
     errors: list[str] = []
-
-    try:
-        parse_schedule_time(schedule_time)
-        checks.append({"name": "schedule_time", "status": "ok", "detail": schedule_time})
-    except ValueError as exc:
-        checks.append({"name": "schedule_time", "status": "fail", "detail": str(exc)})
-        errors.append(str(exc))
-
-    lock_check = health_lock_check(_app.data_dir, lock_ttl_minutes=180)
-    checks.append({"name": "run_lock", **lock_check})
-    if fix and lock_check.get("status") == "warn" and "Stale lock" in lock_check.get("detail", ""):
-        try:
-            _app.data_dir.run_daily_lock.unlink(missing_ok=True)
-            fixes.append("Cleared stale run lock.")
-            checks.append({"name": "run_lock_fix", "status": "ok", "detail": "Stale lock removed."})
-        except OSError as exc:
-            errors.append(str(exc))
-            checks.append({"name": "run_lock_fix", "status": "warn", "detail": f"Failed to remove lock: {exc}"})
-
     cron_lines, cron_error = read_user_crontab_lines()
-    managed_job = extract_managed_cron_job_line(cron_lines) if not cron_error else ""
-    unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(cron_lines) if not cron_error else []
-    active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file(_app.data_dir)
-    env_status = env_file_status(env_file)
-
-    if cron_error:
-        checks.append({"name": "crontab", "status": "warn", "detail": cron_error})
-    elif managed_job:
-        checks.append({"name": "crontab", "status": "ok", "detail": "Managed schedule detected."})
-    elif unmanaged_jobs:
-        checks.append({"name": "crontab", "status": "warn", "detail": "Unmanaged run-daily cron detected."})
-    else:
-        checks.append({"name": "crontab", "status": "warn", "detail": "No run-daily cron schedule detected."})
-
-    checks.append({
-        "name": "env_file",
-        "status": "ok" if env_status.get("has_anthropic_api_key") else "warn",
-        "detail": (
-            f"{env_status.get('path')} "
-            f"(exists={env_status.get('exists')}, has_key={env_status.get('has_anthropic_api_key')})"
-        ),
-    })
+    checks, facts = diagnostics(
+        _app.get(), cron_lines=cron_lines, cron_error=cron_error,
+        schedule_time=schedule_time, lock_ttl_minutes=lock_ttl_minutes, webhook_url=webhook_url,
+    )
+    by_name = {c["name"]: c for c in checks}
+    if by_name["schedule_time"]["status"] == "fail":
+        errors.append(by_name["schedule_time"]["detail"])
 
     if fix:
-        updates = {}
-        for key in AUTOMATION_ENV_KEYS:
-            value = os.environ.get(key, "").strip()
-            if value:
-                updates[key] = value
+        lock = by_name["run_lock"]
+        if lock.get("status") == "warn" and "Stale lock" in lock.get("detail", ""):
+            try:
+                _app.data_dir.run_daily_lock.unlink(missing_ok=True)
+                fixes.append("Cleared stale run lock.")
+                checks.append({"name": "run_lock_fix", "status": "ok", "detail": "Stale lock removed."})
+            except OSError as exc:
+                errors.append(str(exc))
+                checks.append({"name": "run_lock_fix", "status": "warn", "detail": f"Failed to remove lock: {exc}"})
+
+        env_file = facts["env_file"]
+        updates = {key: os.environ[key].strip() for key in AUTOMATION_ENV_KEYS if os.environ.get(key, "").strip()}
         _, _, env_error = write_env_file(env_file, updates)
         if env_error:
             checks.append({"name": "env_sync_fix", "status": "warn", "detail": env_error})
             errors.append(env_error)
         else:
             fixes.append(f"Synced automation env file: {env_file}")
-            env_status = env_file_status(env_file)
 
-        if not cron_error and not managed_job:
-            runner_tokens = default_scheduler_runner_tokens()
+        if not facts["cron_error"] and not facts["managed_job"]:
             run_tokens = build_scheduled_run_daily_tokens(
-                runner_tokens,
-                save_recap=True,
-                generate_drafts=True,
-                save_drafts=True,
-                retry_attempts=2,
-                retry_backoff_seconds=10.0,
-                failure_streak_threshold=3,
-                notify_on_recovery=True,
-                notify_webhook="",
+                default_scheduler_runner_tokens(), save_recap=True, generate_drafts=True, save_drafts=True,
+                retry_attempts=2, retry_backoff_seconds=10.0, failure_streak_threshold=3, notify_on_recovery=True, notify_webhook="",
             )
             cron_command = build_cron_shell_command(Path.cwd().resolve(), run_tokens, env_file=env_file)
             job_line = build_managed_cron_job_line(
-                schedule_time=schedule_time,
-                cron_command=cron_command,
-                stdout_log=_app.data_dir.cron_out_log,
-                stderr_log=_app.data_dir.cron_err_log,
+                schedule_time=schedule_time, cron_command=cron_command,
+                stdout_log=_app.data_dir.cron_out_log, stderr_log=_app.data_dir.cron_err_log,
             )
-
-            cleaned_lines, _ = strip_managed_cron_block(cron_lines)
-            cleaned_lines, _ = strip_unmanaged_run_daily_cron_jobs(cleaned_lines)
-            cleaned_lines, _ = strip_legacy_scheduler_comment_lines(cleaned_lines)
-            next_lines = list(cleaned_lines)
+            cleaned, _ = strip_managed_cron_block(cron_lines)
+            cleaned, _ = strip_unmanaged_run_daily_cron_jobs(cleaned)
+            cleaned, _ = strip_legacy_scheduler_comment_lines(cleaned)
+            next_lines = list(cleaned)
             if next_lines and next_lines[-1].strip():
                 next_lines.append("")
             next_lines.extend(build_managed_cron_block(job_line))
@@ -2958,42 +2074,18 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
                 fixes.append("Installed managed cron schedule.")
                 checks.append({"name": "schedule_fix", "status": "ok", "detail": f"Scheduled at {schedule_time}"})
 
-    smoke_result = {}
+    smoke_result: dict = {}
     if run_smoke and not errors:
-        smoke_result = _execute_run_with_retries(
-            retry_attempts=0,
-            retry_backoff_seconds=0.0,
-            as_json=True,
-            trigger="doctor_smoke",
-            run_at=datetime.now(),
-            idempotency_key=f"doctor-smoke-{datetime.now().date().isoformat()}",
-            allow_duplicate=True,
-            watch_mode=False,
-            schedule_time=schedule_time,
-            actions_limit=4,
-            postings_limit=3,
-            min_posting_score=40,
-            save_recap=False,
-            recap_dir="",
-            generate_drafts=False,
-            save_drafts=False,
-            notify_webhook="",
-            notify_on_success=False,
-            failure_streak_threshold=3,
-            notify_on_recovery=True,
+        smoke = _daily_run(
+            RunConfig(actions_limit=4, postings_limit=3, schedule_time=schedule_time,
+                      idempotency_key=f"doctor-smoke-{datetime.now().date().isoformat()}", allow_duplicate=True,
+                      retry_attempts=0, retry_backoff_seconds=0.0),
+            show_drafts=False, as_json=True,
         )
-        checks.append({
-            "name": "smoke_run",
-            "status": "ok" if smoke_result.get("status") == "success" else "warn",
-            "detail": smoke_result.get("status", "unknown"),
-        })
+        smoke_result = smoke.execute("doctor_smoke", datetime.now())
+        checks.append({"name": "smoke_run", "status": "ok" if smoke_result.get("status") == "success" else "warn", "detail": smoke_result.get("status", "unknown")})
 
-    overall = "ok"
-    if any(check.get("status") == "fail" for check in checks):
-        overall = "fail"
-    elif errors or any(check.get("status") == "warn" for check in checks):
-        overall = "warn"
-
+    overall = overall_status(checks, errors)
     report = {
         "overall_status": overall,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -3002,20 +2094,10 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
         "errors": errors,
         "smoke_run": smoke_result,
     }
-
     if as_json:
         click.echo(json.dumps(report, indent=2))
         return
-
-    table = Table(title="Automation Doctor")
-    table.add_column("Check", style="cyan")
-    table.add_column("Status", style="white")
-    table.add_column("Detail", style="dim")
-    for check in checks:
-        status = check.get("status", "unknown")
-        style = "green" if status == "ok" else "yellow" if status == "warn" else "red"
-        table.add_row(str(check.get("name", "")), f"[{style}]{status}[/{style}]", str(check.get("detail", "")))
-    console.print(table)
+    _render_checks("Automation Doctor", checks)
     if fixes:
         console.print("\n[bold]Fixes Applied[/bold]")
         for item in fixes:

@@ -74,6 +74,7 @@ from linkedin.services.contact_service import (
     import_search_results,
     parse_iso_date,
 )
+from linkedin.services.inbox_service import inbound_from_strangers, review_proposals, update_thread_index
 from linkedin.services.planner import command_for, label_for
 from linkedin.services.resume_service import (
     ResumeRepoError,
@@ -4694,12 +4695,14 @@ def inbox_sync(limit, headless):
             "[dim]An empty list would mean 'every invitation was accepted', so it is not assumed.[/dim]"
         )
 
-    proposals = _app.inbox_svc.propose_transitions(
-        signals["threads"], pending, _app.contact_repo.list_all()
-    )
+    contacts = _app.contact_repo.list_all()
+    proposals = _app.inbox_svc.propose_transitions(signals["threads"], pending, contacts)
     save_inbox_proposals(proposals)
+    index = update_thread_index(load_json(_app.data_dir.thread_index, []), signals["threads"], contacts)
+    save_json(_app.data_dir.thread_index, index)
 
-    console.print(f"[dim]Read {len(signals['threads'])} thread(s).[/dim]")
+    strangers = inbound_from_strangers(index, datetime.now().date() - timedelta(days=30))
+    console.print(f"[dim]Read {len(signals['threads'])} thread(s); {len(strangers)} inbound from strangers in the last 30 days.[/dim]")
     if not proposals:
         console.print("[green]No pipeline changes to propose.[/green]")
         return
@@ -4730,43 +4733,40 @@ def inbox_review(yes):
         console.print("[dim]No pending proposals. Run: linkedin-cli inbox sync[/dim]")
         return
 
-    applied, skipped, remaining = 0, 0, []
-    for proposal in proposals:
-        contact_id = proposal.get("contact_id")
-        contact = _app.contact_repo.get(contact_id) if contact_id else None
-        if not contact:
-            console.print(f"[yellow]Contact #{contact_id} no longer exists — dropping.[/yellow]")
-            continue
-
-        if contact.get("status") != proposal.get("from_status"):
-            console.print(
-                f"[yellow]{proposal.get('name')} is now '{contact.get('status')}', "
-                f"not '{proposal.get('from_status')}' — dropping this proposal.[/yellow]"
-            )
-            continue
-
-        low = proposal.get("confidence") == "low"
+    def confirm(proposal: dict, low: bool) -> bool:
         console.print(
             f"\n[bold cyan]{proposal.get('name')}[/bold cyan] "
             f"{proposal.get('from_status')} → {proposal.get('to_status')}"
             + (" [red](matched by name only)[/red]" if low else "")
         )
         console.print(f"  [dim]{proposal.get('evidence', '')}[/dim]")
+        return click.confirm("  Apply?", default=not low)
 
-        if yes and not low:
-            confirmed = True
-        else:
-            confirmed = click.confirm("  Apply?", default=not low)
+    review = review_proposals(proposals, _app.contact_repo.list_all(), confirm=confirm, yes=yes)
+    for proposal, why in review.dropped:
+        console.print(f"[yellow]{proposal.get('name')} — dropping this proposal: {why}.[/yellow]")
+    for proposal in review.apply:
+        _app.contact_svc.update_contact(proposal["contact_id"], status=proposal["to_status"])
+    save_inbox_proposals(review.kept)
+    console.print(f"\n[green]Applied {len(review.apply)}[/green]" + (f", kept {len(review.kept)} for later" if review.kept else ""))
 
-        if confirmed:
-            _app.contact_svc.update_contact(contact_id, status=proposal["to_status"])
-            applied += 1
-        else:
-            skipped += 1
-            remaining.append(proposal)
 
-    save_inbox_proposals(remaining)
-    console.print(f"\n[green]Applied {applied}[/green]" + (f", kept {skipped} for later" if skipped else ""))
+@inbox.command("strangers")
+@click.option("--days", default=30, help="Window in days (default 30)")
+def inbox_strangers(days):
+    """People who are not contacts and wrote to you in the window — the inbound metric."""
+    index = load_json(_app.data_dir.thread_index, [])
+    rows = inbound_from_strangers(index, datetime.now().date() - timedelta(days=days))
+    console.print(f"[bold]{len(rows)}[/bold] inbound from strangers in the last {days} days" + ("." if rows else " (run: linkedin-cli inbox sync)."))
+    if not rows:
+        return
+    table = Table()
+    table.add_column("Name", style="cyan")
+    table.add_column("Last wrote", style="dim")
+    table.add_column("Profile", style="dim")
+    for row in rows:
+        table.add_row(row.get("name", ""), row.get("last_message_at", ""), row.get("url", ""))
+    console.print(table)
 
 
 def _render_proposals(proposals: list[dict]) -> None:

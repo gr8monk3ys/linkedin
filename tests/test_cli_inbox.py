@@ -66,6 +66,29 @@ class TestInboxSync:
         result = _run(runner, ["inbox", "sync"], fake_session, pending=[])
         assert "No pipeline changes to propose" in result.output
 
+    def test_sync_keeps_a_thread_index_and_counts_strangers(self, runner, contact, fake_session):
+        from linkedin.cli import _app
+        from linkedin.data.json_store import load_json
+
+        threads = [
+            {"name": "Ryan Barner", "url": "https://www.linkedin.com/in/ryanbarner", "snippet": "hi", "timestamp": "Yesterday", "unread": False, "last_from_them": True},
+            {"name": "Sam Stranger", "url": "https://www.linkedin.com/in/sam", "snippet": "Are you open to a role?", "timestamp": "Yesterday", "unread": True, "last_from_them": True},
+        ]
+        result = _run(runner, ["inbox", "sync"], fake_session, threads=threads, pending=[])
+        assert result.exit_code == 0, result.output
+        assert "1 inbound from strangers" in result.output
+        index = load_json(_app.data_dir.thread_index, [])
+        assert {r["name"] for r in index} == {"Ryan Barner", "Sam Stranger"}
+        assert "Are you open" not in str(index)
+
+        listing = runner.invoke(cli, ["inbox", "strangers"])
+        assert "Sam Stranger" in listing.output and "Ryan Barner" not in listing.output
+
+    def test_strangers_with_no_index_points_at_sync(self, runner):
+        result = runner.invoke(cli, ["inbox", "strangers"])
+        assert result.exit_code == 0
+        assert "0" in result.output and "inbox sync" in result.output
+
     def test_sync_refused_by_budget_proposes_nothing_and_says_why(self, runner, contact, fake_session):
         result = _run(runner, ["inbox", "sync"], fake_session, pending=None, status="refused")
         assert result.exit_code == 0

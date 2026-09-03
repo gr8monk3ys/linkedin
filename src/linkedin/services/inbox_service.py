@@ -10,15 +10,24 @@ This module is the inbound edge, and it is deliberately pure — dicts in,
 proposals out, no browser and no repo. The matching logic here is the part that
 can corrupt the CRM, so it is the part that has to be testable without a page.
 
-Nothing here applies a transition. A misread page must not be able to rewrite
-real contacts, so proposals are persisted and confirmed by a human, the same way
+Nothing here writes a contact. A misread page must not be able to rewrite real
+contacts, so proposals are persisted and confirmed by a human, the same way
 `automation_service.engage_feed` gates an AI comment before it is published.
+`review_proposals` holds the other half of that invariant — which proposals may
+be applied at all — so both halves live beside the matcher and are tested
+without a CLI runner.
+
+The thread index is the per-sync record of who wrote, with no message bodies.
+It exists because the matcher discards every thread from someone who is not a
+contact, and those strangers are exactly the population the growth goal counts.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import re
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from linkedin.services.contact_service import parse_iso_date
@@ -264,3 +273,118 @@ class InboxService:
         if confidence == "low":
             return f"{body} (matched on name '{name}' only — no profile URL on the thread)"
         return body
+
+
+# -- review: the half of the invariant that can corrupt the CRM ------------------
+
+
+@dataclass
+class Review:
+    """What a review decided. Nothing is written here; the caller applies `apply`
+    and persists `kept` as the proposals still awaiting a decision."""
+
+    apply: list[dict] = field(default_factory=list)
+    kept: list[dict] = field(default_factory=list)
+    dropped: list[tuple[dict, str]] = field(default_factory=list)
+
+
+def review_proposals(
+    proposals: list[dict],
+    contacts: list[dict],
+    *,
+    confirm: Callable[[dict, bool], bool],
+    yes: bool = False,
+) -> Review:
+    """Decide which proposals may be applied.
+
+    A proposal whose contact is gone is dropped. A proposal whose contact has
+    moved to a different status since the sync is dropped: the hand edit wins.
+    `yes` applies high-confidence proposals without asking; a low-confidence
+    proposal (matched on display name alone) is always put to `confirm(proposal,
+    low)`, because a name is a guess. Declined proposals are kept for later.
+    """
+    by_id = {c.get("id"): c for c in contacts}
+    review = Review()
+    for proposal in proposals:
+        contact = by_id.get(proposal.get("contact_id"))
+        if contact is None:
+            review.dropped.append((proposal, "contact no longer exists"))
+            continue
+        if contact.get("status") != proposal.get("from_status"):
+            review.dropped.append((proposal, f"contact is now '{contact.get('status')}', not '{proposal.get('from_status')}'"))
+            continue
+        low = proposal.get("confidence") == "low"
+        if (yes and not low) or confirm(proposal, low):
+            review.apply.append(proposal)
+        else:
+            review.kept.append(proposal)
+    return review
+
+
+# -- thread index: who wrote, without what they wrote ----------------------------
+
+
+def thread_key(thread: dict) -> str:
+    """The identity a thread row names: its profile URL when it has one, else the folded name."""
+    url = strip_url_query(thread.get("url", "") or "")
+    if url:
+        return url
+    return "name:" + normalize_name(thread.get("name", "") or "")
+
+
+def update_thread_index(
+    index: list[dict],
+    threads: list[dict],
+    contacts: list[dict],
+    *,
+    today: dt.date | None = None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Merge this sync's threads into the index. Returns the new index.
+
+    One row per identity: sender name and URL, when they last wrote, whether
+    the last message is theirs, when we first and last saw the thread, and
+    whether the sender is a contact. No snippets — the count the growth goal
+    needs is identity and timing, and a store of other people's message text
+    has no consumer.
+    """
+    now = now or datetime.now()
+    today = today or now.date()
+    stamp = now.isoformat(timespec="seconds")
+    rows = {row["key"]: dict(row) for row in index if row.get("key")}
+    contact_urls = {strip_url_query(c.get("linkedin_url", "")) for c in contacts} - {""}
+    contact_names = {normalize_name(c.get("name", "")) for c in contacts} - {""}
+
+    for thread in threads:
+        name = (thread.get("name") or "").strip()
+        if not name:
+            continue
+        key = thread_key(thread)
+        last_at = parse_thread_timestamp(thread.get("timestamp"), today=today)
+        url = strip_url_query(thread.get("url", "") or "")
+        is_contact = (url in contact_urls) if url else (normalize_name(name) in contact_names)
+        row = rows.get(key) or {"key": key, "first_seen": stamp}
+        row.update({
+            "name": name,
+            "url": url,
+            "last_message_at": last_at.isoformat() if last_at else row.get("last_message_at", ""),
+            "last_from_them": bool(thread.get("last_from_them")),
+            "is_contact": is_contact,
+            "last_seen": stamp,
+        })
+        rows[key] = row
+    return sorted(rows.values(), key=lambda r: r.get("last_message_at", ""), reverse=True)
+
+
+def inbound_from_strangers(index: list[dict], since: dt.date) -> list[dict]:
+    """Threads from people who are not contacts, where the last word is theirs,
+    on or after `since`. The growth goal's metric: someone wrote to us unprompted."""
+    out = []
+    for row in index:
+        if row.get("is_contact") or not row.get("last_from_them"):
+            continue
+        last = parse_iso_date(row.get("last_message_at", ""))
+        if last is None or last < since:
+            continue
+        out.append(row)
+    return out

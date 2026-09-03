@@ -14,6 +14,7 @@ from linkedin.services.planner import (
     TERMINAL_STATUSES,
     _check_status_coverage,
 )
+from linkedin.services.ranking_service import PINNED_FIELD, connection_bonus
 from linkedin.types import ContactDict
 
 __all__ = ["STATUS_RULES", "TERMINAL_STATUSES", "_check_status_coverage", "ContactService", "parse_iso_date"]
@@ -290,6 +291,18 @@ class ContactService:
             "reason": reason,
         }
 
+    def set_pinned(self, contact_id: int, pinned: bool) -> ContactDict | None:
+        """Pin (or unpin) a contact: exempt from ranking, always followed."""
+        contact = self.contacts.get(contact_id)
+        if not contact:
+            return None
+        contact[PINNED_FIELD] = pinned
+        self.contacts.update(contact)
+        return contact
+
+    def pinned_contacts(self) -> list[ContactDict]:
+        return [c for c in self.contacts.list_all() if c.get(PINNED_FIELD)]
+
     def delete_contact(self, contact_id: int) -> bool:
         """Remove a contact. Returns False if it was not there.
 
@@ -298,8 +311,14 @@ class ContactService:
         """
         return self.contacts.delete(contact_id)
 
-    def get_next_actions(self, limit: int = 10) -> list[dict]:
-        """Return prioritized next actions across the pipeline."""
+    def get_next_actions(self, limit: int = 10, scores: dict[int, int] | None = None) -> list[dict]:
+        """Return prioritized next actions across the pipeline.
+
+        `scores` (contact id → rank score) raises the priority of each
+        `send_connection` action by `connection_bonus`, so the day's scarce
+        invitations go to the contacts that matter most for the target role.
+        """
+        scores = scores or {}
         today = datetime.now().date()
         all_contacts = self.contacts.list_all()
         due_data = self.get_due_contacts(days=0, contacts=all_contacts)
@@ -333,10 +352,13 @@ class ContactService:
 
             rule = STATUS_RULES.get(status)
             if rule and age_days >= rule["after_days"]:
-                actions.append(self._action(
-                    contact, rule["priority"] + min(age_days, 30), rule["action"],
-                    rule["reason"].format(age=age_days),
-                ))
+                priority = rule["priority"] + min(age_days, 30)
+                reason = rule["reason"].format(age=age_days)
+                if rule["action"] == "send_connection" and contact["id"] in scores:
+                    score = scores[contact["id"]]
+                    priority += connection_bonus(score)
+                    reason += f" (rank {score})"
+                actions.append(self._action(contact, priority, rule["action"], reason))
 
         actions.sort(key=lambda a: a["priority"], reverse=True)
 

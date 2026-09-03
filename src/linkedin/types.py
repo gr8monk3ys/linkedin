@@ -47,6 +47,8 @@ class ContactDict(TypedDict, total=False):
     last_template_type: str
     template_usage_history: list[TemplateUsageDict]
     campaign: CampaignStateDict
+    #: Exempt from ranking: always first, never in the bottom list.
+    pinned: bool
 
 
 class CompanyDict(TypedDict, total=False):

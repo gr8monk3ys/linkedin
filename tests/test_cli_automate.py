@@ -206,6 +206,22 @@ def test_automate_engage_contacts_and_feed(runner, fake_session):
     assert calls == [((2,), {"profile_url": "https://linkedin.com/in/alice"}), ((2,), {})]
 
 
+def test_automate_engage_pinned_likes_every_pinned_contact(runner, fake_session):
+    _add_contact(runner, name="Pinned One", url="https://linkedin.com/in/one")
+    _add_contact(runner, name="Not Pinned", url="https://linkedin.com/in/two")
+    runner.invoke(cli, ["contacts", "pin", "1"])
+    fake_session.results["react"] = ActionResult("ok", data=2)
+    result = runner.invoke(cli, ["automate", "engage", "--pinned", "--likes", "2"])
+    assert result.exit_code == 0, result.output
+    assert fake_session.calls_to("react") == [((2,), {"profile_url": "https://linkedin.com/in/one"})]
+
+
+def test_automate_engage_pinned_with_nobody_pinned_says_so(runner, fake_session):
+    result = runner.invoke(cli, ["automate", "engage", "--pinned"])
+    assert result.exit_code == 1
+    assert "No pinned contacts" in result.output
+
+
 def test_automate_engage_requires_target(runner, fake_session):
     result = runner.invoke(cli, ["automate", "engage"])
     assert result.exit_code == 1

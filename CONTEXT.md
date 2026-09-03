@@ -43,3 +43,5 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
   retry, streak, recovery, and status classification. `run_state` is its private implementation.
 - **Daily plan**: an ordered list of sections rendered by two renderers (terminal, Markdown recap).
 - **Diagnostics**: one check list, one naming, one `doctor` command.
+- **Rank**: a contact's 0–100 score for the target role, with reasons. Decides who gets the day's
+  invitations. **Pinned** contacts are exempt: always first, never in the bottom list, always followed.

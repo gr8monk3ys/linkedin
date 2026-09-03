@@ -52,7 +52,8 @@ uv run ruff format src/ tests/
 
 **Services** (`src/linkedin/services/`) — All business logic. Accept/return plain dicts:
 - `planner.py` — every table the planner reads: `STATUS_RULES`, `APPLICATION_STATUS_RULES`, and `ACTIONS` (one row per action name: `label`, `command`, `draft` spec or None). Three coverage checks run at import; `contact_service` and `application_service` re-export the rule tables from here.
-- `contact_service.py` — CRUD, pipeline advancement, next-actions, outreach campaign management, duplicate detection + merge
+- `ranking_service.py` — ranks contacts 0–100 by career priority (hiring-side title, tracked-company priority, industry overlap, relationship) with named reasons. `pinned` contacts are exempt: always 100, first in `contacts rank`, never in `--bottom`, and the target set for `automate engage --pinned`. `get_next_actions(scores=)` adds `connection_bonus(score)` (0–25) to every `send_connection` priority, so the day's scarce invitations go to the top of the ranking; `DailyRun` passes the scores.
+- `contact_service.py` — CRUD, pipeline advancement, next-actions, outreach campaign management, duplicate detection + merge, pin/unpin
 - `company_service.py`, `profile_service.py` — CRUD
 - `draft_service.py` — AI draft generation with offline fallback templates (connection, message, intro, thank you, follow-up, batch). Fallback controlled by `LINKEDIN_AI_FALLBACK_ENABLED` env var.
 - `application_service.py` — Job application lifecycle, AI tailor-resume / cover-letter / skills-gap
@@ -119,6 +120,7 @@ uv run ruff format src/ tests/
 - `test_session.py` — Every verb's preamble over a MagicMock page: budget before navigation, skipped vs failed, dry run, `open()` lifecycle (login handoff, browser closed on raise, Playwright missing).
 - `test_contact_import.py`, `test_job_import.py` — Search rows and scraped profiles into contacts; job rows into scored postings.
 - `test_post_service.py` — The published-post record and the unmeasurable (URN-less) flag.
+- `test_ranking_service.py` — Scores, reasons, the pin exemption, and the bottom list.
 - `test_linkedin_page.py` — Page object against `tests/fake_page.py`; covers selector misses.
 - `test_automation_import_safety.py` — Walks `linkedin.automation` asserting no module needs Playwright/keyring to import.
 - `test_scheduling.py` — Schedule math and managed-crontab handling.

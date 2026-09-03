@@ -812,7 +812,7 @@ def contacts_next_actions(limit, generate_drafts, save_drafts):
     if save_drafts:
         generate_drafts = True
 
-    actions = _app.contact_svc.get_next_actions(limit=limit)
+    actions = _app.contact_svc.get_next_actions(limit=limit, scores=_app.ranking_svc.scores())
     if not actions:
         console.print("[green]✓ No urgent actions right now.[/green]")
         return
@@ -902,6 +902,50 @@ def contacts_remind(contact_id, days, date):
 
     contact = _app.contact_svc.get_contact(contact_id)
     console.print(f"[green]✓ Reminder set for {contact['name']}: {follow_up_date}[/green]")
+
+
+@contacts.command("rank")
+@click.option("--limit", "-l", type=int, default=20, help="Rows to show")
+@click.option("--bottom", is_flag=True, help="Show the lowest-ranked contacts instead (never the pinned ones)")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def contacts_rank(limit, bottom, as_json):
+    """Rank contacts by how much they matter for your target role.
+
+    The daily connection budget goes to the top of this list. Pinned contacts
+    are exempt: always first, never in --bottom. Pin with: contacts pin ID
+    """
+    rows = _app.ranking_svc.bottom(limit) if bottom else _app.ranking_svc.rank()[:limit]
+    if as_json:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        console.print("[dim]No contacts to rank.[/dim]")
+        return
+    table = Table(title="Lowest-ranked contacts (unpinned)" if bottom else "Contacts by career priority")
+    table.add_column("Score", justify="right", style="green")
+    table.add_column("Contact", style="cyan")
+    table.add_column("Title")
+    table.add_column("Company")
+    table.add_column("Status", style="dim")
+    table.add_column("Why", style="dim")
+    for r in rows:
+        name = f"★ {r['name']}" if r["pinned"] else r["name"]
+        table.add_row(str(r["score"]), name, r["title"], r["company"], r["status"], "; ".join(r["reasons"]))
+    console.print(table)
+    if not bottom:
+        console.print("[dim]★ pinned — exempt from ranking. `contacts pin ID` / `contacts pin ID --unpin`.[/dim]")
+
+
+@contacts.command("pin")
+@click.argument("contact_id", type=int)
+@click.option("--unpin", is_flag=True, help="Remove the pin")
+def contacts_pin(contact_id, unpin):
+    """Pin a contact: exempt from ranking, always followed (`automate engage --pinned`)."""
+    contact = _app.contact_svc.set_pinned(contact_id, not unpin)
+    if not contact:
+        console.print(f"[red]Contact #{contact_id} not found.[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]{'Unpinned' if unpin else 'Pinned'} #{contact_id} {contact['name']}.[/green]")
 
 
 @contacts.command("repair")
@@ -3536,13 +3580,14 @@ def _review_feed_comment(post: dict, comment_text: str) -> bool:
 
 @automate.command("engage")
 @click.option("--contact-id", "contact_ids", type=int, multiple=True, help="Like recent posts of this contact (repeatable)")
+@click.option("--pinned", is_flag=True, help="Like recent posts of every pinned contact (the people you keep following)")
 @click.option("--feed", is_flag=True, help="Like posts on your home feed instead")
 @click.option("--likes", default=2, help="Likes per target (default 2)")
 @click.option("--comments", default=0, help="With --feed: also leave up to N AI-personalized comments")
 @click.option("--dry-run", is_flag=True, help="Navigate but do not click Like")
 @click.option("--yes", "-y", is_flag=True, help="Publish AI comments without reviewing each one (not recommended)")
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
-def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
+def automate_engage(contact_ids, pinned, feed, likes, comments, dry_run, yes, headless):
     """Warm up target contacts by liking their recent posts (or engage your feed).
 
     With --feed --comments N, browses the feed and leaves short AI-generated
@@ -3553,8 +3598,13 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
     text is generated from a stranger's post and goes out under your own name.
     Pass --yes to skip the review (it will not prompt, and it will post).
     """
+    if pinned:
+        contact_ids = tuple(contact_ids) + tuple(c["id"] for c in _app.contact_svc.pinned_contacts() if c["id"] not in contact_ids)
+        if not contact_ids and not feed:
+            console.print("[yellow]No pinned contacts yet. Pin with: linkedin-cli contacts pin ID[/yellow]")
+            raise SystemExit(1)
     if not contact_ids and not feed:
-        console.print("[red]Pass --contact-id (repeatable) and/or --feed.[/red]")
+        console.print("[red]Pass --contact-id (repeatable), --pinned, and/or --feed.[/red]")
         raise SystemExit(1)
     if comments and not feed:
         console.print("[red]--comments requires --feed (comments run on the feed pipeline).[/red]")

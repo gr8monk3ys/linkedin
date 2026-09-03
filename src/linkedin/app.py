@@ -28,6 +28,7 @@ from linkedin.services.market_service import MarketService
 from linkedin.services.optimizer_service import OptimizerService
 from linkedin.services.post_service import PostService
 from linkedin.services.profile_service import ProfileService
+from linkedin.services.ranking_service import RankingService
 from linkedin.services.research_service import ResearchService
 from linkedin.services.template_service import TemplateService
 
@@ -42,6 +43,7 @@ class App:
         d = self.data_dir
         self.profile_svc = ProfileService(r.profile)
         self.contact_svc = ContactService(r.contacts, r.companies)
+        self.ranking_svc = RankingService(r.contacts, r.companies, r.profile)
         self.company_svc = CompanyService(r.companies, r.contacts)
         self.draft_svc = DraftService(r.drafts, r.contacts, r.profile)
         self.discover_svc = DiscoverService(r.profile, r.companies, r.contacts)

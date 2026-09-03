@@ -15,6 +15,7 @@ import statistics
 from datetime import date, datetime, timedelta
 
 from linkedin.ai.client import AIResult, ai_call
+from linkedin.ai.style import STYLE_RULES
 from linkedin.services.fleet_facts import facts_digest
 
 DRAFT_TYPE = "post_fleet"
@@ -56,7 +57,8 @@ Requirements:
 - 120 to 220 words, short paragraphs, a first line that stands on its own.
 - Plain language. No hashtags, no emojis, no "excited to share".
 - One idea. End with a question a peer would actually answer.
-- Write the post now."""
+- Write the post now.
+{STYLE_RULES}"""
 
 
 class ContentService:

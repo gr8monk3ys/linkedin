@@ -4240,7 +4240,8 @@ def automate_limits(ctx):
     for kind, row in _budget().summary().items():
         table.add_row(kind, str(row["used"]), str(row["cap"]), str(row["remaining"]))
     console.print(table)
-    console.print(f"[dim]Caps: {_app.data_dir.limits}[/dim]")
+    # soft_wrap: a path must survive copy-paste, and a narrow CI terminal split this one mid-name.
+    console.print(f"[dim]Caps: {_app.data_dir.limits}[/dim]", soft_wrap=True)
 
 
 @automate_limits.command("set")

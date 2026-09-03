@@ -98,6 +98,10 @@ class DraftRepo(ABC):
     def next_id(self) -> int:
         ...
 
+    @abstractmethod
+    def delete(self, draft_id: int) -> bool:
+        ...
+
 
 class ResearchRepo(ABC):
     @abstractmethod

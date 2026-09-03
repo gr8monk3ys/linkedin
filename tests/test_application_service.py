@@ -206,3 +206,136 @@ def test_list_filter_company_case_insensitive(svc):
     results = svc.list_applications(company="stripe")
     assert len(results) == 1
     assert results[0]["company"] == "Stripe Inc"
+
+
+def _age(app, *, days):
+    """Backdate every timestamp on an application, the way real elapsed time does.
+
+    Backdating `applied_date` alone leaves the history event dated today, which
+    is a row the service can never produce.
+    """
+    from datetime import datetime, timedelta
+
+    stamp = (datetime.now() - timedelta(days=days)).isoformat()
+    app["applied_date"] = stamp
+    app["created_at"] = stamp
+    for event in app.get("history") or []:
+        event["date"] = stamp
+    return app
+
+
+# --- Planner rules -----------------------------------------------------------
+# Applications were invisible to the daily planner: `get_next_actions` walks
+# contacts only, so twenty applications sat at `applied` indefinitely.
+
+
+def test_application_status_rules_cover_every_status():
+    """A status with no rule is invisible to the planner forever.
+
+    Same guard as `contact_service._check_status_coverage` — the contact
+    pipeline shipped that hole once already, with `messaged`.
+    """
+    from linkedin.services.application_service import (
+        APPLICATION_STATUS_RULES,
+        APPLICATION_STATUSES,
+        TERMINAL_APPLICATION_STATUSES,
+    )
+
+    covered = set(APPLICATION_STATUS_RULES) | set(TERMINAL_APPLICATION_STATUSES)
+    assert covered == set(APPLICATION_STATUSES)
+
+
+def test_applied_application_becomes_due_after_the_wait(svc):
+
+    app = svc.add_application("Netflix", "ML Engineer")
+    svc.advance(app["id"], "applied")
+    stored = svc.get_application(app["id"])
+    _age(stored, days=21)
+    svc.applications.update(stored)
+
+    actions = svc.get_application_actions()
+    assert len(actions) == 1
+    assert actions[0]["application_id"] == app["id"]
+    assert actions[0]["action"] == "chase_application"
+    assert "21" in actions[0]["reason"]
+
+
+def test_freshly_applied_application_is_not_due(svc):
+    app = svc.add_application("Netflix", "ML Engineer")
+    svc.advance(app["id"], "applied")
+    assert svc.get_application_actions() == []
+
+
+def test_terminal_applications_generate_no_actions(svc):
+    from datetime import datetime, timedelta
+
+    for status in ("rejected", "accepted", "ghosted"):
+        app = svc.add_application(f"Co-{status}", "Role")
+        svc.advance(app["id"], status)
+        stored = svc.get_application(app["id"])
+        stored["created_at"] = (datetime.now() - timedelta(days=300)).isoformat()
+        svc.applications.update(stored)
+
+    assert svc.get_application_actions() == []
+
+
+def test_saved_application_is_due_immediately(svc):
+    """A saved job you never applied to is the whole point of saving it."""
+    svc.add_application("Netflix", "ML Engineer")
+    actions = svc.get_application_actions()
+    assert len(actions) == 1
+    assert actions[0]["action"] == "apply_to_saved"
+
+
+def test_actions_are_sorted_by_priority_and_capped(svc):
+
+    for i in range(5):
+        app = svc.add_application(f"Co{i}", "Role")
+        svc.advance(app["id"], "applied")
+        stored = svc.get_application(app["id"])
+        _age(stored, days=30 + i)
+        svc.applications.update(stored)
+
+    actions = svc.get_application_actions(limit=3)
+    assert len(actions) == 3
+    priorities = [a["priority"] for a in actions]
+    assert priorities == sorted(priorities, reverse=True)
+
+
+def test_application_with_no_usable_date_is_surfaced_not_skipped(svc):
+    """Mirrors `repair_contact`: a stranded row must not sit invisible."""
+    app = svc.add_application("Netflix", "ML Engineer")
+    stored = svc.get_application(app["id"])
+    stored["status"] = "applied"
+    stored["applied_date"] = None
+    stored["created_at"] = None
+    svc.applications.update(stored)
+
+    actions = svc.get_application_actions()
+    assert len(actions) == 1
+    assert actions[0]["action"] == "repair_application"
+
+
+def test_an_import_does_not_reset_the_clock_on_an_old_application(svc):
+    """Bookkeeping timestamps must not count as contact with the employer.
+
+    Importing an application sent weeks ago wrote `created_at` of today, and a
+    reference date of max(created_at, applied_date) made it look brand new — so
+    a stale application would not come up for chasing until ten days after the
+    *import*.
+    """
+    from datetime import datetime, timedelta
+
+    app = svc.add_application("stripe", "Technical Solutions Engineer")
+    stored = svc.get_application(app["id"])
+    old = (datetime.now() - timedelta(days=21)).isoformat()
+    stored["status"] = "applied"
+    stored["applied_date"] = old
+    stored["history"] = [{"status": "applied", "date": old, "notes": "Imported from autoapply"}]
+    stored["created_at"] = datetime.now().isoformat()  # the import happened today
+    svc.applications.update(stored)
+
+    actions = svc.get_application_actions()
+    assert len(actions) == 1
+    assert actions[0]["action"] == "chase_application"
+    assert "21" in actions[0]["reason"]

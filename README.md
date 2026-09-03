@@ -85,6 +85,8 @@ linkedin-cli contacts due --days 7              # Show follow-ups due within 7 d
 linkedin-cli contacts next-actions              # Prioritized outreach to-dos
 linkedin-cli contacts next-actions --generate-drafts --save-drafts  # Auto-generate actionable drafts
 linkedin-cli contacts remind 1 --days 7         # Set follow-up reminder
+linkedin-cli contacts repair --dry-run           # Preview backfill of missing dates
+linkedin-cli contacts repair                     # Backfill so stalled contacts become actionable
 linkedin-cli contacts dedupe                    # Find likely duplicates with confidence scores
 linkedin-cli contacts merge 1 2                 # Merge duplicate contact #2 into #1
 linkedin-cli contacts stats                     # View pipeline stats
@@ -210,6 +212,7 @@ linkedin-cli automate post --text "Shipped a thing"   # Ad-hoc post (asks for co
 linkedin-cli automate engage --contact-id 1 --contact-id 2 --likes 2  # Warm up targets
 linkedin-cli automate engage --feed --likes 5         # Like posts on your feed
 linkedin-cli automate engage --feed --likes 5 --comments 2  # ...and leave AI-personalized comments
+# Each AI comment is shown for approval before posting; --yes skips the review
 
 # Profile appearance
 linkedin-cli automate sync-profile --headline-from-profile          # Push local profile headline
@@ -296,6 +299,12 @@ linkedin-cli run-history --status failed --limit 50 --json  # Inspect recent fai
 ```
 
 Run reliability notes:
+- Every `automate` run ends by reporting any LinkedIn selector that matched
+  nothing, so a markup change is visible instead of looking like a quiet feed.
+  Selectors live in `src/linkedin/automation/selectors.py`.
+- `run-daily` exits **nonzero** on `failed` and on `no_actions` — the planner finding
+  nothing while contacts are still in the pipeline is a stall, not a success. Run
+  `contacts repair` and `contacts next-actions` to see why.
 - `run-daily` acquires a lock file to prevent overlapping runs.
 - Scheduled watch runs are idempotent by day (`schedule:<time>:<YYYY-MM-DD>`).
 - Watch mode can catch up missed same-day runs (`--catch-up-missed`, enabled by default).

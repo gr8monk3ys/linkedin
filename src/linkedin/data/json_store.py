@@ -1,6 +1,8 @@
 """JSON file-based implementation of repository interfaces."""
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 from linkedin.data.repository import (
@@ -42,6 +44,7 @@ APPLICATIONS_FILE = DATA_DIR / "applications.json"
 CONVERSATIONS_FILE = DATA_DIR / "conversations.json"
 CALENDAR_FILE = DATA_DIR / "content_calendar.json"
 INTERVIEW_PREP_FILE = DATA_DIR / "interview_prep.json"
+INBOX_PROPOSALS_FILE = DATA_DIR / "inbox_proposals.json"
 
 
 def ensure_dirs():
@@ -57,8 +60,27 @@ def load_json(path: Path, default=None):
 
 
 def save_json(path: Path, data):
-    ensure_dirs()
-    path.write_text(json.dumps(data, indent=2, default=str))
+    """Write `data` to `path` atomically.
+
+    Every mutation rewrites the whole file, so a plain write that is interrupted
+    (crash, Ctrl-C, full disk) leaves a truncated file and loses every record.
+    Serialize first, write to a sibling temp file, fsync, then rename — on POSIX
+    the rename is atomic, so readers see either the old file or the new one.
+    """
+    payload = json.dumps(data, indent=2, default=str)
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _next_id(items: list[dict]) -> int:
@@ -168,6 +190,14 @@ class JsonDraftRepo(DraftRepo):
     def next_id(self) -> int:
         drafts = self.list_all()
         return _next_id(drafts)
+
+    def delete(self, draft_id: int) -> bool:
+        drafts = self.list_all()
+        remaining = [d for d in drafts if d["id"] != draft_id]
+        if len(remaining) == len(drafts):
+            return False
+        save_json(DRAFTS_FILE, remaining)
+        return True
 
 
 class JsonResearchRepo(ResearchRepo):

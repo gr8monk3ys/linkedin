@@ -12,6 +12,7 @@ with the ``LINKEDIN_RESUME_REPO`` env var or an explicit ``repo_root``.
 
 from __future__ import annotations
 
+import html
 import os
 import re
 import sqlite3
@@ -137,18 +138,25 @@ def import_autoapply_applications(repo_root: str = "", include_queued: bool = Fa
 
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    # `discovered_at` was added to the pipeline's schema later; an older
+    # checkout does not have it, and the fallback is optional, not required.
+    has_discovered = any(
+        row[1] == "discovered_at" for row in conn.execute("PRAGMA table_info(jobs)")
+    )
+
+    discovered = "j.discovered_at" if has_discovered else "NULL AS discovered_at"
+    placeholders = ",".join("?" * len(statuses))
+    query = (
+        "SELECT j.company, j.title, j.url, j.description, j.status, j.variant, "
+        f"{discovered}, a.resume_path, a.cover_path, a.submitted_at "
+        "FROM jobs j "
+        "LEFT JOIN applications a ON a.job_id = j.id "
+        f"WHERE j.status IN ({placeholders}) "
+        "ORDER BY j.id"
+    )
+
     try:
-        rows = conn.execute(
-            """
-            SELECT j.company, j.title, j.url, j.description, j.status, j.variant,
-                   a.resume_path, a.cover_path, a.submitted_at
-            FROM jobs j
-            LEFT JOIN applications a ON a.job_id = j.id
-            WHERE j.status IN ({})
-            ORDER BY j.id
-            """.format(",".join("?" * len(statuses))),
-            sorted(statuses),
-        ).fetchall()
+        rows = conn.execute(query, sorted(statuses)).fetchall()
     finally:
         conn.close()
 
@@ -157,12 +165,21 @@ def import_autoapply_applications(repo_root: str = "", include_queued: bool = Fa
         status = AUTOAPPLY_STATUS_MAP.get(row["status"], "saved")
         imported.append(
             {
-                "company": row["company"] or "",
-                "title": row["title"] or "",
+                # The pipeline scrapes job pages, so text arrives HTML-encoded.
+                # "LA28 Olympic &amp; Paralympic Games" is a real row, and an
+                # undecoded company name would be carried straight into a cover
+                # letter addressed to them.
+                "company": _decode(row["company"]),
+                "title": _decode(row["title"]),
                 "url": row["url"] or "",
-                "jd_text": (row["description"] or "")[:5000],
+                "jd_text": _decode(row["description"])[:5000],
                 "status": status,
-                "applied_date": row["submitted_at"],
+                # `submitted_at` is null for most rows while `discovered_at`
+                # never is. Without the fallback everything imports as "applied
+                # today", so the planner times the import instead of the
+                # application and a weeks-old application waits ten more days.
+                "applied_date": row["submitted_at"] or row["discovered_at"],
+                "applied_date_is_approximate": not row["submitted_at"],
                 "resume_variant": row["variant"] or "",
                 "resume_path": row["resume_path"] or "",
                 "cover_letter_path": row["cover_path"] or "",
@@ -170,6 +187,11 @@ def import_autoapply_applications(repo_root: str = "", include_queued: bool = Fa
             }
         )
     return imported
+
+
+def _decode(value) -> str:
+    """Unescape scraped HTML text (`&amp;` -> `&`)."""
+    return html.unescape(value or "").strip()
 
 
 def merge_into_applications(entries: list[dict], application_repo) -> tuple[list[dict], int]:

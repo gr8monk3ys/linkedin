@@ -11,14 +11,8 @@ A local tool to accelerate your job search:
 
 import json
 import os
-import re
 import shlex
-import shutil
-import subprocess
-import sys
 import time
-import urllib.error
-import urllib.request
 import uuid
 from datetime import datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version
@@ -46,17 +40,44 @@ from linkedin.constants import (
     ContactStatus,
 )
 from linkedin.data.factory import create_repos
+from linkedin.scheduling.crontab import (
+    AUTOMATION_ENV_KEYS,
+    build_cron_shell_command,
+    build_managed_cron_block,
+    build_managed_cron_job_line,
+    cron_env_file_from_job_line,
+    cron_schedule_time_from_job_line,
+    default_automation_env_file,
+    env_file_status,
+    extract_managed_cron_job_line,
+    find_unmanaged_run_daily_cron_jobs,
+    read_user_crontab_lines,
+    strip_legacy_scheduler_comment_lines,
+    strip_managed_cron_block,
+    strip_unmanaged_run_daily_cron_jobs,
+    write_env_file,
+    write_user_crontab_lines,
+)
+from linkedin.scheduling.schedule import (
+    build_scheduled_run_daily_tokens,
+    default_scheduler_runner_tokens,
+    next_scheduled_run,
+    parse_schedule_time,
+    runner_tokens_from_option,
+    scheduled_run_for_date,
+)
 from linkedin.services.analytics_service import AnalyticsService
 from linkedin.services.application_service import ApplicationService
-from linkedin.services.automation_service import AutomationService
+from linkedin.services.automation_service import AutomationService, publish_unreviewed
 from linkedin.services.calendar_service import ContentCalendarService
 from linkedin.services.company_service import CompanyService
-from linkedin.services.contact_service import ContactService
+from linkedin.services.contact_service import STATUS_RULES, ContactService, parse_iso_date
 from linkedin.services.conversation_service import ConversationService
 from linkedin.services.dashboard_service import DashboardService
 from linkedin.services.data_service import DataService
 from linkedin.services.discover_service import DiscoverService
 from linkedin.services.draft_service import DraftService
+from linkedin.services.inbox_service import InboxService
 from linkedin.services.interview_service import InterviewService
 from linkedin.services.market_service import MarketService
 from linkedin.services.optimizer_service import OptimizerService
@@ -69,6 +90,22 @@ from linkedin.services.resume_service import (
     match_variants,
     merge_into_applications,
     resolve_pdf,
+)
+from linkedin.services.run_state import (
+    acquire_run_lock,
+    append_run_log,
+    effective_idempotency_key,
+    entry_timestamp,
+    failure_streak,
+    get_last_failure_streak_notified,
+    health_lock_check,
+    idempotency_key_seen,
+    load_run_history_entries,
+    load_run_state,
+    record_idempotency_key,
+    release_run_lock,
+    send_run_notification,
+    set_last_failure_streak_notified,
 )
 from linkedin.services.template_service import TemplateService
 
@@ -114,6 +151,7 @@ _interview_svc = InterviewService(_application_repo, _interview_prep_repo, _prof
 _conversation_svc = ConversationService(_conversation_repo, _contact_repo)
 _calendar_svc = ContentCalendarService(_calendar_repo)
 _automation_svc = AutomationService(_profile_repo)
+_inbox_svc = InboxService()
 
 NEXT_ACTION_LABELS = {
     "follow_up_overdue": "Follow up (overdue)",
@@ -121,6 +159,10 @@ NEXT_ACTION_LABELS = {
     "stale_connection_sent": "Follow up on stale request",
     "send_first_message": "Send first message",
     "schedule_call": "Propose a call",
+    "follow_up_messaged": "Follow up (no reply)",
+    "send_connection": "Send connection request",
+    "call_follow_up": "Confirm or debrief call",
+    "repair_contact": "Repair missing dates",
 }
 NEXT_ACTION_COMMANDS = {
     "follow_up_overdue": "linkedin-cli drafts follow-up {id}",
@@ -128,10 +170,56 @@ NEXT_ACTION_COMMANDS = {
     "stale_connection_sent": "linkedin-cli drafts follow-up {id}",
     "send_first_message": "linkedin-cli drafts message {id}",
     "schedule_call": "linkedin-cli contacts update {id} --status call_scheduled",
+    "follow_up_messaged": "linkedin-cli drafts follow-up {id}",
+    "send_connection": "linkedin-cli drafts connection {id}",
+    "call_follow_up": "linkedin-cli contacts view {id}",
+    "repair_contact": "linkedin-cli contacts repair",
 }
-AUTOMATION_CRON_BEGIN = "# >>> linkedin-cli run-daily managed >>>"
-AUTOMATION_CRON_END = "# <<< linkedin-cli run-daily managed <<<"
-AUTOMATION_ENV_KEYS = ("ANTHROPIC_API_KEY", "LINKEDIN_RUN_NOTIFY_WEBHOOK")
+
+APPLICATION_ACTION_LABELS = {
+    "apply_to_saved": "Apply (saved, never submitted)",
+    "chase_application": "Chase (no response)",
+    "chase_interview": "Chase interview outcome",
+    "respond_to_offer": "Respond to offer",
+    "repair_application": "Repair missing dates",
+}
+APPLICATION_ACTION_COMMANDS = {
+    "apply_to_saved": "linkedin-cli applications advance {id} --status applied",
+    "chase_application": "linkedin-cli applications view {id}",
+    "chase_interview": "linkedin-cli applications view {id}",
+    "respond_to_offer": "linkedin-cli applications view {id}",
+    "repair_application": "linkedin-cli applications view {id}",
+}
+
+
+def _warn_if_fallback(used_context: bool = False) -> None:
+    """Say out loud when a draft came from the offline template.
+
+    A template is not a draft: it knows nothing about the conversation and
+    cannot use --context. Passing one back silently is how a --context of
+    instructions ended up as the message body. The API key commonly lives in
+    ~/.linkedin-cli/cron.env, which only cron sources — so scheduled runs get
+    real drafts while interactive ones quietly degrade.
+    """
+    if not _draft_svc.last_draft_was_fallback:
+        return
+    console.print(
+        f"[yellow]⚠ AI unavailable ({_draft_svc.last_draft_error}) — this is an offline template, not a draft.[/yellow]"
+    )
+    if used_context:
+        console.print("[yellow]  Your --context was NOT used. Edit before sending.[/yellow]")
+    console.print(
+        "[dim]  Set ANTHROPIC_API_KEY (one may already be in ~/.linkedin-cli/cron.env).[/dim]"
+    )
+
+
+def load_inbox_proposals() -> list[dict]:
+    """Proposed pipeline transitions awaiting confirmation."""
+    return json_store.load_json(json_store.INBOX_PROPOSALS_FILE, [])
+
+
+def save_inbox_proposals(proposals: list[dict]) -> None:
+    json_store.save_json(json_store.INBOX_PROPOSALS_FILE, proposals)
 
 
 def _save_daily_plan_recap(
@@ -140,8 +228,12 @@ def _save_daily_plan_recap(
     postings: list[dict],
     template_rows: list[tuple[str, dict]],
     recap_dir: str = "",
+    application_actions: list[dict] | None = None,
+    proposals: list[dict] | None = None,
 ) -> Path:
     """Persist a markdown snapshot of the daily plan and return its path."""
+    application_actions = application_actions or []
+    proposals = proposals or []
     out_dir = Path(recap_dir) if recap_dir else json_store.DATA_DIR / "recaps"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -168,6 +260,30 @@ def _save_daily_plan_recap(
                 f"- [{action['priority']}] {action.get('name', 'Unknown')} ({action.get('company', '')})"
                 f" | {NEXT_ACTION_LABELS.get(action['action'], action['action'])}"
                 f" | `{command_template.format(id=action['contact_id'])}`"
+            )
+
+    lines.extend(["", "## Inbound (needs your confirmation)"])
+    if not proposals:
+        lines.append("- Nothing new. Run `linkedin-cli inbox sync` to check.")
+    else:
+        for proposal in proposals:
+            flag = " [low confidence]" if proposal.get("confidence") == "low" else ""
+            lines.append(
+                f"- {proposal.get('name', 'Unknown')}: {proposal.get('from_status', '')}"
+                f" -> {proposal.get('to_status', '')}{flag} | {proposal.get('evidence', '')}"
+            )
+        lines.append("- Review with: `linkedin-cli inbox review`")
+
+    lines.extend(["", "## Applications"])
+    if not application_actions:
+        lines.append("- No applications need attention today.")
+    else:
+        for action in application_actions:
+            command = APPLICATION_ACTION_COMMANDS.get(action["action"], "linkedin-cli applications view {id}")
+            lines.append(
+                f"- [{action['priority']}] {action.get('title', 'Unknown')} @ {action.get('company', '')}"
+                f" | {APPLICATION_ACTION_LABELS.get(action['action'], action['action'])}"
+                f" | `{command.format(id=action['application_id'])}`"
             )
 
     lines.extend(["", "## Best-Match Opportunities"])
@@ -208,6 +324,8 @@ def _build_daily_plan_data(actions_limit: int, postings_limit: int, min_posting_
     profile = _profile_svc.get_profile()
     actions = _contact_svc.get_next_actions(limit=actions_limit)
     postings = _market_svc.list_postings(limit=postings_limit, min_score=min_posting_score)
+    application_actions = _application_svc.get_application_actions(limit=actions_limit)
+    proposals = load_inbox_proposals()
 
     template_rows: list[tuple[str, dict]] = []
     template_recommendations: list[dict] = []
@@ -224,6 +342,8 @@ def _build_daily_plan_data(actions_limit: int, postings_limit: int, min_posting_
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "profile": profile,
         "actions": actions,
+        "application_actions": application_actions,
+        "inbox_proposals": proposals,
         "postings": postings,
         "templates": template_recommendations,
     }, template_rows
@@ -262,6 +382,41 @@ def _render_daily_plan(data: dict) -> None:
                 command_template.format(id=action["contact_id"]),
             )
         console.print(action_table)
+
+    proposals = data.get("inbox_proposals") or []
+    if proposals:
+        console.print("\n[bold]Inbound — needs your confirmation[/bold]")
+        inbound_table = Table()
+        inbound_table.add_column("Contact", style="cyan")
+        inbound_table.add_column("Transition", style="yellow")
+        inbound_table.add_column("Evidence", style="dim")
+        for proposal in proposals:
+            marker = " [red](low)[/red]" if proposal.get("confidence") == "low" else ""
+            inbound_table.add_row(
+                proposal.get("name", "Unknown"),
+                f"{proposal.get('from_status', '')} → {proposal.get('to_status', '')}{marker}",
+                proposal.get("evidence", ""),
+            )
+        console.print(inbound_table)
+        console.print("  [dim]Apply with: linkedin-cli inbox review[/dim]")
+
+    application_actions = data.get("application_actions") or []
+    if application_actions:
+        console.print("\n[bold]Applications[/bold]")
+        app_table = Table()
+        app_table.add_column("Priority", style="dim")
+        app_table.add_column("Role", style="cyan")
+        app_table.add_column("Action", style="yellow")
+        app_table.add_column("Command", style="green")
+        for action in application_actions:
+            command = APPLICATION_ACTION_COMMANDS.get(action["action"], "linkedin-cli applications view {id}")
+            app_table.add_row(
+                str(action["priority"]),
+                f"{action.get('title', '')} @ {action.get('company', '')}",
+                APPLICATION_ACTION_LABELS.get(action["action"], action["action"]),
+                command.format(id=action["application_id"]),
+            )
+        console.print(app_table)
 
     console.print("\n[bold]2) Best-Match Opportunities[/bold]")
     if not postings:
@@ -434,682 +589,27 @@ def _run_daily_cycle(
             data["postings"],
             template_rows,
             recap_dir=recap_dir,
+            application_actions=data["application_actions"],
+            proposals=data["inbox_proposals"],
         )
         data["recap_path"] = str(recap_path)
 
     return data
 
 
-def _parse_schedule_time(schedule_time: str) -> tuple[int, int]:
-    parts = schedule_time.split(":", maxsplit=1)
-    if len(parts) != 2:
-        raise ValueError("Time must use HH:MM format (24-hour).")
-
-    try:
-        hour = int(parts[0])
-        minute = int(parts[1])
-    except ValueError as exc:
-        raise ValueError("Time must use HH:MM format (24-hour).") from exc
-
-    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
-        raise ValueError("Time must use HH:MM format (24-hour).")
-    return hour, minute
-
-
-def _scheduled_run_for_date(schedule_time: str, day: datetime.date) -> datetime:
-    hour, minute = _parse_schedule_time(schedule_time)
-    return datetime.combine(day, datetime.min.time()).replace(hour=hour, minute=minute)
-
-
-def _next_scheduled_run(schedule_time: str, now: datetime | None = None) -> datetime:
-    current = now or datetime.now()
-    candidate = _scheduled_run_for_date(schedule_time, current.date())
-
-    if candidate <= current:
-        candidate += timedelta(days=1)
-    return candidate
-
-
-def _default_scheduler_runner_tokens() -> list[str]:
-    uv_path = shutil.which("uv")
-    if uv_path:
-        return [uv_path, "run", "linkedin-cli"]
-
-    cli_path = shutil.which("linkedin-cli")
-    if cli_path:
-        return [cli_path]
-
-    return [sys.executable, "-m", "linkedin.cli"]
-
-
-def _runner_tokens_from_option(runner: str) -> tuple[list[str], str | None]:
-    if not runner.strip():
-        return _default_scheduler_runner_tokens(), None
-
-    try:
-        tokens = shlex.split(runner)
-    except ValueError as exc:
-        return [], f"Invalid --runner value: {exc}"
-
-    if not tokens:
-        return [], "Invalid --runner value: expected a command."
-    return tokens, None
-
-
-def _build_scheduled_run_daily_tokens(
-    runner_tokens: list[str],
-    *,
-    save_recap: bool,
-    generate_drafts: bool,
-    save_drafts: bool,
-    retry_attempts: int,
-    retry_backoff_seconds: float,
-    failure_streak_threshold: int,
-    notify_on_recovery: bool,
-    notify_webhook: str,
-) -> list[str]:
-    command = [
-        *runner_tokens,
-        "run-daily",
-        "--json",
-        "--retry-attempts",
-        str(retry_attempts),
-        "--retry-backoff-seconds",
-        str(retry_backoff_seconds),
-        "--failure-streak-threshold",
-        str(failure_streak_threshold),
-    ]
-    if save_recap:
-        command.append("--save-recap")
-    if generate_drafts:
-        command.append("--generate-drafts")
-    if save_drafts:
-        command.append("--save-drafts")
-    if notify_webhook.strip():
-        command.extend(["--notify-webhook", notify_webhook.strip()])
-    if not notify_on_recovery:
-        command.append("--no-notify-on-recovery")
-    return command
-
-
-def _default_automation_env_file() -> Path:
-    return json_store.DATA_DIR / "cron.env"
-
-
-def _sanitize_env_key(name: str) -> str:
-    return re.sub(r"[^A-Z0-9_]", "_", str(name).strip().upper())
-
-
-def _extract_exported_env_vars(path: Path) -> dict[str, str]:
-    if not path.exists():
-        return {}
-
-    env_vars: dict[str, str] = {}
-    for raw_line in path.read_text().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        if line.startswith("export "):
-            line = line[len("export "):].strip()
-        if "=" not in line:
-            continue
-
-        key, value = line.split("=", maxsplit=1)
-        key = _sanitize_env_key(key)
-        if not key:
-            continue
-        value = value.strip().strip("'").strip('"')
-        env_vars[key] = value
-    return env_vars
-
-
-def _write_env_file(path: Path, updates: dict[str, str]) -> tuple[bool, dict[str, str], str | None]:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        return False, {}, str(exc)
-
-    current = _extract_exported_env_vars(path)
-    for key, value in updates.items():
-        sanitized_key = _sanitize_env_key(key)
-        if not sanitized_key:
-            continue
-        trimmed = str(value).strip()
-        if trimmed:
-            current[sanitized_key] = trimmed
-
-    lines = [
-        "# Managed by linkedin-cli automation env sync",
-        "# Used by cron-managed run-daily jobs",
-    ]
-    for key in sorted(current):
-        lines.append(f"export {key}={shlex.quote(current[key])}")
-    path.write_text("\n".join(lines) + "\n")
-
-    try:
-        path.chmod(0o600)
-    except OSError:
-        # Not all filesystems honor chmod; continue with best effort.
-        pass
-
-    return True, current, None
-
-
-def _env_file_status(path: Path) -> dict:
-    exists = path.exists()
-    if not exists:
-        return {
-            "path": str(path),
-            "exists": False,
-            "has_anthropic_api_key": False,
-            "key_count": 0,
-            "mode": "",
-        }
-
-    env_vars = _extract_exported_env_vars(path)
-    mode = ""
-    try:
-        mode = oct(path.stat().st_mode & 0o777)
-    except OSError:
-        mode = ""
-    return {
-        "path": str(path),
-        "exists": True,
-        "has_anthropic_api_key": bool(env_vars.get("ANTHROPIC_API_KEY")),
-        "key_count": len(env_vars),
-        "mode": mode,
-    }
-
-
-def _build_cron_shell_command(workdir: Path, run_tokens: list[str], env_file: Path | None = None) -> str:
-    segments = [f"cd {shlex.quote(str(workdir))}"]
-    if env_file is not None:
-        env_file_str = shlex.quote(str(env_file))
-        segments.append(f"if [ -f {env_file_str} ]; then set -a; source {env_file_str}; set +a; fi")
-    segments.append(shlex.join(run_tokens))
-    inner = " && ".join(segments)
-    return f"/bin/zsh -lc {shlex.quote(inner)}"
-
-
-def _build_managed_cron_job_line(
-    schedule_time: str,
-    cron_command: str,
-    stdout_log: Path,
-    stderr_log: Path,
-) -> str:
-    hour, minute = _parse_schedule_time(schedule_time)
-    return (
-        f"{minute} {hour} * * * {cron_command} "
-        f">> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
-    )
-
-
-def _build_managed_cron_block(job_line: str) -> list[str]:
-    timestamp = datetime.now().isoformat(timespec="seconds")
-    return [
-        AUTOMATION_CRON_BEGIN,
-        f"# Managed by linkedin-cli automation schedule ({timestamp})",
-        job_line,
-        AUTOMATION_CRON_END,
-    ]
-
-
-def _strip_managed_cron_block(lines: list[str]) -> tuple[list[str], bool]:
-    cleaned: list[str] = []
-    in_block = False
-    removed = False
-
-    for raw_line in lines:
-        line = raw_line.strip()
-        if line == AUTOMATION_CRON_BEGIN:
-            in_block = True
-            removed = True
-            continue
-
-        if in_block and line == AUTOMATION_CRON_END:
-            in_block = False
-            continue
-
-        if in_block:
-            removed = True
-            continue
-
-        cleaned.append(raw_line)
-
-    return cleaned, removed
-
-
-def _extract_managed_cron_job_line(lines: list[str]) -> str:
-    in_block = False
-    for raw_line in lines:
-        line = raw_line.strip()
-        if line == AUTOMATION_CRON_BEGIN:
-            in_block = True
-            continue
-        if in_block and line == AUTOMATION_CRON_END:
-            return ""
-        if in_block and line and not line.startswith("#"):
-            return line
-    return ""
-
-
-def _find_unmanaged_run_daily_cron_jobs(lines: list[str]) -> list[str]:
-    jobs: list[str] = []
-    in_managed_block = False
-    for raw_line in lines:
-        line = raw_line.strip()
-        if line == AUTOMATION_CRON_BEGIN:
-            in_managed_block = True
-            continue
-        if line == AUTOMATION_CRON_END:
-            in_managed_block = False
-            continue
-        if in_managed_block or not line or line.startswith("#"):
-            continue
-
-        lowered = line.lower()
-        if "run-daily" in lowered and ("linkedin-cli" in lowered or "linkedin.cli" in lowered):
-            jobs.append(line)
-    return jobs
-
-
-def _strip_unmanaged_run_daily_cron_jobs(lines: list[str]) -> tuple[list[str], int]:
-    cleaned: list[str] = []
-    removed = 0
-
-    for raw_line in lines:
-        line = raw_line.strip()
-        if line and not line.startswith("#"):
-            lowered = line.lower()
-            if "run-daily" in lowered and ("linkedin-cli" in lowered or "linkedin.cli" in lowered):
-                removed += 1
-                continue
-        cleaned.append(raw_line)
-
-    return cleaned, removed
-
-
-def _strip_legacy_scheduler_comment_lines(lines: list[str]) -> tuple[list[str], int]:
-    cleaned: list[str] = []
-    removed = 0
-    legacy_markers = {
-        "# linkedin-cli daily automation (managed by codex)",
-        "# end linkedin-cli daily automation",
-    }
-
-    for raw_line in lines:
-        if raw_line.strip().lower() in legacy_markers:
-            removed += 1
-            continue
-        cleaned.append(raw_line)
-
-    return cleaned, removed
-
-
-def _cron_schedule_time_from_job_line(job_line: str) -> str:
-    parts = job_line.split()
-    if len(parts) < 6:
-        return ""
-
-    minute_token, hour_token, dom, month, dow = parts[:5]
-    if dom != "*" or month != "*" or dow != "*":
-        return ""
-
-    if not minute_token.isdigit() or not hour_token.isdigit():
-        return ""
-
-    minute = int(minute_token)
-    hour = int(hour_token)
-    if minute < 0 or minute > 59 or hour < 0 or hour > 23:
-        return ""
-    return f"{hour:02d}:{minute:02d}"
-
-
-def _cron_env_file_from_job_line(job_line: str) -> Path | None:
-    if not job_line:
-        return None
-
-    match = re.search(r"source\s+([^;]+);", job_line)
-    if not match:
-        return None
-
-    candidate = match.group(1).strip().strip("'").strip('"')
-    if not candidate:
-        return None
-    return Path(candidate).expanduser()
-
-
-def _read_user_crontab_lines() -> tuple[list[str], str | None]:
-    try:
-        result = subprocess.run(
-            ["crontab", "-l"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return [], "crontab command not found."
-
-    if result.returncode == 0:
-        return result.stdout.splitlines(), None
-
-    stderr = (result.stderr or result.stdout or "").strip()
-    lower = stderr.lower()
-    if "no crontab for" in lower or "no crontab" in lower:
-        return [], None
-    return [], stderr or f"crontab -l failed with exit code {result.returncode}."
-
-
-def _write_user_crontab_lines(lines: list[str]) -> str | None:
-    payload = "\n".join(lines).rstrip()
-    if payload:
-        payload += "\n"
-
-    try:
-        result = subprocess.run(
-            ["crontab", "-"],
-            input=payload,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        return "crontab command not found."
-
-    if result.returncode != 0:
-        return (result.stderr or result.stdout or "").strip() or f"crontab install failed with exit code {result.returncode}."
-    return None
-
-
-def _load_run_state() -> dict:
-    raw = json_store.load_json(
-        json_store.RUN_DAILY_STATE_FILE,
-        {"completed_idempotency_keys": [], "alerts": {}},
-    )
-    if not isinstance(raw, dict):
-        return {"completed_idempotency_keys": [], "alerts": {}}
-
-    completed_raw = raw.get("completed_idempotency_keys", [])
-    if not isinstance(completed_raw, list):
-        completed_raw = []
-
-    completed: list[dict] = []
-    for item in completed_raw:
-        if isinstance(item, str):
-            completed.append({"key": item, "completed_at": ""})
-            continue
-        if not isinstance(item, dict):
-            continue
-        key = item.get("key")
-        if isinstance(key, str) and key:
-            completed.append({
-                "key": key,
-                "completed_at": str(item.get("completed_at", "")),
-                "run_id": str(item.get("run_id", "")),
-            })
-
-    alerts_raw = raw.get("alerts", {})
-    if not isinstance(alerts_raw, dict):
-        alerts_raw = {}
-
-    last_failure_streak_notified = alerts_raw.get("last_failure_streak_notified", 0)
-    try:
-        last_failure_streak_notified = int(last_failure_streak_notified)
-    except (TypeError, ValueError):
-        last_failure_streak_notified = 0
-
-    return {
-        "completed_idempotency_keys": completed[-1000:],
-        "alerts": {
-            "last_failure_streak_notified": max(0, last_failure_streak_notified),
-        },
-    }
-
-
-def _save_run_state(state: dict) -> None:
-    json_store.save_json(json_store.RUN_DAILY_STATE_FILE, state)
-
-
-def _failure_streak(entries: list[dict]) -> int:
-    streak = 0
-    for entry in reversed(entries):
-        status = str(entry.get("status", ""))
-        if status == "failed":
-            streak += 1
-            continue
-        if status == "success":
-            break
-    return streak
-
-
-def _get_last_failure_streak_notified() -> int:
-    state = _load_run_state()
-    alerts = state.get("alerts", {})
-    if not isinstance(alerts, dict):
-        return 0
-    try:
-        return max(0, int(alerts.get("last_failure_streak_notified", 0)))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _set_last_failure_streak_notified(streak: int) -> None:
-    state = _load_run_state()
-    alerts = state.get("alerts", {})
-    if not isinstance(alerts, dict):
-        alerts = {}
-    alerts["last_failure_streak_notified"] = max(0, int(streak))
-    state["alerts"] = alerts
-    _save_run_state(state)
-
-
-def _idempotency_key_seen(key: str) -> bool:
-    if not key:
-        return False
-    state = _load_run_state()
-    completed = state.get("completed_idempotency_keys", [])
-    return any(item.get("key") == key for item in completed if isinstance(item, dict))
-
-
-def _record_idempotency_key(key: str, run_id: str) -> None:
-    if not key:
-        return
-    state = _load_run_state()
-    completed = state.get("completed_idempotency_keys", [])
-    if not isinstance(completed, list):
-        completed = []
-    completed.append({
-        "key": key,
-        "completed_at": datetime.now().isoformat(timespec="seconds"),
-        "run_id": run_id,
-    })
-    state["completed_idempotency_keys"] = completed[-1000:]
-    _save_run_state(state)
-
-
-def _append_run_log(entry: dict) -> None:
-    json_store.ensure_dirs()
-    path = json_store.RUN_DAILY_LOG_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(entry, default=str) + "\n")
-
-
-def _load_run_history_entries() -> list[dict]:
-    path = json_store.RUN_DAILY_LOG_FILE
-    if not path.exists():
-        return []
-
-    entries: list[dict] = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(raw, dict):
-            entries.append(raw)
-    return entries
-
-
-def _entry_timestamp(entry: dict) -> datetime | None:
-    return _parse_iso_datetime(str(entry.get("finished_at") or entry.get("started_at") or ""))
-
-
-def _parse_iso_datetime(value: str) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if parsed.tzinfo is not None:
-            return parsed.astimezone().replace(tzinfo=None)
-        return parsed
-    except ValueError:
-        return None
-
-
-def _health_lock_check(lock_ttl_minutes: int) -> dict:
-    lock_path = json_store.RUN_DAILY_LOCK_FILE
-    if not lock_path.exists():
-        return {"status": "ok", "detail": "No active run lock."}
-
-    now = datetime.now()
-    max_age = timedelta(minutes=max(1, lock_ttl_minutes))
-    pid = ""
-    created_at = ""
-    try:
-        payload = json.loads(lock_path.read_text())
-        if isinstance(payload, dict):
-            pid = str(payload.get("pid", ""))
-            created_at = str(payload.get("created_at", ""))
-    except Exception:
-        pass
-
-    created = _parse_iso_datetime(created_at)
-    if created is None:
-        created = datetime.fromtimestamp(lock_path.stat().st_mtime)
-
-    age_seconds = max(0, int((now - created).total_seconds()))
-    if now - created > max_age:
-        return {
-            "status": "warn",
-            "detail": f"Stale lock detected (age={age_seconds}s).",
-        }
-
-    pid_part = f"pid={pid}, " if pid else ""
-    return {
-        "status": "warn",
-        "detail": f"Active lock ({pid_part}age={age_seconds}s).",
-    }
-
-
-def _acquire_run_lock(lock_ttl_minutes: int = 180) -> tuple[bool, str]:
-    json_store.ensure_dirs()
-    lock_path = json_store.RUN_DAILY_LOCK_FILE
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
-    max_age = timedelta(minutes=max(1, lock_ttl_minutes))
-
-    if lock_path.exists():
-        stale = False
-        holder_info = "unknown process"
-        try:
-            payload = json.loads(lock_path.read_text())
-            if isinstance(payload, dict):
-                pid = payload.get("pid")
-                created_at = _parse_iso_datetime(str(payload.get("created_at", "")))
-                if pid:
-                    holder_info = f"pid={pid}"
-                if created_at:
-                    age = now - created_at
-                    if age > max_age:
-                        stale = True
-                    else:
-                        holder_info = f"{holder_info}, age={int(age.total_seconds())}s"
-        except Exception:
-            pass
-
-        if not stale:
-            try:
-                age = now - datetime.fromtimestamp(lock_path.stat().st_mtime)
-                if age > max_age:
-                    stale = True
-            except OSError:
-                pass
-
-        if stale:
-            try:
-                lock_path.unlink(missing_ok=True)
-            except OSError:
-                return False, "Failed to clear stale lock file."
-        else:
-            return False, f"Another run is in progress ({holder_info})."
-
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False, "Another run is already in progress."
-
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({
-            "pid": os.getpid(),
-            "created_at": now.isoformat(timespec="seconds"),
-        }))
-    return True, ""
-
-
-def _release_run_lock() -> None:
-    try:
-        json_store.RUN_DAILY_LOCK_FILE.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-def _effective_idempotency_key(
-    key: str,
-    watch_mode: bool,
-    schedule_time: str,
-    run_at: datetime,
-) -> str:
-    trimmed = key.strip()
-    day_key = run_at.date().isoformat()
-    if trimmed:
-        if watch_mode:
-            return f"{trimmed}:{day_key}"
-        return trimmed
-    if watch_mode:
-        return f"schedule:{schedule_time}:{day_key}"
-    return ""
-
-
-def _send_run_notification(webhook_url: str, payload: dict) -> str | None:
-    if not webhook_url:
-        return None
-
-    body = {
-        "text": (
-            f"linkedin-cli run-daily {payload.get('status', 'unknown')} "
-            f"(run_id={payload.get('run_id', '-')}, trigger={payload.get('trigger', '-')})"
-        ),
-        "payload": payload,
-    }
-    req = urllib.request.Request(
-        webhook_url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            resp.read()
-    except urllib.error.URLError as exc:
-        return str(exc)
-    except Exception as exc:  # pragma: no cover - defensive
-        return str(exc)
-    return None
+def _daily_run_status(data: dict) -> tuple[str, list[dict]]:
+    """Classify a completed cycle, returning (status, stalled_contacts).
+
+    Planning nothing is only a success when every active contact is scheduled for
+    a future date — a genuinely quiet day. If a contact is due, overdue, or has no
+    follow-up date at all and the planner still produced nothing, the planner is
+    broken. That is how this job logged 136 consecutive green runs while
+    generating zero drafts.
+    """
+    if data.get("actions"):
+        return "success", []
+    stalled = _contact_svc.stalled_contacts()
+    return ("no_actions" if stalled else "success"), stalled
 
 
 def _run_daily_with_reliability(
@@ -1135,9 +635,9 @@ def _run_daily_with_reliability(
 ) -> dict:
     run_id = uuid.uuid4().hex
     started_at = datetime.now()
-    effective_key = _effective_idempotency_key(idempotency_key, watch_mode, schedule_time, run_at)
+    effective_key = effective_idempotency_key(idempotency_key, watch_mode, schedule_time, run_at)
 
-    if effective_key and not allow_duplicate and _idempotency_key_seen(effective_key):
+    if effective_key and not allow_duplicate and idempotency_key_seen(effective_key):
         result = {
             "status": "skipped_duplicate",
             "run_id": run_id,
@@ -1147,7 +647,7 @@ def _run_daily_with_reliability(
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "reason": "Idempotency key already completed.",
         }
-        _append_run_log(result)
+        append_run_log(result)
         return result
 
     streak_threshold = max(1, int(failure_streak_threshold))
@@ -1173,9 +673,9 @@ def _run_daily_with_reliability(
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "error": str(exc),
         }
-        _append_run_log(failed)
-        history = _load_run_history_entries()
-        current_streak = _failure_streak(history)
+        append_run_log(failed)
+        history = load_run_history_entries()
+        current_streak = failure_streak(history)
         failed["failure_streak"] = current_streak
 
         notification_error = None
@@ -1185,34 +685,41 @@ def _run_daily_with_reliability(
             and notify_on_failure
             and streak_mode
         ):
-            last_notified = _get_last_failure_streak_notified()
+            last_notified = get_last_failure_streak_notified()
             if current_streak > last_notified:
                 alert_payload = dict(failed)
                 alert_payload["status"] = "failed_streak"
                 alert_payload["failure_streak_threshold"] = streak_threshold
-                notification_error = _send_run_notification(notify_webhook, alert_payload)
+                notification_error = send_run_notification(notify_webhook, alert_payload)
                 if not notification_error:
-                    _set_last_failure_streak_notified(current_streak)
+                    set_last_failure_streak_notified(current_streak)
 
         if (not streak_mode) and notification_error is None and notify_webhook and notify_on_failure:
-            notification_error = _send_run_notification(notify_webhook, failed)
+            notification_error = send_run_notification(notify_webhook, failed)
 
         if notification_error:
             failed["notification_error"] = notification_error
         return failed
 
-    history_before_success = _load_run_history_entries()
-    prior_failure_streak = _failure_streak(history_before_success)
+    history_before_success = load_run_history_entries()
+    prior_failure_streak = failure_streak(history_before_success)
     finished_at = datetime.now()
-    data["status"] = "success"
+    data["status"], stalled = _daily_run_status(data)
     data["run_id"] = run_id
     data["trigger"] = trigger
     data["idempotency_key"] = effective_key
     data["started_at"] = started_at.isoformat(timespec="seconds")
     data["finished_at"] = finished_at.isoformat(timespec="seconds")
 
+    if data["status"] == "no_actions":
+        data["stalled_contact_ids"] = [c["id"] for c in stalled]
+        data["reason"] = (
+            f"{len(stalled)} contact(s) are due or have no follow-up date, "
+            "but the planner produced no actions."
+        )
+
     log_entry = {
-        "status": "success",
+        "status": data["status"],
         "run_id": run_id,
         "trigger": trigger,
         "idempotency_key": effective_key,
@@ -1225,14 +732,14 @@ def _run_daily_with_reliability(
         "drafts_saved": int(data.get("drafts", {}).get("saved", 0)),
         "recap_path": data.get("recap_path", ""),
     }
-    _append_run_log(log_entry)
+    append_run_log(log_entry)
 
     if effective_key:
-        _record_idempotency_key(effective_key, run_id)
+        record_idempotency_key(effective_key, run_id)
 
     if prior_failure_streak > 0:
         data["recovered_from_failure_streak"] = prior_failure_streak
-    _set_last_failure_streak_notified(0)
+    set_last_failure_streak_notified(0)
 
     notify_error = None
     if notify_webhook and streak_threshold > 1 and prior_failure_streak >= streak_threshold and notify_on_recovery:
@@ -1240,9 +747,9 @@ def _run_daily_with_reliability(
         recovery_payload["status"] = "recovered_after_failure_streak"
         recovery_payload["prior_failure_streak"] = prior_failure_streak
         recovery_payload["failure_streak_threshold"] = streak_threshold
-        notify_error = _send_run_notification(notify_webhook, recovery_payload)
+        notify_error = send_run_notification(notify_webhook, recovery_payload)
     elif notify_webhook and notify_on_success:
-        notify_error = _send_run_notification(notify_webhook, log_entry)
+        notify_error = send_run_notification(notify_webhook, log_entry)
 
     if notify_error:
         data["notification_error"] = notify_error
@@ -1263,6 +770,10 @@ def _emit_run_status(result: dict, as_json: bool) -> None:
         return
     if status == "skipped_locked":
         console.print(f"[yellow]{result.get('reason', 'Run skipped due to lock.')}[/yellow]")
+        return
+    if status == "no_actions":
+        console.print(f"[red]run-daily planned nothing: {result.get('reason', '')}[/red]")
+        console.print("[yellow]Try `linkedin-cli contacts repair`, then `contacts next-actions`.[/yellow]")
         return
     if status == "failed":
         console.print(f"[red]run-daily failed: {result.get('error', 'Unknown error')}[/red]")
@@ -1641,6 +1152,19 @@ def contacts_add(name, title, company, linkedin, notes, company_id, email, sourc
         console.print(f"  Linked to company #{company_id}")
 
 
+@contacts.command("delete")
+@click.argument("contact_id", type=int)
+@click.confirmation_option(prompt="Delete this contact? Their drafts and history stay behind.")
+def contacts_delete(contact_id):
+    """Delete a contact."""
+    contact = _contact_svc.contacts.get(contact_id)
+    if not contact:
+        console.print(f"[red]Contact #{contact_id} not found.[/red]")
+        raise SystemExit(1)
+    _contact_svc.delete_contact(contact_id)
+    console.print(f"[green]Deleted {contact.get('name', 'contact')} (#{contact_id}).[/green]")
+
+
 @contacts.command("list")
 @click.option("--status", "-s", type=click.Choice(CONTACT_STATUSES + ["all"]), default="all")
 @click.option("--company", "-c", default=None, help="Filter by company name")
@@ -1667,13 +1191,9 @@ def contacts_list(status, company, company_id, source):
     for c in filtered:
         emoji = STATUS_EMOJI.get(ContactStatus(c["status"]), "")
         follow_up = c.get("follow_up_date", "")
-        if follow_up:
-            try:
-                follow_up_date = datetime.fromisoformat(follow_up.replace("Z", "+00:00")).date()
-                if follow_up_date < datetime.now().date():
-                    follow_up = f"[red]⚠ {follow_up}[/red]"
-            except (ValueError, AttributeError):
-                pass
+        follow_up_date = parse_iso_date(follow_up)
+        if follow_up_date is not None and follow_up_date < datetime.now().date():
+            follow_up = f"[red]⚠ {follow_up}[/red]"
         table.add_row(
             str(c["id"]),
             c["name"],
@@ -1842,26 +1362,27 @@ def contacts_due(days):
     if overdue:
         console.print("\n[bold red]⚠️  Overdue Follow-ups[/bold red]\n")
         for contact, follow_date, days_overdue in overdue:
-            console.print(f"  ! {contact['name']} ({contact['company']}) - [red]{days_overdue} days overdue[/red]")
-            console.print(f"    Status: {contact['status'].replace('_', ' ')}")
+            console.print(f"  ! {contact.get('name', '')} ({contact.get('company', '')}) - [red]{days_overdue} days overdue[/red]")
+            console.print(f"    Status: {contact.get('status', '').replace('_', ' ')}")
             console.print(f"    → linkedin-cli drafts follow-up {contact['id']}\n")
 
     if due_today:
         console.print("\n[bold yellow]📅 Due Today[/bold yellow]\n")
         for contact, follow_date, _ in due_today:
-            console.print(f"  ! {contact['name']} ({contact['company']})")
-            console.print(f"    Status: {contact['status'].replace('_', ' ')}")
+            console.print(f"  ! {contact.get('name', '')} ({contact.get('company', '')})")
+            console.print(f"    Status: {contact.get('status', '').replace('_', ' ')}")
             console.print(f"    → linkedin-cli drafts follow-up {contact['id']}\n")
 
     if upcoming:
         console.print("\n[bold cyan]📆 Upcoming Follow-ups[/bold cyan]\n")
         for contact, follow_date, days_until in upcoming:
-            console.print(f"  - {contact['name']} ({contact['company']}) - [dim]in {-days_until} days[/dim]")
+            console.print(f"  - {contact.get('name', '')} ({contact.get('company', '')}) - [dim]in {-days_until} days[/dim]")
 
     if stale:
-        console.print("\n[bold yellow]📤 Stale Connection Requests (>14 days)[/bold yellow]\n")
+        stale_after = STATUS_RULES["connection_sent"]["after_days"]
+        console.print(f"\n[bold yellow]📤 Stale Connection Requests (>{stale_after} days)[/bold yellow]\n")
         for contact, days_since in stale:
-            console.print(f"  ! {contact['name']} ({contact['company']}) - {days_since} days ago")
+            console.print(f"  ! {contact.get('name', '')} ({contact.get('company', '')}) - {days_since} days ago")
             console.print("    → Consider sending a follow-up or finding another contact\n")
 
 
@@ -1964,6 +1485,34 @@ def contacts_remind(contact_id, days, date):
 
     contact = _contact_svc.get_contact(contact_id)
     console.print(f"[green]✓ Reminder set for {contact['name']}: {follow_up_date}[/green]")
+
+
+@contacts.command("repair")
+@click.option("--dry-run", is_flag=True, help="Show what would be fixed without writing")
+def contacts_repair(dry_run):
+    """Backfill missing timestamps and follow-up dates so contacts become actionable."""
+    result = _contact_svc.repair_contacts(dry_run=dry_run)
+    if not result["total"]:
+        console.print("[green]All contacts already have timestamps and follow-up dates.[/green]")
+        return
+
+    table = Table(title=f"{'Would repair' if dry_run else 'Repaired'} {result['total']} contact(s)")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Status")
+    table.add_column("Fixed")
+    table.add_column("Follow-up")
+    for row in result["repaired"]:
+        table.add_row(
+            str(row["contact_id"]),
+            row["name"],
+            row["status"].replace("_", " "),
+            ", ".join(row["fixes"]),
+            row["follow_up_date"] or "-",
+        )
+    console.print(table)
+    if dry_run:
+        console.print("[yellow]Dry run — nothing written. Re-run without --dry-run to apply.[/yellow]")
 
 
 # =============================================================================
@@ -2157,6 +1706,7 @@ def drafts_connection(contact_id):
         return
 
     console.print(Panel(draft, title="Connection Request Draft", border_style="green"))
+    _warn_if_fallback(used_context=False)
     console.print(f"\n[dim]Characters: {len(draft)}/300[/dim]")
 
     if click.confirm("\nSave this draft?"):
@@ -2182,6 +1732,7 @@ def drafts_message(contact_id, context):
         return
 
     console.print(Panel(draft, title="Message Draft", border_style="blue"))
+    _warn_if_fallback(used_context=True)
 
     if click.confirm("\nSave this draft?"):
         _draft_svc.save_draft(contact_id, "message", draft)
@@ -2201,6 +1752,7 @@ def drafts_intro_request(contact_id, target_id):
         return
 
     console.print(Panel(draft, title="Introduction Request Draft", border_style="magenta"))
+    _warn_if_fallback(used_context=False)
 
     if click.confirm("\nSave this draft?"):
         _draft_svc.save_draft(contact_id, "intro_request", draft, target_contact_id=target_id)
@@ -2225,6 +1777,7 @@ def drafts_thank_you(contact_id, context):
         return
 
     console.print(Panel(draft, title="Thank You Note Draft", border_style="green"))
+    _warn_if_fallback(used_context=True)
 
     if click.confirm("\nSave this draft?"):
         _draft_svc.save_draft(contact_id, "thank_you", draft)
@@ -2283,6 +1836,18 @@ def drafts_batch_connections(limit, save_all):
             generated += 1
 
     console.print(f"\n[green]✓ Generated and saved {generated} drafts![/green]")
+
+
+@drafts.command("delete")
+@click.argument("draft_id", type=int)
+@click.confirmation_option(prompt="Delete this draft?")
+def drafts_delete(draft_id):
+    """Delete a saved draft."""
+    if _draft_svc.delete_draft(draft_id):
+        console.print(f"[green]Deleted draft #{draft_id}.[/green]")
+    else:
+        console.print(f"[red]Draft #{draft_id} not found.[/red]")
+        raise SystemExit(1)
 
 
 @drafts.command("list")
@@ -2734,7 +2299,7 @@ def run_daily(
 
     notify_target = notify_webhook.strip() or os.environ.get("LINKEDIN_RUN_NOTIFY_WEBHOOK", "").strip()
 
-    lock_acquired, lock_error = _acquire_run_lock(lock_ttl_minutes=lock_ttl_minutes)
+    lock_acquired, lock_error = acquire_run_lock(lock_ttl_minutes=lock_ttl_minutes)
     if not lock_acquired:
         skipped = {
             "status": "skipped_locked",
@@ -2743,7 +2308,7 @@ def run_daily(
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": datetime.now().isoformat(timespec="seconds"),
         }
-        _append_run_log(skipped)
+        append_run_log(skipped)
         _emit_run_status(skipped, as_json=as_json)
         return
 
@@ -2773,12 +2338,16 @@ def run_daily(
             )
             if result.get("status") == "success":
                 _emit_daily_run_output(result, as_json=as_json)
-            else:
-                _emit_run_status(result, as_json=as_json)
+                return
+            _emit_run_status(result, as_json=as_json)
+            # A stalled planner and a crashed run must both be visible to whatever
+            # scheduled us. Reporting exit 0 is how five months of empty runs hid.
+            if result.get("status") in ("no_actions", "failed"):
+                raise SystemExit(1)
             return
 
         try:
-            _next_scheduled_run(schedule_time)
+            next_scheduled_run(schedule_time)
         except ValueError as exc:
             console.print(f"[red]{exc}[/red]")
             return
@@ -2792,7 +2361,7 @@ def run_daily(
 
         if catch_up_missed and not run_now:
             now = datetime.now()
-            scheduled_today = _scheduled_run_for_date(schedule_time, now.date())
+            scheduled_today = scheduled_run_for_date(schedule_time, now.date())
             if now >= scheduled_today:
                 result = _execute_run_with_retries(
                     retry_attempts=retry_attempts,
@@ -2856,7 +2425,7 @@ def run_daily(
                 return
 
         while True:
-            next_run = _next_scheduled_run(schedule_time)
+            next_run = next_scheduled_run(schedule_time)
             wait_seconds = max(1, int((next_run - datetime.now()).total_seconds()))
             if not as_json:
                 console.print(
@@ -2901,7 +2470,7 @@ def run_daily(
         if not as_json:
             console.print("\n[yellow]Stopped run-daily.[/yellow]")
     finally:
-        _release_run_lock()
+        release_run_lock()
 
 
 @cli.command("health")
@@ -2926,7 +2495,7 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
         checks.append({"name": "data_dir", "status": "fail", "detail": f"Not writable: {exc}"})
 
     try:
-        next_run = _next_scheduled_run(schedule_time)
+        next_run = next_scheduled_run(schedule_time)
         checks.append({
             "name": "schedule_time",
             "status": "ok",
@@ -2935,7 +2504,7 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
     except ValueError as exc:
         checks.append({"name": "schedule_time", "status": "fail", "detail": str(exc)})
 
-    cron_lines, cron_error = _read_user_crontab_lines()
+    cron_lines, cron_error = read_user_crontab_lines()
     if cron_error:
         checks.append({
             "name": "managed_schedule",
@@ -2943,14 +2512,14 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
             "detail": f"Could not inspect crontab: {cron_error}",
         })
     else:
-        managed_job = _extract_managed_cron_job_line(cron_lines)
-        unmanaged_jobs = _find_unmanaged_run_daily_cron_jobs(cron_lines)
+        managed_job = extract_managed_cron_job_line(cron_lines)
+        unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(cron_lines)
         active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-        cron_env_path = _cron_env_file_from_job_line(active_job) or _default_automation_env_file()
-        cron_env_status = _env_file_status(cron_env_path)
+        cron_env_path = cron_env_file_from_job_line(active_job) or default_automation_env_file()
+        cron_env_status = env_file_status(cron_env_path)
 
         if managed_job:
-            managed_time = _cron_schedule_time_from_job_line(active_job)
+            managed_time = cron_schedule_time_from_job_line(active_job)
             checks.append({
                 "name": "managed_schedule",
                 "status": "ok",
@@ -2958,7 +2527,7 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
             })
         else:
             if unmanaged_jobs:
-                detected_time = _cron_schedule_time_from_job_line(unmanaged_jobs[0]) or "custom"
+                detected_time = cron_schedule_time_from_job_line(unmanaged_jobs[0]) or "custom"
                 checks.append({
                     "name": "managed_schedule",
                     "status": "warn",
@@ -3007,17 +2576,17 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
                 "detail": f"{cron_env_status.get('path')} not found.",
             })
 
-    checks.append({"name": "run_lock", **_health_lock_check(lock_ttl_minutes)})
+    checks.append({"name": "run_lock", **health_lock_check(lock_ttl_minutes)})
 
     try:
-        state = _load_run_state()
+        state = load_run_state()
         completed = state.get("completed_idempotency_keys", [])
         count = len(completed) if isinstance(completed, list) else 0
         checks.append({"name": "idempotency_state", "status": "ok", "detail": f"{count} key(s) tracked."})
     except Exception as exc:
         checks.append({"name": "idempotency_state", "status": "warn", "detail": f"Could not load state: {exc}"})
 
-    history = _load_run_history_entries()
+    history = load_run_history_entries()
     if not history:
         checks.append({"name": "run_history", "status": "warn", "detail": "No run history yet."})
     else:
@@ -3086,7 +2655,7 @@ def run_history(limit, status_filter, trigger, since_days, as_json):
         console.print("[red]--since-days must be 0 or greater.[/red]")
         return
 
-    entries = _load_run_history_entries()
+    entries = load_run_history_entries()
     if not entries:
         message = "No run history yet. Run: linkedin-cli run-daily --json"
         if as_json:
@@ -3107,7 +2676,7 @@ def run_history(limit, status_filter, trigger, since_days, as_json):
         cutoff = datetime.now() - timedelta(days=since_days)
         filtered = [
             entry for entry in filtered
-            if (timestamp := _entry_timestamp(entry)) and timestamp >= cutoff
+            if (timestamp := entry_timestamp(entry)) and timestamp >= cutoff
         ]
 
     displayed = list(reversed(filtered[-limit:]))
@@ -3151,16 +2720,16 @@ def automation():
 @click.option("--json", "as_json", is_flag=True, help="Output schedule status as JSON")
 def automation_status(as_json):
     """Show managed schedule status and latest run health."""
-    lines, cron_error = _read_user_crontab_lines()
-    managed_job = _extract_managed_cron_job_line(lines) if not cron_error else ""
-    unmanaged_jobs = _find_unmanaged_run_daily_cron_jobs(lines) if not cron_error else []
+    lines, cron_error = read_user_crontab_lines()
+    managed_job = extract_managed_cron_job_line(lines) if not cron_error else ""
+    unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(lines) if not cron_error else []
     active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-    schedule_time = _cron_schedule_time_from_job_line(active_job) if active_job else ""
-    env_file = _cron_env_file_from_job_line(active_job) or _default_automation_env_file()
-    env_status = _env_file_status(env_file)
-    history = _load_run_history_entries()
+    schedule_time = cron_schedule_time_from_job_line(active_job) if active_job else ""
+    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file()
+    env_status = env_file_status(env_file)
+    history = load_run_history_entries()
     latest = history[-1] if history else None
-    lock_check = _health_lock_check(lock_ttl_minutes=180)
+    lock_check = health_lock_check(lock_ttl_minutes=180)
 
     result = {
         "backend": "cron",
@@ -3196,7 +2765,7 @@ def automation_status(as_json):
         detail = f"Managed schedule active ({schedule_time or 'custom'})."
         table.add_row("cron", "[green]ok[/green]", detail)
     elif unmanaged_jobs:
-        detected_time = _cron_schedule_time_from_job_line(unmanaged_jobs[0]) or "custom"
+        detected_time = cron_schedule_time_from_job_line(unmanaged_jobs[0]) or "custom"
         table.add_row(
             "cron",
             "[yellow]warn[/yellow]",
@@ -3247,12 +2816,12 @@ def automation_env():
 
 
 @automation_env.command("status")
-@click.option("--env-file", default=str(_default_automation_env_file()), help="Env file path")
+@click.option("--env-file", default=str(default_automation_env_file()), help="Env file path")
 @click.option("--json", "as_json", is_flag=True, help="Output env status as JSON")
 def automation_env_status(env_file, as_json):
     """Show env-file readiness for scheduled runs."""
     env_path = Path(env_file).expanduser()
-    status = _env_file_status(env_path)
+    status = env_file_status(env_path)
     if as_json:
         click.echo(json.dumps(status, indent=2))
         return
@@ -3271,7 +2840,7 @@ def automation_env_status(env_file, as_json):
 
 
 @automation_env.command("sync")
-@click.option("--env-file", default=str(_default_automation_env_file()), help="Env file path")
+@click.option("--env-file", default=str(default_automation_env_file()), help="Env file path")
 @click.option("--json", "as_json", is_flag=True, help="Output sync result as JSON")
 def automation_env_sync(env_file, as_json):
     """Sync supported environment variables from current shell into env file."""
@@ -3282,7 +2851,7 @@ def automation_env_sync(env_file, as_json):
         if value:
             updates[key] = value
 
-    ok, env_vars, error = _write_env_file(env_path, updates)
+    ok, env_vars, error = write_env_file(env_path, updates)
     synced_keys = sorted([key for key in updates if env_vars.get(key)])
     result = {
         "ok": ok and not bool(error),
@@ -3290,7 +2859,7 @@ def automation_env_sync(env_file, as_json):
         "synced_keys": synced_keys,
         "available_shell_keys": sorted(list(updates.keys())),
         "error": error or "",
-        "status": _env_file_status(env_path),
+        "status": env_file_status(env_path),
     }
 
     if as_json:
@@ -3309,18 +2878,18 @@ def automation_env_sync(env_file, as_json):
 
 
 @automation_env.command("set-anthropic-key")
-@click.option("--env-file", default=str(_default_automation_env_file()), help="Env file path")
+@click.option("--env-file", default=str(default_automation_env_file()), help="Env file path")
 @click.option("--key", prompt=True, hide_input=True, confirmation_prompt=True, help="Anthropic API key")
 @click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
 def automation_env_set_anthropic_key(env_file, key, as_json):
     """Set ANTHROPIC_API_KEY in the automation env file."""
     env_path = Path(env_file).expanduser()
-    ok, _, error = _write_env_file(env_path, {"ANTHROPIC_API_KEY": key})
+    ok, _, error = write_env_file(env_path, {"ANTHROPIC_API_KEY": key})
     result = {
         "ok": ok and not bool(error),
         "path": str(env_path),
         "error": error or "",
-        "status": _env_file_status(env_path),
+        "status": env_file_status(env_path),
     }
 
     if as_json:
@@ -3346,13 +2915,13 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
     errors: list[str] = []
 
     try:
-        _parse_schedule_time(schedule_time)
+        parse_schedule_time(schedule_time)
         checks.append({"name": "schedule_time", "status": "ok", "detail": schedule_time})
     except ValueError as exc:
         checks.append({"name": "schedule_time", "status": "fail", "detail": str(exc)})
         errors.append(str(exc))
 
-    lock_check = _health_lock_check(lock_ttl_minutes=180)
+    lock_check = health_lock_check(lock_ttl_minutes=180)
     checks.append({"name": "run_lock", **lock_check})
     if fix and lock_check.get("status") == "warn" and "Stale lock" in lock_check.get("detail", ""):
         try:
@@ -3363,12 +2932,12 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
             errors.append(str(exc))
             checks.append({"name": "run_lock_fix", "status": "warn", "detail": f"Failed to remove lock: {exc}"})
 
-    cron_lines, cron_error = _read_user_crontab_lines()
-    managed_job = _extract_managed_cron_job_line(cron_lines) if not cron_error else ""
-    unmanaged_jobs = _find_unmanaged_run_daily_cron_jobs(cron_lines) if not cron_error else []
+    cron_lines, cron_error = read_user_crontab_lines()
+    managed_job = extract_managed_cron_job_line(cron_lines) if not cron_error else ""
+    unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(cron_lines) if not cron_error else []
     active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-    env_file = _cron_env_file_from_job_line(active_job) or _default_automation_env_file()
-    env_status = _env_file_status(env_file)
+    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file()
+    env_status = env_file_status(env_file)
 
     if cron_error:
         checks.append({"name": "crontab", "status": "warn", "detail": cron_error})
@@ -3394,17 +2963,17 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
             value = os.environ.get(key, "").strip()
             if value:
                 updates[key] = value
-        _, _, env_error = _write_env_file(env_file, updates)
+        _, _, env_error = write_env_file(env_file, updates)
         if env_error:
             checks.append({"name": "env_sync_fix", "status": "warn", "detail": env_error})
             errors.append(env_error)
         else:
             fixes.append(f"Synced automation env file: {env_file}")
-            env_status = _env_file_status(env_file)
+            env_status = env_file_status(env_file)
 
         if not cron_error and not managed_job:
-            runner_tokens = _default_scheduler_runner_tokens()
-            run_tokens = _build_scheduled_run_daily_tokens(
+            runner_tokens = default_scheduler_runner_tokens()
+            run_tokens = build_scheduled_run_daily_tokens(
                 runner_tokens,
                 save_recap=True,
                 generate_drafts=True,
@@ -3415,22 +2984,22 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
                 notify_on_recovery=True,
                 notify_webhook="",
             )
-            cron_command = _build_cron_shell_command(Path.cwd().resolve(), run_tokens, env_file=env_file)
-            job_line = _build_managed_cron_job_line(
+            cron_command = build_cron_shell_command(Path.cwd().resolve(), run_tokens, env_file=env_file)
+            job_line = build_managed_cron_job_line(
                 schedule_time=schedule_time,
                 cron_command=cron_command,
                 stdout_log=json_store.DATA_DIR / "run_daily.cron.out.log",
                 stderr_log=json_store.DATA_DIR / "run_daily.cron.err.log",
             )
 
-            cleaned_lines, _ = _strip_managed_cron_block(cron_lines)
-            cleaned_lines, _ = _strip_unmanaged_run_daily_cron_jobs(cleaned_lines)
-            cleaned_lines, _ = _strip_legacy_scheduler_comment_lines(cleaned_lines)
+            cleaned_lines, _ = strip_managed_cron_block(cron_lines)
+            cleaned_lines, _ = strip_unmanaged_run_daily_cron_jobs(cleaned_lines)
+            cleaned_lines, _ = strip_legacy_scheduler_comment_lines(cleaned_lines)
             next_lines = list(cleaned_lines)
             if next_lines and next_lines[-1].strip():
                 next_lines.append("")
-            next_lines.extend(_build_managed_cron_block(job_line))
-            write_error = _write_user_crontab_lines(next_lines)
+            next_lines.extend(build_managed_cron_block(job_line))
+            write_error = write_user_crontab_lines(next_lines)
             if write_error:
                 checks.append({"name": "schedule_fix", "status": "warn", "detail": write_error})
                 errors.append(write_error)
@@ -3516,7 +3085,7 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
 @click.option("--generate-drafts/--no-generate-drafts", default=True, help="Generate drafts during scheduled runs")
 @click.option("--save-drafts/--no-save-drafts", default=True, help="Persist generated drafts during scheduled runs")
 @click.option("--adopt-existing/--no-adopt-existing", default=True, help="Replace unmanaged run-daily cron entries")
-@click.option("--env-file", default=str(_default_automation_env_file()), help="Env file sourced by cron before run-daily")
+@click.option("--env-file", default=str(default_automation_env_file()), help="Env file sourced by cron before run-daily")
 @click.option("--sync-env/--no-sync-env", default=True, help="Sync shell ANTHROPIC_API_KEY into env file when present")
 @click.option("--retry-attempts", type=int, default=2, help="Additional retries when a scheduled run fails")
 @click.option("--retry-backoff-seconds", type=float, default=10.0, help="Base seconds for retry backoff")
@@ -3557,7 +3126,7 @@ def automation_schedule(
         return
 
     try:
-        _parse_schedule_time(schedule_time)
+        parse_schedule_time(schedule_time)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         return
@@ -3565,7 +3134,7 @@ def automation_schedule(
     if save_drafts:
         generate_drafts = True
 
-    runner_tokens, runner_error = _runner_tokens_from_option(runner)
+    runner_tokens, runner_error = runner_tokens_from_option(runner)
     if runner_error:
         console.print(f"[red]{runner_error}[/red]")
         return
@@ -3591,13 +3160,13 @@ def automation_schedule(
             if value:
                 updates[key] = value
         if updates:
-            _, env_vars, env_sync_error = _write_env_file(env_file_path, updates)
+            _, env_vars, env_sync_error = write_env_file(env_file_path, updates)
             if not env_sync_error:
                 env_synced_keys = sorted(k for k in updates if env_vars.get(k))
         elif not env_file_path.exists():
-            _, _, env_sync_error = _write_env_file(env_file_path, {})
+            _, _, env_sync_error = write_env_file(env_file_path, {})
 
-    run_tokens = _build_scheduled_run_daily_tokens(
+    run_tokens = build_scheduled_run_daily_tokens(
         runner_tokens,
         save_recap=save_recap,
         generate_drafts=generate_drafts,
@@ -3608,32 +3177,32 @@ def automation_schedule(
         notify_on_recovery=notify_on_recovery,
         notify_webhook=notify_webhook,
     )
-    cron_command = _build_cron_shell_command(workdir_path, run_tokens, env_file=env_file_path)
-    cron_job = _build_managed_cron_job_line(
+    cron_command = build_cron_shell_command(workdir_path, run_tokens, env_file=env_file_path)
+    cron_job = build_managed_cron_job_line(
         schedule_time=schedule_time,
         cron_command=cron_command,
         stdout_log=stdout_path,
         stderr_log=stderr_path,
     )
 
-    current_lines, read_error = _read_user_crontab_lines()
+    current_lines, read_error = read_user_crontab_lines()
     if read_error:
         console.print(f"[red]Could not read crontab: {read_error}[/red]")
         return
 
-    cleaned_lines, _ = _strip_managed_cron_block(current_lines)
+    cleaned_lines, _ = strip_managed_cron_block(current_lines)
     adopted_count = 0
     removed_legacy_comments = 0
     if adopt_existing:
-        cleaned_lines, adopted_count = _strip_unmanaged_run_daily_cron_jobs(cleaned_lines)
-        cleaned_lines, removed_legacy_comments = _strip_legacy_scheduler_comment_lines(cleaned_lines)
+        cleaned_lines, adopted_count = strip_unmanaged_run_daily_cron_jobs(cleaned_lines)
+        cleaned_lines, removed_legacy_comments = strip_legacy_scheduler_comment_lines(cleaned_lines)
 
     next_lines = list(cleaned_lines)
     if next_lines and next_lines[-1].strip():
         next_lines.append("")
-    next_lines.extend(_build_managed_cron_block(cron_job))
+    next_lines.extend(build_managed_cron_block(cron_job))
 
-    write_error = _write_user_crontab_lines(next_lines)
+    write_error = write_user_crontab_lines(next_lines)
     if write_error:
         console.print(f"[red]Could not install schedule: {write_error}[/red]")
         return
@@ -3649,7 +3218,7 @@ def automation_schedule(
         "stderr_log": str(stderr_path),
         "failure_streak_threshold": failure_streak_threshold,
         "notify_on_recovery": notify_on_recovery,
-        "env_file": _env_file_status(env_file_path),
+        "env_file": env_file_status(env_file_path),
         "env_synced_keys": env_synced_keys,
         "env_sync_error": env_sync_error,
         "adopted_existing_jobs": adopted_count,
@@ -3680,12 +3249,12 @@ def automation_schedule(
 @click.option("--json", "as_json", is_flag=True, help="Output unschedule details as JSON")
 def automation_unschedule(as_json):
     """Remove the managed cron schedule created by automation schedule."""
-    current_lines, read_error = _read_user_crontab_lines()
+    current_lines, read_error = read_user_crontab_lines()
     if read_error:
         console.print(f"[red]Could not read crontab: {read_error}[/red]")
         return
 
-    cleaned_lines, removed = _strip_managed_cron_block(current_lines)
+    cleaned_lines, removed = strip_managed_cron_block(current_lines)
     if not removed:
         result = {"removed": False, "detail": "No managed schedule found."}
         if as_json:
@@ -3694,7 +3263,7 @@ def automation_unschedule(as_json):
             console.print("[yellow]No managed schedule found.[/yellow]")
         return
 
-    write_error = _write_user_crontab_lines(cleaned_lines)
+    write_error = write_user_crontab_lines(cleaned_lines)
     if write_error:
         console.print(f"[red]Could not remove schedule: {write_error}[/red]")
         return
@@ -4694,6 +4263,8 @@ def _require_automation():
     from linkedin.automation.actions import connect as connect_actions
     from linkedin.automation.actions import easy_apply as easy_apply_actions
     from linkedin.automation.actions import engage as engage_actions
+    from linkedin.automation.actions import inbox as inbox_actions
+    from linkedin.automation.actions import jobs as jobs_actions
     from linkedin.automation.actions import login as login_actions
     from linkedin.automation.actions import message as message_actions
     from linkedin.automation.actions import post as post_actions
@@ -4712,6 +4283,8 @@ def _require_automation():
         "connect": connect_actions,
         "easy_apply": easy_apply_actions,
         "engage": engage_actions,
+        "inbox": inbox_actions,
+        "jobs": jobs_actions,
         "login": login_actions,
         "message": message_actions,
         "post": post_actions,
@@ -4735,7 +4308,11 @@ def _open_linkedin_session(auto, headless: bool):
             browser.close()
             console.print("[red]Not logged in.[/red] Run: linkedin-cli automate login (headful) first, or store credentials with: linkedin-cli automate setup")
             raise SystemExit(1)
-        console.print("[yellow]Automatic login failed — complete the login (and any checkpoint) in the browser window.[/yellow]")
+        console.print(
+            "[yellow]Automatic login failed — complete the login (and any checkpoint) in the browser window.[/yellow]\n"
+            "[dim]No credentials are stored unless you ran `linkedin-cli automate setup`; logging in by hand here is fine "
+            "and the session is saved afterwards.[/dim]"
+        )
         click.pause("Press any key once you are logged in...")
         if not linkedin_page.is_logged_in():
             browser.close()
@@ -4743,6 +4320,29 @@ def _open_linkedin_session(auto, headless: bool):
             raise SystemExit(1)
         browser.save_session()
     return browser, linkedin_page
+
+def _close_linkedin_session(browser, linkedin_page) -> None:
+    """Close the browser, and say so when a selector stopped matching.
+
+    A LinkedIn markup change makes every action return 0/[]/False, which reads
+    as "nothing to do". Naming the selectors that matched nothing turns that
+    silence into something a human can act on.
+    """
+    try:
+        browser.close()
+    finally:
+        if linkedin_page is None:
+            return
+        report = linkedin_page.selector_health()
+        if report["healthy"]:
+            return
+        console.print(
+            "[yellow]Warning: LinkedIn markup may have changed — "
+            f"{len(report['misses'])} selector(s) matched nothing.[/yellow]"
+        )
+        for name, selector in report["selectors"].items():
+            console.print(f"  [dim]{name}: {selector}[/dim]")
+        console.print("  [dim]Update src/linkedin/automation/selectors.py[/dim]")
 
 
 def _safety_and_limiter(auto, dry_run: bool):
@@ -4814,7 +4414,7 @@ def automate_search(query, limit, headless):
         safety, limiter = _safety_and_limiter(auto, dry_run=False)
         results = auto["scrape"].search_and_collect(linkedin_page, query, limit=limit, rate_limiter=limiter, safety=safety)
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     if not results:
         console.print("[dim]No results (or daily search limit reached).[/dim]")
         return
@@ -4839,7 +4439,7 @@ def automate_import_search(query, limit, headless):
         safety, limiter = _safety_and_limiter(auto, dry_run=False)
         results = auto["scrape"].search_and_collect(linkedin_page, query, limit=limit, rate_limiter=limiter, safety=safety)
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     added, skipped = auto["scrape"].import_search_results(results, _contact_repo)
     console.print(f"[green]Imported {len(added)} contact(s)[/green] ({len(skipped)} already in CRM).")
     for c in added:
@@ -4857,7 +4457,7 @@ def automate_profile(url, headless):
         _, limiter = _safety_and_limiter(auto, dry_run=False)
         contact = auto["scrape"].scrape_and_import_profile(linkedin_page, url, _contact_repo, rate_limiter=limiter)
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     if not contact:
         console.print("[red]Could not scrape that profile.[/red]")
         raise SystemExit(1)
@@ -4900,7 +4500,7 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
             linkedin_page, contact["linkedin_url"], note=note, rate_limiter=limiter, safety=safety, dry_run=dry_run
         )
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     if dry_run:
         console.print(f"[cyan]Dry run:[/cyan] would send connection request to {contact['name']}.")
         return
@@ -4947,7 +4547,7 @@ def automate_message(contact_id, text, draft_id, dry_run, headless):
             linkedin_page, contact["linkedin_url"], text, rate_limiter=limiter, safety=safety, dry_run=dry_run
         )
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     if dry_run:
         console.print(f"[cyan]Dry run:[/cyan] would message {contact['name']}.")
         return
@@ -4998,7 +4598,7 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
         safety, limiter = _safety_and_limiter(auto, dry_run)
         success, reason = auto["post"].publish_post(linkedin_page, text, rate_limiter=limiter, safety=safety, dry_run=dry_run)
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     if dry_run:
         console.print("[cyan]Dry run:[/cyan] post not published.")
         return
@@ -5011,18 +4611,36 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
         console.print(f"Calendar entry #{calendar_id} marked posted.")
 
 
+def _review_feed_comment(post: dict, comment_text: str) -> bool:
+    """Show a generated comment and ask before publishing it under the user's name."""
+    author = post.get("author") or "Unknown"
+    content = str(post.get("content", ""))
+    preview = content if len(content) <= 280 else content[:277] + "..."
+
+    console.print(f"\n[bold]Post by {author}[/bold]")
+    console.print(f"[dim]{preview}[/dim]")
+    console.print(f"[cyan]Proposed comment:[/cyan] {comment_text}")
+    return click.confirm("Publish this comment?", default=False)
+
+
 @automate.command("engage")
 @click.option("--contact-id", "contact_ids", type=int, multiple=True, help="Like recent posts of this contact (repeatable)")
 @click.option("--feed", is_flag=True, help="Like posts on your home feed instead")
 @click.option("--likes", default=2, help="Likes per target (default 2)")
 @click.option("--comments", default=0, help="With --feed: also leave up to N AI-personalized comments")
 @click.option("--dry-run", is_flag=True, help="Navigate but do not click Like")
+@click.option("--yes", "-y", is_flag=True, help="Publish AI comments without reviewing each one (not recommended)")
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
-def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
+def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
     """Warm up target contacts by liking their recent posts (or engage your feed).
 
     With --feed --comments N, browses the feed and leaves short AI-generated
     comments tailored to each post and your profile, on top of liking.
+
+    \b
+    Every AI comment is shown for approval before it is published, because the
+    text is generated from a stranger's post and goes out under your own name.
+    Pass --yes to skip the review (it will not prompt, and it will post).
     """
     if not contact_ids and not feed:
         console.print("[red]Pass --contact-id (repeatable) and/or --feed.[/red]")
@@ -5030,6 +4648,8 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
     if comments and not feed:
         console.print("[red]--comments requires --feed (comments run on the feed pipeline).[/red]")
         raise SystemExit(1)
+    if comments and yes and not dry_run:
+        console.print("[yellow]--yes: AI comments will be published unreviewed under your name.[/yellow]")
     targets = []
     for cid in contact_ids:
         contact = _contact_repo.get(cid)
@@ -5060,6 +4680,7 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
                 safety=safety,
                 rate_limiter=limiter,
                 dry_run=dry_run,
+                approve_comment=publish_unreviewed if yes else _review_feed_comment,
             )
             liked = sum(1 for r in results if r["liked"])
             commented = sum(1 for r in results if r["commented"])
@@ -5069,13 +4690,15 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, headless):
                 console.print(f"  {marks} {r['author']}: {r['content_preview']}")
                 if r["comment_text"]:
                     console.print(f"      [dim]{r['comment_text']}[/dim]")
+                elif r.get("skipped_reason"):
+                    console.print(f"      [dim]no comment — {r['skipped_reason']}[/dim]")
             console.print(f"  Feed: {'would like' if dry_run else 'liked'} {liked}, {'would comment' if dry_run else 'commented'} {commented}")
         elif feed:
             liked = auto["engage"].like_feed_posts(linkedin_page, count=likes, rate_limiter=limiter, safety=safety, dry_run=dry_run)
             total += liked
             console.print(f"  Feed: {'would like' if dry_run else 'liked'} {liked} post(s)")
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     console.print(f"[green]{'Dry run — would react' if dry_run else 'Reacted'} to {total} post(s) total.[/green]")
 
 
@@ -5116,7 +4739,7 @@ def automate_sync_profile(headline, headline_from_profile, about, about_file, dr
             linkedin_page, headline=headline, about=about, rate_limiter=limiter, dry_run=dry_run
         )
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
     for field_name, status in results.items():
         color = {"updated": "green", "dry_run": "cyan", "failed": "red"}.get(status, "dim")
         console.print(f"  {field_name}: [{color}]{status}[/{color}]")
@@ -5178,8 +4801,21 @@ def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
                 result = linkedin_page.easy_apply(resume_path="", submit=True, max_steps=2)
                 if result.get("status") == "submitted":
                     safety.record_easy_apply()
+        elif result.get("status") == "needs_manual_input" and not headless:
+            # The automation never invents an answer, so a wizard that asks a
+            # question stops here -- which is most of them. With a person at
+            # the window that is a hand-off, not a failure: they finish the
+            # form and press Submit themselves, and only their word records it.
+            console.print(f"[yellow]{result.get('detail', '')}[/yellow]")
+            console.print("[yellow]Finish the remaining questions in the browser window and submit it yourself.[/yellow]")
+            click.pause("Press any key once you are done (or have closed the form)...")
+            if click.confirm("Did you submit the application?"):
+                result = {"status": "submitted", "detail": "Submitted by hand after automated fill"}
+                safety.record_easy_apply()
+            else:
+                result = {"status": "ready_to_submit", "detail": "Left unsubmitted; still saved in the CRM"}
     finally:
-        browser.close()
+        _close_linkedin_session(browser, linkedin_page)
 
     status = result.get("status", "error")
     detail = result.get("detail", "")
@@ -5193,6 +4829,175 @@ def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
     else:
         console.print(f"[red]Easy Apply did not complete: {detail}[/red]")
         raise SystemExit(1)
+
+
+@automate.command("jobs")
+@click.option("--query", "-q", required=True, help="Job search keywords")
+@click.option("--location", "-L", default="", help="Location filter")
+@click.option("--limit", "-l", default=25, help="Max postings to read")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+@click.option("--dry-run", is_flag=True, help="Show results without importing")
+def automate_jobs(query, location, limit, headless, dry_run):
+    """Search LinkedIn jobs and import the results as scored postings.
+
+    Read-only against LinkedIn. This is what fills the daily plan's
+    opportunities section, which reported "No postings above threshold" every
+    morning because nothing had ever imported a posting.
+    """
+    auto = _require_automation()
+    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
+    try:
+        safety, limiter = _safety_and_limiter(auto, dry_run=dry_run)
+        results = auto["jobs"].search_jobs(
+            linkedin_page, query, location=location, limit=limit,
+            rate_limiter=limiter, safety=safety,
+        )
+    finally:
+        _close_linkedin_session(browser, linkedin_page)
+
+    if not results:
+        console.print("[dim]No job results (or the daily search limit is reached).[/dim]")
+        return
+
+    table = Table(title=f"Jobs: {query}")
+    table.add_column("Title", style="cyan")
+    table.add_column("Company")
+    table.add_column("Location", style="dim")
+    table.add_column("Easy Apply", justify="center")
+    for job in results:
+        table.add_row(job["title"], job["company"], job["location"], "✓" if job["easy_apply"] else "")
+    console.print(table)
+
+    if dry_run:
+        console.print(f"[yellow]Dry run — {len(results)} posting(s) not imported.[/yellow]")
+        return
+
+    added, skipped = auto["jobs"].import_job_results(results, _market_svc)
+    console.print(f"[green]Imported {len(added)} posting(s)[/green]" + (f", skipped {skipped} duplicate(s)" if skipped else ""))
+
+
+@cli.group("inbox")
+def inbox():
+    """Read replies and accepted invitations, and confirm what they imply.
+
+    Every other automation action is outbound, so a contact stays at the status
+    it was created with until a human retypes it. These commands are the inbound
+    edge — and they only ever *propose* a change.
+    """
+
+
+@inbox.command("sync")
+@click.option("--limit", "-l", default=25, help="Max message threads to read")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+def inbox_sync(limit, headless):
+    """Read LinkedIn messaging and sent invitations; save proposed transitions."""
+    auto = _require_automation()
+    browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
+    try:
+        safety, limiter = _safety_and_limiter(auto, dry_run=False)
+        signals = auto["inbox"].read_inbox(
+            linkedin_page, thread_limit=limit, rate_limiter=limiter, safety=safety
+        )
+    finally:
+        _close_linkedin_session(browser, linkedin_page)
+
+    pending = signals["pending_invitations"]
+    if pending is None:
+        console.print(
+            "[yellow]Could not read the sent-invitation list — skipping acceptance checks.[/yellow]\n"
+            "[dim]An empty list would mean 'every invitation was accepted', so it is not assumed.[/dim]"
+        )
+
+    proposals = _inbox_svc.propose_transitions(
+        signals["threads"], pending, _contact_repo.list_all()
+    )
+    save_inbox_proposals(proposals)
+
+    console.print(f"[dim]Read {len(signals['threads'])} thread(s).[/dim]")
+    if not proposals:
+        console.print("[green]No pipeline changes to propose.[/green]")
+        return
+    _render_proposals(proposals)
+    console.print("\n[dim]Apply with: linkedin-cli inbox review[/dim]")
+
+
+@inbox.command("list")
+def inbox_list():
+    """Show proposed transitions awaiting confirmation."""
+    proposals = load_inbox_proposals()
+    if not proposals:
+        console.print("[dim]No pending proposals. Run: linkedin-cli inbox sync[/dim]")
+        return
+    _render_proposals(proposals)
+
+
+@inbox.command("review")
+@click.option("--yes", is_flag=True, help="Apply every high-confidence proposal without prompting")
+def inbox_review(yes):
+    """Confirm proposed transitions one at a time and apply them.
+
+    `--yes` applies high-confidence proposals only. A low-confidence proposal
+    matched a contact by display name alone, so it is always asked about.
+    """
+    proposals = load_inbox_proposals()
+    if not proposals:
+        console.print("[dim]No pending proposals. Run: linkedin-cli inbox sync[/dim]")
+        return
+
+    applied, skipped, remaining = 0, 0, []
+    for proposal in proposals:
+        contact_id = proposal.get("contact_id")
+        contact = _contact_repo.get(contact_id) if contact_id else None
+        if not contact:
+            console.print(f"[yellow]Contact #{contact_id} no longer exists — dropping.[/yellow]")
+            continue
+
+        if contact.get("status") != proposal.get("from_status"):
+            console.print(
+                f"[yellow]{proposal.get('name')} is now '{contact.get('status')}', "
+                f"not '{proposal.get('from_status')}' — dropping this proposal.[/yellow]"
+            )
+            continue
+
+        low = proposal.get("confidence") == "low"
+        console.print(
+            f"\n[bold cyan]{proposal.get('name')}[/bold cyan] "
+            f"{proposal.get('from_status')} → {proposal.get('to_status')}"
+            + (" [red](matched by name only)[/red]" if low else "")
+        )
+        console.print(f"  [dim]{proposal.get('evidence', '')}[/dim]")
+
+        if yes and not low:
+            confirmed = True
+        else:
+            confirmed = click.confirm("  Apply?", default=not low)
+
+        if confirmed:
+            _contact_svc.update_contact(contact_id, status=proposal["to_status"])
+            applied += 1
+        else:
+            skipped += 1
+            remaining.append(proposal)
+
+    save_inbox_proposals(remaining)
+    console.print(f"\n[green]Applied {applied}[/green]" + (f", kept {skipped} for later" if skipped else ""))
+
+
+def _render_proposals(proposals: list[dict]) -> None:
+    table = Table(title="Proposed pipeline changes")
+    table.add_column("Contact", style="cyan")
+    table.add_column("Transition", style="yellow")
+    table.add_column("Source", style="dim")
+    table.add_column("Evidence", style="dim")
+    for proposal in proposals:
+        marker = " [red](low)[/red]" if proposal.get("confidence") == "low" else ""
+        table.add_row(
+            proposal.get("name", "Unknown"),
+            f"{proposal.get('from_status', '')} → {proposal.get('to_status', '')}{marker}",
+            proposal.get("source", ""),
+            proposal.get("evidence", ""),
+        )
+    console.print(table)
 
 
 if __name__ == "__main__":

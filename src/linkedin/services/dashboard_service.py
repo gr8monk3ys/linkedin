@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from linkedin.data.repository import CompanyRepo, ContactRepo, DraftRepo, ProfileRepo
+from linkedin.services.contact_service import STATUS_RULES, parse_iso_date
 
 
 class DashboardService:
@@ -27,7 +28,7 @@ class DashboardService:
         # Status counts
         status_counts: dict[str, int] = {}
         for c in all_contacts:
-            status = c["status"]
+            status = c.get("status", "")
             status_counts[status] = status_counts.get(status, 0) + 1
 
         # Overdue follow-ups and stale connections
@@ -35,27 +36,20 @@ class DashboardService:
         overdue = []
         stale_connections = []
 
+        # Same parser and same threshold the planner uses — a contact this page
+        # calls overdue is one `contacts next-actions` will act on.
+        stale_after = STATUS_RULES["connection_sent"]["after_days"]
         for contact in all_contacts:
-            follow_up = contact.get("follow_up_date")
-            if follow_up:
-                try:
-                    follow_up_date = datetime.fromisoformat(follow_up.replace("Z", "+00:00")).date()
-                    if follow_up_date < today:
-                        days_overdue = (today - follow_up_date).days
-                        overdue.append((contact, days_overdue))
-                except (ValueError, AttributeError):
-                    pass
+            follow_up_date = parse_iso_date(contact.get("follow_up_date"))
+            if follow_up_date is not None and follow_up_date < today:
+                overdue.append((contact, (today - follow_up_date).days))
 
-            if contact["status"] == "connection_sent":
-                last_contact = contact.get("last_contact")
-                if last_contact:
-                    try:
-                        last_date = datetime.fromisoformat(last_contact.replace("Z", "+00:00")).date()
-                        days_since = (today - last_date).days
-                        if days_since >= 14:
-                            stale_connections.append((contact, days_since))
-                    except (ValueError, AttributeError):
-                        pass
+            if contact.get("status") == "connection_sent":
+                last_date = parse_iso_date(contact.get("last_contact"))
+                if last_date is not None:
+                    days_since = (today - last_date).days
+                    if days_since >= stale_after:
+                        stale_connections.append((contact, days_since))
 
         overdue.sort(key=lambda x: x[1], reverse=True)
 
@@ -77,11 +71,11 @@ class DashboardService:
         if overdue:
             suggestions.append(f"Follow up with {overdue[0][0]['name']}")
 
-        not_contacted = [c for c in all_contacts if c["status"] == "not_contacted"]
+        not_contacted = [c for c in all_contacts if c.get("status") == "not_contacted"]
         if not_contacted:
             suggestions.append(f"{len(not_contacted)} contacts to reach out to")
 
-        connected = [c for c in all_contacts if c["status"] == "connected"]
+        connected = [c for c in all_contacts if c.get("status") == "connected"]
         if connected:
             suggestions.append(f"{len(connected)} connections to message")
 

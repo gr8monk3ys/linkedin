@@ -23,20 +23,12 @@ dependencies = [
     "click>=8.0.0",
     "rich>=13.0.0",
     "anthropic>=0.40.0",
-    "sqlmodel>=0.0.14",
-    "alembic>=1.13.0",
 ]
 
 [project.optional-dependencies]
-postgres = [
-    "psycopg2-binary>=2.9.0",
-]
 automation = [
     "playwright>=1.40.0",
     "keyring>=24.0.0",
-]
-web = [
-    "reflex>=0.6.0",
 ]
 dev = [
     "pytest>=7.0.0",
@@ -47,7 +39,6 @@ dev = [
 [project.scripts]
 linkedin = "linkedin.cli:cli"
 linkedin-cli = "linkedin.cli:cli"
-linkedin-web = "linkedin.web.app:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -59,7 +50,7 @@ packages = ["src/linkedin"]
 [tool.ruff]
 line-length = 120
 target-version = "py310"
-exclude = ["src/linkedin/automation/", "src/linkedin/migrations/versions/"]
+exclude = ["src/linkedin/automation/"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

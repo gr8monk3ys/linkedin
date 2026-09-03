@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from linkedin.data.json_store import save_json
+
 # Conservative daily limits to avoid account restrictions
 MAX_CONNECTIONS_PER_DAY = 20
 MAX_MESSAGES_PER_DAY = 25
@@ -176,8 +178,9 @@ class PersistentSafetyLimits(SafetyLimits):
         counts = {name: getattr(self, name) for name in _COUNTER_FIELDS}
         # Keep only today's entry — history lives in run logs, not here.
         payload = {self._today: counts}
+        # Atomic: a truncated usage file reads back as "no usage today", which
+        # would silently hand back a full day's budget mid-run.
         try:
-            self.usage_file.parent.mkdir(parents=True, exist_ok=True)
-            self.usage_file.write_text(json.dumps(payload, indent=2))
+            save_json(self.usage_file, payload)
         except OSError:
             pass

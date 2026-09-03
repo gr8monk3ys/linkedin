@@ -4,6 +4,7 @@ from datetime import datetime
 
 from linkedin.ai.client import AIClientError, generate_with_ai
 from linkedin.data.repository import ApplicationRepo, ContactRepo, ProfileRepo
+from linkedin.services.contact_service import parse_iso_date
 from linkedin.types import ApplicationDict, ApplicationEventDict
 
 APPLICATION_STATUSES = [
@@ -17,6 +18,68 @@ APPLICATION_STATUSES = [
     "rejected",
     "ghosted",
 ]
+
+# Statuses that end the lifecycle; they generate no actions.
+TERMINAL_APPLICATION_STATUSES = frozenset({"accepted", "rejected", "ghosted"})
+
+# What the planner knows about an application status: how long to leave it
+# alone, and what to do once that wait has elapsed. Built the way
+# `contact_service.STATUS_RULES` is, and checked against `APPLICATION_STATUSES`
+# for the same reason — a status with no rule is invisible to the planner
+# forever, which is the hole that made twenty applications unplannable.
+APPLICATION_STATUS_RULES: dict[str, dict] = {
+    "saved": {
+        "after_days": 0,
+        "priority": 60,
+        "action": "apply_to_saved",
+        "reason": "Saved {age} day(s) ago and never applied",
+    },
+    "applied": {
+        "after_days": 10,
+        "priority": 70,
+        "action": "chase_application",
+        "reason": "Applied {age} day(s) ago with no response; follow up or mark ghosted",
+    },
+    "phone_screen": {
+        "after_days": 5,
+        "priority": 85,
+        "action": "chase_interview",
+        "reason": "Phone screen {age} day(s) ago with no next step",
+    },
+    "technical": {
+        "after_days": 5,
+        "priority": 88,
+        "action": "chase_interview",
+        "reason": "Technical round {age} day(s) ago with no next step",
+    },
+    "onsite": {
+        "after_days": 5,
+        "priority": 90,
+        "action": "chase_interview",
+        "reason": "Onsite {age} day(s) ago with no decision",
+    },
+    "offer_received": {
+        "after_days": 2,
+        "priority": 95,
+        "action": "respond_to_offer",
+        "reason": "Offer received {age} day(s) ago; respond",
+    },
+}
+
+
+def _check_application_status_coverage() -> None:
+    """Fail loudly if an application status is neither terminal nor planned for."""
+    covered = set(APPLICATION_STATUS_RULES) | set(TERMINAL_APPLICATION_STATUSES)
+    declared = set(APPLICATION_STATUSES)
+    if covered != declared:
+        raise RuntimeError(
+            "Application status tables disagree with APPLICATION_STATUSES — a status "
+            f"with no rule is invisible to the planner. Missing a rule: {sorted(declared - covered)}; "
+            f"rule for an unknown status: {sorted(covered - declared)}"
+        )
+
+
+_check_application_status_coverage()
 
 
 class ApplicationService:
@@ -93,6 +156,77 @@ class ApplicationService:
 
         self.applications.update(app)
         return None, app
+
+    def get_application_actions(self, limit: int = 10) -> list[dict]:
+        """Return prioritized next actions across the application lifecycle.
+
+        Deliberately separate from `contact_service.get_next_actions`: the two
+        walk different id spaces, and `cli._daily_run_status` classifies a run by
+        whether the *contact* planner produced anything. Merging these in would
+        let a due application mask a broken contact planner — the exact failure
+        that guard was added to catch.
+        """
+        today = datetime.now().date()
+        actions: list[dict] = []
+
+        for app in self.applications.list_all():
+            status = app.get("status", "")
+            if status in TERMINAL_APPLICATION_STATUSES:
+                continue
+
+            rule = APPLICATION_STATUS_RULES.get(status)
+            if rule is None:
+                continue
+
+            age_days = self._days_since_reference(app, today)
+            if age_days is None:
+                # No usable timestamp at all. Surface it rather than skipping,
+                # the way a contact with no dates yields `repair_contact`.
+                actions.append(self._application_action(
+                    app, 50, "repair_application",
+                    "No applied_date/created_at; re-import or set a date",
+                ))
+                continue
+
+            if age_days >= rule["after_days"]:
+                actions.append(self._application_action(
+                    app, rule["priority"] + min(age_days, 30), rule["action"],
+                    rule["reason"].format(age=age_days),
+                ))
+
+        actions.sort(key=lambda a: a["priority"], reverse=True)
+        return actions[:limit]
+
+    def _days_since_reference(self, app: ApplicationDict, today) -> int | None:
+        """Days since the last thing that happened *to the application*.
+
+        Precedence, not max. `created_at` is bookkeeping — an import stamps it
+        with the import time — and taking the max let that outrank a real
+        applied date, making an application sent weeks ago look brand new. It
+        stays only as a last resort for a record with no other date at all.
+        """
+        history = app.get("history") or []
+        for candidate in (
+            history[-1].get("date") if history else None,
+            app.get("applied_date"),
+            app.get("created_at"),
+        ):
+            parsed = parse_iso_date(candidate)
+            if parsed is not None:
+                return (today - parsed).days
+        return None
+
+    @staticmethod
+    def _application_action(app: ApplicationDict, priority: int, action: str, reason: str) -> dict:
+        return {
+            "application_id": app.get("id"),
+            "company": app.get("company", "Unknown"),
+            "title": app.get("title", ""),
+            "status": app.get("status", ""),
+            "priority": priority,
+            "action": action,
+            "reason": reason,
+        }
 
     def attach_resume(
         self,

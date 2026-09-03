@@ -128,3 +128,17 @@ def test_scrape_returns_none_on_empty_name(contact_repo):
     mock_page.scrape_profile.return_value = {}  # No name
     contact = scrape_and_import_profile(mock_page, "https://linkedin.com/in/nobody", contact_repo)
     assert contact is None
+
+
+def test_imported_contacts_are_seeded_with_a_follow_up_date(contact_repo):
+    """A contact the planner cannot schedule reads to `run-daily` as a stalled planner."""
+    results = [{"name": "Alice", "headline": "ML Engineer at Acme", "linkedin_url": "u/1"}]
+    added, _ = import_search_results(results, contact_repo)
+    assert added[0]["follow_up_date"] is not None
+
+
+def test_scraped_profile_is_seeded_with_a_follow_up_date(contact_repo):
+    page = MagicMock()
+    page.get_profile_data.return_value = {"name": "Bob", "headline": "MLE at Acme", "about": ""}
+    contact = scrape_and_import_profile(page, "u/2", contact_repo)
+    assert contact["follow_up_date"] is not None

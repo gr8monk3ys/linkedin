@@ -341,6 +341,35 @@ class TestGetFeedPosts:
         assert lp.selector_health()["healthy"] is True
 
 
+class TestRebuiltFeed:
+    """Verified 2026-09-03: no CSS card; cards are read by shape and tagged by index."""
+
+    def test_script_rows_become_posts_and_tagged_cards_take_likes(self, page):
+        page.evaluate_result = [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
+        lp = LinkedInPage(page)
+        posts = lp.get_feed_posts(max_posts=3)
+        assert posts == [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
+        assert lp.selector_misses == []
+        assert page.evaluated == [sel.FEED_POSTS_SCRIPT]
+        # like_post finds the card the script tagged
+        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: no reaction"})]})
+        _with_feed(page, [])
+        page.register_css(f"[{sel.FEED_CARD_TAG}]", [card])
+        card._page = page
+        assert lp.like_post(0).outcome == "ok"
+
+    def test_a_reaction_state_other_than_none_is_already_liked(self, page):
+        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: Like"})]})
+        _with_feed(page, [card])
+        assert LinkedInPage(page).like_post(0).outcome == "not_applicable"
+
+    def test_no_css_cards_and_no_script_rows_is_a_miss(self, page):
+        page.evaluate_result = []
+        lp = LinkedInPage(page)
+        assert lp.get_feed_posts(max_posts=3) == []
+        assert lp.selector_misses == ["feed_card"]
+
+
 class TestLikePost:
     def test_likes_by_index(self, page):
         cards = [_feed_card(author="A"), _feed_card(author="B")]
@@ -463,6 +492,24 @@ class TestScrapeProfile:
         assert lp.scrape_profile() == {}
         assert set(lp.selector_misses) == {"profile_name", "profile_headline", "profile_about"}
 
+
+
+class TestRebuiltProfile:
+    """Verified 2026-09-03: no h1, no class hooks; the page text has a fixed shape."""
+
+    TEXT = "Ada Lovelace\nShe/Her\nML Engineer | pipelines\nLondon, UK\n·\nContact info\n500+ connections\nAbout\nFirst paragraph.\nSecond paragraph.\nActivity\n1,000 followers"
+
+    def test_profile_is_read_from_text_when_css_matches_nothing(self, page):
+        page.register_css("main", FakeElement(self.TEXT))
+        lp = LinkedInPage(page)
+        d = lp.scrape_profile()
+        assert d["name"] == "Ada Lovelace" and d["headline"] == "ML Engineer | pipelines"
+        assert d["location"] == "London, UK" and d["about"] == "First paragraph.\n\nSecond paragraph."
+        assert lp.selector_misses == []
+
+    def test_degree_marker_is_skipped_like_pronouns(self, page):
+        page.register_css("main", FakeElement("Bob Builder\n• 2nd\nCTO at Acme\nDenver"))
+        assert LinkedInPage(page).scrape_profile()["headline"] == "CTO at Acme"
 
 
 class TestProfileEditing:

@@ -245,6 +245,6 @@ class FakePage:
     def wait_for_timeout(self, ms):
         self.waits += 1
 
-    def evaluate(self, script):
+    def evaluate(self, script, *args):
         self.evaluated.append(script)
         return self.evaluate_result

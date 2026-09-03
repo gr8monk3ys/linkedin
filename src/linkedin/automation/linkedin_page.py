@@ -90,9 +90,14 @@ class LinkedInPage:
 
         Every feed method goes through here so that adding one cannot silently
         opt out of health reporting — the omission would look like working code.
+        The CSS path is the original markup; the tagged path is what
+        `get_feed_posts` leaves behind on the rebuilt feed.
         """
         cards = self.page.locator(sel.FEED_CARD)
         count = cards.count()
+        if count == 0:
+            cards = self.page.locator(f"[{sel.FEED_CARD_TAG}]")
+            count = cards.count()
         if count == 0:
             self._record_miss("feed_card")
         return cards, count
@@ -374,8 +379,9 @@ class LinkedInPage:
                 if liked >= count:
                     break
                 btn = like_btns.nth(i)
-                # aria-pressed=true means we already reacted — skip to avoid unliking
-                if btn.get_attribute("aria-pressed") == "true":
+                # aria-pressed=true (or a reaction-state label other than "no reaction")
+                # means we already reacted — skip to avoid unliking
+                if btn.get_attribute("aria-pressed") == "true" or sel.LIKE_ALREADY_REACTED.match(btn.get_attribute("aria-label") or ""):
                     continue
                 btn.scroll_into_view_if_needed()
                 btn.first.click()
@@ -401,6 +407,14 @@ class LinkedInPage:
         try:
             self.goto_feed()
             self.page.wait_for_load_state("networkidle", timeout=10000)
+
+            if self.page.locator(sel.FEED_CARD).count() == 0:
+                # Rebuilt feed: read cards by shape and tag them for like/comment.
+                scripted = self.page.evaluate(sel.FEED_POSTS_SCRIPT, max_posts)
+                rows = [r for r in (scripted if isinstance(scripted, list) else []) if isinstance(r, dict) and r.get("author")]
+                if not rows:
+                    self._record_miss("feed_card")
+                return [{"element_index": int(r["element_index"]), "author": str(r["author"]), "headline": str(r.get("headline", "")), "content": str(r.get("content", ""))[:500]} for r in rows]
 
             scroll_attempts = 0
             max_scrolls = max_posts * 2
@@ -454,7 +468,8 @@ class LinkedInPage:
             like_btn = card.get_by_role("button", name=sel.LIKE_BUTTON)
             if not self._present(like_btn, "like_button"):
                 return self._missing("like_button")
-            if like_btn.first.get_attribute("aria-pressed") == "true":
+            label = like_btn.first.get_attribute("aria-label") or ""
+            if like_btn.first.get_attribute("aria-pressed") == "true" or sel.LIKE_ALREADY_REACTED.match(label):
                 return _na("already liked")
             like_btn.first.click()
             return _ok()
@@ -928,32 +943,36 @@ class LinkedInPage:
     def scrape_profile(self) -> dict[str, str]:
         """Scrape basic profile info from the current profile page.
 
-        Call goto_profile(url) first.
-        Returns dict with name, headline, location, about.
+        Call goto_profile(url) first. Returns dict with name, headline,
+        location, about. The CSS path is the original markup; when it matches
+        nothing the page text is read by shape — name, then (optionally
+        pronouns or a degree marker), headline, location, and the About block
+        between its heading and the next section — as verified live 2026-09-03.
         """
         data: dict[str, str] = {}
         try:
             name_el = self.page.locator(sel.PROFILE_NAME)
             if name_el.count():
                 data["name"] = name_el.inner_text().strip()
-            else:
-                self._record_miss("profile_name")
-
-            headline_el = self.page.locator(sel.PROFILE_HEADLINE)
-            if headline_el.count():
-                data["headline"] = headline_el.first.inner_text().strip()
-            else:
-                self._record_miss("profile_headline")
-
-            location_el = self.page.locator(sel.PROFILE_LOCATION)
-            if location_el.count():
-                data["location"] = location_el.first.inner_text().strip()
-
-            about_el = self.page.locator(sel.PROFILE_ABOUT_TEXT)
-            if about_el.count():
-                data["about"] = about_el.inner_text().strip()
-            else:
-                self._record_miss("profile_about")
+                headline_el = self.page.locator(sel.PROFILE_HEADLINE)
+                if headline_el.count():
+                    data["headline"] = headline_el.first.inner_text().strip()
+                else:
+                    self._record_miss("profile_headline")
+                location_el = self.page.locator(sel.PROFILE_LOCATION)
+                if location_el.count():
+                    data["location"] = location_el.first.inner_text().strip()
+                about_el = self.page.locator(sel.PROFILE_ABOUT_TEXT)
+                if about_el.count():
+                    data["about"] = about_el.inner_text().strip()
+                else:
+                    self._record_miss("profile_about")
+                return data
+            main = self.page.locator("main")
+            data = _profile_from_text(main.first.inner_text() if main.count() else "")
+            if not data.get("name"):
+                for name in ("profile_name", "profile_headline", "profile_about"):
+                    self._record_miss(name)
         except Exception:
             pass
         return data
@@ -973,3 +992,33 @@ def _metric_from_text(text: str, name: str) -> int | None:
         return int(match.group(1).replace(",", ""))
     except ValueError:
         return None
+
+
+_PRONOUNS_OR_DEGREE = re.compile(r"^(\w+/\w+|[•·]\s*(1st|2nd|3rd)\+?)$", re.I)
+_PROFILE_SECTION_HEADINGS = {"Activity", "Experience", "Education", "Skills", "Projects", "Show all", "Analytics", "Featured", "Licenses & certifications"}
+
+
+def _profile_from_text(text: str) -> dict[str, str]:
+    """name / headline / location / about from a profile page's main text."""
+    lines = [l.strip() for l in (text or "").split("\n") if l.strip()]
+    if not lines:
+        return {}
+    data = {"name": lines[0]}
+    i = 1
+    if i < len(lines) and _PRONOUNS_OR_DEGREE.match(lines[i]):
+        i += 1
+    if i < len(lines):
+        data["headline"] = lines[i]
+        i += 1
+    if i < len(lines) and lines[i] not in _PROFILE_SECTION_HEADINGS:
+        data["location"] = lines[i]
+    if "About" in lines:
+        start = lines.index("About") + 1
+        body = []
+        for l in lines[start:]:
+            if l in _PROFILE_SECTION_HEADINGS or l.startswith("…"):
+                break
+            body.append(l)
+        if body:
+            data["about"] = "\n\n".join(body)
+    return data

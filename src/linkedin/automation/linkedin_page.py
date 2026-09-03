@@ -12,13 +12,48 @@ the miss in `self.selector_misses` instead of staying silent.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import re
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlencode
 
 from linkedin.automation import selectors as sel
 
 if TYPE_CHECKING:
     from playwright.sync_api import Locator, Page
+
+Outcome = Literal["ok", "not_applicable", "selector_missing", "degraded"]
+
+
+@dataclass(frozen=True)
+class WriteResult:
+    """What every write returns.
+
+    `ok`: it happened (`detail` may carry an identifier, e.g. the post URN).
+    `not_applicable`: a normal absence — already connected, not connected,
+    already liked, no About section. `selector_missing`: an affordance the
+    page should have had is not there, and the miss is recorded for the
+    health report. `degraded`: the write happened but something after it
+    could not be read. Truthy on `ok` and `degraded`.
+    """
+
+    outcome: Outcome
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.outcome in ("ok", "degraded")
+
+
+def _ok(detail: str = "") -> WriteResult:
+    return WriteResult("ok", detail)
+
+
+def _na(detail: str) -> WriteResult:
+    return WriteResult("not_applicable", detail)
+
+
+def _degraded(detail: str) -> WriteResult:
+    return WriteResult("degraded", detail)
 
 
 class LinkedInPage:
@@ -37,6 +72,18 @@ class LinkedInPage:
     def _record_miss(self, name: str) -> None:
         if name not in self.selector_misses:
             self.selector_misses.append(name)
+
+    def _missing(self, name: str, detail: str = "") -> WriteResult:
+        """Record a write-side miss and say so. Every selector_missing goes through here."""
+        self._record_miss(name)
+        return WriteResult("selector_missing", detail or f"{name} not found")
+
+    def _present(self, locator: Locator, name: str) -> bool:
+        """True when the locator matches; otherwise records the miss."""
+        if locator.count() > 0:
+            return True
+        self._record_miss(name)
+        return False
 
     def _feed_cards(self) -> tuple[Locator, int]:
         """Locate the feed cards, recording a miss when none match.
@@ -96,25 +143,33 @@ class LinkedInPage:
     # Authentication
     # -------------------------------------------------------------------------
 
-    def login(self, email: str, password: str) -> bool:
-        """Log in to LinkedIn. Returns True if successful.
+    def login(self, email: str, password: str) -> WriteResult:
+        """Log in to LinkedIn.
 
-        Every locator here is narrowed to one element on purpose. LinkedIn
-        renders duplicates of all three controls, and Playwright raises on an
-        action against a multi-match locator — which this method used to swallow
-        and report as a plain False.
+        Every locator here is narrowed to one *visible* element on purpose.
+        LinkedIn renders duplicates of all three controls, and Playwright raises
+        on an action against a multi-match locator. A missing field is a
+        selector miss, not a wrong password: the health report must name it.
         """
         self.goto_login()
-        self._visible(sel.LOGIN_EMAIL_INPUT).fill(email)
-        self._visible(sel.LOGIN_PASSWORD_INPUT).fill(password)
-        self.page.get_by_role("button", name=sel.SIGN_IN_BUTTON, exact=True).last.click()
+        email_input = self.page.locator(sel.LOGIN_EMAIL_INPUT).locator("visible=true")
+        if not self._present(email_input, "login_email_input"):
+            return self._missing("login_email_input")
+        password_input = self.page.locator(sel.LOGIN_PASSWORD_INPUT).locator("visible=true")
+        if not self._present(password_input, "login_password_input"):
+            return self._missing("login_password_input")
+        sign_in = self.page.get_by_role("button", name=sel.SIGN_IN_BUTTON, exact=True)
+        if not self._present(sign_in, "sign_in_button"):
+            return self._missing("sign_in_button")
+        email_input.first.fill(email)
+        password_input.first.fill(password)
+        sign_in.last.click()
 
-        # Wait for navigation to complete
         try:
             self.page.wait_for_url("**/feed/**", timeout=15000)
-            return True
+            return _ok()
         except Exception:
-            return False
+            return _na("credentials rejected, or a checkpoint is waiting")
 
     def is_logged_in(self) -> bool:
         """Check if currently logged in."""
@@ -128,26 +183,28 @@ class LinkedInPage:
     # Connection Requests
     # -------------------------------------------------------------------------
 
-    def send_connection_request(self, note: str = "") -> bool:
-        """Send a connection request from a profile page.
+    def send_connection_request(self, note: str = "") -> WriteResult:
+        """Send a connection request from a profile page (assumes we are on one).
 
-        Assumes we're on a profile page.
+        No Connect button beside a Message or Pending button is a normal
+        absence (already connected or pending); no Connect, More, Message or
+        Pending at all is a page we do not recognise.
         """
         try:
             connect_btn = self.page.get_by_role("button", name=sel.CONNECT_BUTTON)
-            if connect_btn.count() == 0:
-                # Try "More" dropdown
-                more_btn = self.page.get_by_role("button", name=sel.MORE_BUTTON)
-                if more_btn.count() > 0:
-                    more_btn.first.click()
-                    connect_option = self.page.get_by_role("menuitem", name=sel.CONNECT_MENU_ITEM)
-                    if connect_option.count() == 0:
-                        return False
-                    connect_option.first.click()
-                else:
-                    return False
-            else:
+            if connect_btn.count() > 0:
                 connect_btn.first.click()
+            else:
+                more_btn = self.page.get_by_role("button", name=sel.MORE_BUTTON)
+                if more_btn.count() == 0:
+                    if self.page.get_by_role("button", name=sel.MESSAGE_BUTTON).count() > 0 or self.page.get_by_role("button", name=sel.PENDING_BUTTON).count() > 0:
+                        return _na("already connected or pending")
+                    return self._missing("connect_button", "no Connect, More, Message or Pending button on the page")
+                more_btn.first.click()
+                connect_option = self.page.get_by_role("menuitem", name=sel.CONNECT_MENU_ITEM)
+                if connect_option.count() == 0:
+                    return _na("no Connect item in the More menu (already connected or pending)")
+                connect_option.first.click()
 
             if note:
                 add_note_btn = self.page.get_by_role("button", name=sel.ADD_NOTE_BUTTON)
@@ -156,38 +213,47 @@ class LinkedInPage:
                     self.page.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).first.fill(note)
 
             send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
-            if send_btn.count() > 0:
-                send_btn.first.click()
-                return True
-            return False
-        except Exception:
-            return False
+            if not self._present(send_btn, "send_button"):
+                return self._missing("send_button")
+            send_btn.first.click()
+            return _ok()
+        except Exception as exc:
+            return self._missing("connect_button", f"{type(exc).__name__}: {exc}")
 
     # -------------------------------------------------------------------------
     # Messaging
     # -------------------------------------------------------------------------
 
-    def send_message(self, message: str) -> bool:
-        """Send a message from a profile page.
+    def send_message(self, message: str) -> WriteResult:
+        """Send a message from the profile page of a connected user.
 
-        Assumes we're on a profile page of a connected user.
+        No Message button beside a Connect button means not connected (a
+        normal absence); no Message and no Connect is a page we do not know.
         """
         try:
             msg_btn = self.page.get_by_role("button", name=sel.MESSAGE_BUTTON)
             if msg_btn.count() == 0:
-                return False
+                if self.page.get_by_role("button", name=sel.CONNECT_BUTTON).count() > 0:
+                    return _na("not connected")
+                return self._missing("message_button")
             msg_btn.first.click()
 
-            # Wait for message dialog
             msg_box = self.page.get_by_role("textbox", name=sel.MESSAGE_TEXTBOX)
-            msg_box.wait_for(timeout=5000)
+            try:
+                msg_box.wait_for(timeout=5000)
+            except Exception:
+                return self._missing("message_textbox", "message dialog never appeared")
+            if not self._present(msg_box, "message_textbox"):
+                return self._missing("message_textbox")
             msg_box.first.fill(message)
 
             send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
+            if not self._present(send_btn, "send_button"):
+                return self._missing("send_button")
             send_btn.first.click()
-            return True
-        except Exception:
-            return False
+            return _ok()
+        except Exception as exc:
+            return self._missing("message_button", f"{type(exc).__name__}: {exc}")
 
     # -------------------------------------------------------------------------
     # Profile Info
@@ -232,30 +298,47 @@ class LinkedInPage:
     # Posting
     # -------------------------------------------------------------------------
 
-    def create_post(self, text: str) -> bool:
-        """Publish a text post to the feed. Returns True on success."""
+    def create_post(self, text: str) -> WriteResult:
+        """Publish a text post to the feed. `detail` is the post URN on `ok`.
+
+        Refuses the old Quill editor: typing a public post into an editor we no
+        longer recognise is acting on a page we do not understand, and the
+        health report must say the editor selector broke. `degraded` means the
+        post went out but its URN could not be read back — it exists on
+        LinkedIn and cannot be joined to its metrics.
+        """
         try:
             self.goto_feed()
             start_btn = self.page.get_by_role("button", name=sel.START_POST_BUTTON)
-            if start_btn.count() == 0:
-                return False
+            if not self._present(start_btn, "start_post_button"):
+                return self._missing("start_post_button")
             start_btn.first.click()
 
             editor = self.page.get_by_role("textbox", name=sel.POST_EDITOR_TEXTBOX)
             if editor.count() == 0:
-                editor = self.page.locator(sel.POST_EDITOR_FALLBACK)
-            if editor.count() == 0:
-                return False
+                if self.page.locator(sel.POST_EDITOR_FALLBACK).count() > 0:
+                    return self._missing("post_editor", "only the legacy editor is present; refusing to type into an editor we do not recognise")
+                return self._missing("post_editor")
             editor.first.fill(text)
 
             post_btn = self.page.get_by_role("button", name=sel.POST_SUBMIT_BUTTON)
-            if post_btn.count() == 0:
-                return False
+            if not self._present(post_btn, "post_submit_button"):
+                return self._missing("post_submit_button")
             post_btn.first.click()
             self.page.wait_for_timeout(2000)
-            return True
-        except Exception:
-            return False
+
+            link = self.page.locator(sel.POST_SUCCESS_LINK)
+            if link.count() == 0:
+                self._record_miss("post_success_link")
+                return _degraded("posted, but the post's URN could not be read back")
+            href = link.first.get_attribute("href") or ""
+            urn = _activity_urn(href)
+            if not urn:
+                self._record_miss("post_success_link")
+                return _degraded("posted, but the success link carried no URN")
+            return _ok(urn)
+        except Exception as exc:
+            return self._missing("post_editor", f"{type(exc).__name__}: {exc}")
 
     # -------------------------------------------------------------------------
     # Reactions
@@ -351,48 +434,57 @@ class LinkedInPage:
             pass
         return posts
 
-    def like_post(self, post_index: int) -> bool:
-        """Like a feed post by index. Skips already-liked posts. Returns True on success."""
+    def like_post(self, post_index: int) -> WriteResult:
+        """Like a feed post by index. Already-liked posts are left alone."""
         try:
             cards, card_count = self._feed_cards()
+            if card_count == 0:
+                return WriteResult("selector_missing", "feed_card not found")
             if post_index >= card_count:
-                return False
+                return _na(f"no post at index {post_index}")
             card = cards.nth(post_index)
             like_btn = card.get_by_role("button", name=sel.LIKE_BUTTON)
-            if like_btn.count() == 0:
-                return False
+            if not self._present(like_btn, "like_button"):
+                return self._missing("like_button")
             if like_btn.first.get_attribute("aria-pressed") == "true":
-                return False
+                return _na("already liked")
             like_btn.first.click()
-            return True
-        except Exception:
-            return False
+            return _ok()
+        except Exception as exc:
+            return self._missing("like_button", f"{type(exc).__name__}: {exc}")
 
-    def comment_on_post(self, post_index: int, comment_text: str) -> bool:
-        """Post a comment on a feed post by index. Returns True on success."""
+    def comment_on_post(self, post_index: int, comment_text: str) -> WriteResult:
+        """Post a comment on a feed post by index."""
         try:
             cards, card_count = self._feed_cards()
+            if card_count == 0:
+                return WriteResult("selector_missing", "feed_card not found")
             if post_index >= card_count:
-                return False
+                return _na(f"no post at index {post_index}")
             card = cards.nth(post_index)
 
             comment_btn = card.get_by_role("button", name=sel.COMMENT_BUTTON)
-            if comment_btn.count() == 0:
-                return False
+            if not self._present(comment_btn, "comment_button"):
+                return self._missing("comment_button")
             comment_btn.first.click()
 
             textbox = card.get_by_role("textbox", name=sel.COMMENT_TEXTBOX)
-            textbox.wait_for(timeout=5000)
+            try:
+                textbox.wait_for(timeout=5000)
+            except Exception:
+                return self._missing("comment_textbox", "comment box never appeared")
+            if not self._present(textbox, "comment_textbox"):
+                return self._missing("comment_textbox")
             textbox.first.fill(comment_text)
 
             post_btn = card.get_by_role("button", name=sel.COMMENT_SUBMIT_BUTTON)
-            if post_btn.count() == 0:
-                return False
+            if not self._present(post_btn, "comment_submit_button"):
+                return self._missing("comment_submit_button")
             post_btn.first.click()
             self.page.wait_for_timeout(1000)
-            return True
-        except Exception:
-            return False
+            return _ok()
+        except Exception as exc:
+            return self._missing("comment_button", f"{type(exc).__name__}: {exc}")
 
     # -------------------------------------------------------------------------
     # Profile editing (own profile)
@@ -401,57 +493,57 @@ class LinkedInPage:
     def goto_own_profile(self) -> None:
         self.page.goto(f"{self.LINKEDIN_URL}/in/me/")
 
-    def update_headline(self, headline: str) -> bool:
-        """Update own headline via the 'Edit intro' dialog. Returns True on success."""
+    def update_headline(self, headline: str) -> WriteResult:
+        """Update own headline via the 'Edit intro' dialog."""
         try:
             self.goto_own_profile()
             edit_btn = self.page.get_by_role("button", name=sel.EDIT_INTRO_BUTTON)
-            if edit_btn.count() == 0:
-                return False
+            if not self._present(edit_btn, "edit_intro_button"):
+                return self._missing("edit_intro_button")
             edit_btn.first.click()
 
             field = self.page.get_by_label(sel.HEADLINE_FIELD_LABEL)
-            if field.count() == 0:
-                return False
+            if not self._present(field, "headline_field"):
+                return self._missing("headline_field")
             field.first.fill(headline)
 
             save_btn = self.page.get_by_role("button", name=sel.SAVE_BUTTON)
-            if save_btn.count() == 0:
-                return False
+            if not self._present(save_btn, "save_button"):
+                return self._missing("save_button")
             save_btn.first.click()
             self.page.wait_for_timeout(2000)
-            return True
-        except Exception:
-            return False
+            return _ok()
+        except Exception as exc:
+            return self._missing("edit_intro_button", f"{type(exc).__name__}: {exc}")
 
-    def update_about(self, about: str) -> bool:
-        """Update own About section. Returns True on success."""
+    def update_about(self, about: str) -> WriteResult:
+        """Update own About section. A profile with no About section is a normal absence."""
         try:
             self.goto_own_profile()
             about_section = self.page.locator(sel.PROFILE_ABOUT_SECTION)
             if about_section.count() == 0:
-                return False
+                return _na("no About section on the profile")
             edit_btn = self.page.get_by_role("button", name=sel.EDIT_ABOUT_BUTTON)
             if edit_btn.count() == 0:
                 # Fallback: pencil button within the about section's parent block
                 edit_btn = about_section.locator(sel.PROFILE_ABOUT_EDIT_FALLBACK)
-            if edit_btn.count() == 0:
-                return False
+            if not self._present(edit_btn, "edit_about_button"):
+                return self._missing("edit_about_button")
             edit_btn.first.click()
 
             field = self.page.get_by_role("textbox")
             if field.count() == 0:
-                return False
+                return self._missing("edit_about_button", "About editor opened but has no textbox")
             field.first.fill(about)
 
             save_btn = self.page.get_by_role("button", name=sel.SAVE_BUTTON)
-            if save_btn.count() == 0:
-                return False
+            if not self._present(save_btn, "save_button"):
+                return self._missing("save_button")
             save_btn.first.click()
             self.page.wait_for_timeout(2000)
-            return True
-        except Exception:
-            return False
+            return _ok()
+        except Exception as exc:
+            return self._missing("edit_about_button", f"{type(exc).__name__}: {exc}")
 
     # -------------------------------------------------------------------------
     # Easy Apply
@@ -802,3 +894,9 @@ class LinkedInPage:
         except Exception:
             pass
         return data
+
+
+def _activity_urn(href: str) -> str:
+    """The `urn:li:activity:NNN` (or share/ugcPost) inside a LinkedIn post URL, or ''."""
+    m = re.search(r"(urn:li:(?:activity|share|ugcPost):\d+)", href)
+    return m.group(1) if m else ""

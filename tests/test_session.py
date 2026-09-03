@@ -358,3 +358,49 @@ def test_failed_login_keeps_a_checkpoint_page(monkeypatch):
 @contextmanager
 def _noop():
     yield
+
+
+# -- WriteResult → ActionResult ---------------------------------------------------
+
+
+def test_not_applicable_is_skipped_and_spends_nothing():
+    from linkedin.automation.linkedin_page import WriteResult
+
+    s, page = make({"connection": 1})
+    page.send_connection_request.return_value = WriteResult("not_applicable", "already connected or pending")
+    r = s.connect("u")
+    assert r.status == "skipped" and r.reason == "already connected or pending"
+    assert s.budget.remaining("connection") == 1
+
+
+def test_selector_missing_is_failed_not_skipped():
+    """A renamed Connect button is a breakage; it must not read as 'already connected'."""
+    from linkedin.automation.linkedin_page import WriteResult
+
+    s, page = make({"connection": 1})
+    page.send_connection_request.return_value = WriteResult("selector_missing", "connect_button not found")
+    r = s.connect("u")
+    assert r.status == "failed" and "connect_button" in r.reason
+    assert s.budget.remaining("connection") == 1
+
+
+def test_ok_carries_the_detail_as_data():
+    from linkedin.automation.linkedin_page import WriteResult
+
+    s, page = make({"post": 1})
+    page.create_post.return_value = WriteResult("ok", "urn:li:activity:1")
+    r = s.post("x")
+    assert r and r.data == "urn:li:activity:1"
+    assert s.budget.remaining("post") == 0
+
+
+def test_degraded_is_ok_with_the_reason_and_no_data():
+    """Posted, URN unreadable: the budget was spent, the CLI must say why there is no ID."""
+    from linkedin.automation.linkedin_page import WriteResult
+
+    s, page = make({"post": 1})
+    page.create_post.return_value = WriteResult("degraded", "posted, but the post's URN could not be read back")
+    r = s.post("x")
+    assert r.status == "ok" and r.data is None
+    assert "URN" in r.reason
+    assert s.budget.remaining("post") == 0

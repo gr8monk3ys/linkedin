@@ -126,12 +126,15 @@ class LinkedInSession:
     # -- internals ----------------------------------------------------------
 
     def _write(
-        self, kind: str, act: Callable[[], bool], *, skipped_reason: str, navigate: Callable[[], None] | None = None, n: int = 1
+        self, kind: str, act: Callable[[], Any], *, skipped_reason: str, navigate: Callable[[], None] | None = None, n: int = 1
     ) -> ActionResult:
         """The preamble for a write: budget → pace → navigate → act → record on success.
 
         Budget before navigation: an exhausted budget must not cost a page load,
         and a dry run navigates so selector health still has something to report.
+        The page object's `WriteResult` maps onto the action: `not_applicable`
+        is `skipped`, `selector_missing` is `failed` (a breakage, never a quiet
+        page), `degraded` is `ok` with the reason kept.
         """
         if not self.budget.can(kind, n):
             return _refused(f"daily {kind} limit reached")
@@ -144,10 +147,16 @@ class LinkedInSession:
             done = act()
         except Exception as exc:  # a raise from the page object is a breakage, not an absence
             return _failed(f"{type(exc).__name__}: {exc}")
-        if not done:
-            return _skipped(skipped_reason)
+        outcome = getattr(done, "outcome", "ok" if done else "not_applicable")
+        detail = getattr(done, "detail", "")
+        if outcome == "not_applicable":
+            return _skipped(detail or skipped_reason)
+        if outcome == "selector_missing":
+            return _failed(detail or "a selector matched nothing; LinkedIn markup may have changed")
         self.budget.spend(kind, n)
-        return _ok()
+        if outcome == "degraded":
+            return ActionResult("ok", detail, None)
+        return _ok(detail or None)
 
     def _read(self, kind: str, act: Callable[[], Any]) -> ActionResult:
         """The preamble for a read: budget → pace → read. A dry run reads but does not spend."""
@@ -183,6 +192,8 @@ class LinkedInSession:
         )
 
     def post(self, text: str) -> ActionResult:
+        """Publish. `data` is the post URN on a full success; a degraded result
+        (posted, URN unreadable) is `ok` with the reason set and no data."""
         if not text.strip():
             return _refused("empty post")
         return self._write("post", lambda: self.page.create_post(text), skipped_reason="post editor not found")

@@ -80,7 +80,7 @@ class TestLogin:
 
     def test_successful_login_fills_and_submits(self, page):
         self._prepare(page)
-        assert LinkedInPage(page).login("a@b.c", "pw") is True
+        assert LinkedInPage(page).login("a@b.c", "pw").outcome == "ok"
         assert page.registry[canonical("css", sel.LOGIN_EMAIL_INPUT)][0].filled == ["a@b.c"]
         assert page.registry[canonical("css", sel.LOGIN_PASSWORD_INPUT)][0].filled == ["pw"]
         assert page.registry[canonical("role", "button", sel.SIGN_IN_BUTTON)][0].clicked == 1
@@ -88,7 +88,14 @@ class TestLogin:
     def test_login_returns_false_when_navigation_never_lands(self, page):
         self._prepare(page)
         page.wait_for_url_fails = True
-        assert LinkedInPage(page).login("a@b.c", "pw") is False
+        result = LinkedInPage(page).login("a@b.c", "pw")
+        assert result.outcome == "not_applicable" and "checkpoint" in result.detail
+
+    def test_missing_login_fields_are_a_selector_miss_not_a_bad_password(self, page):
+        lp = LinkedInPage(page)
+        result = lp.login("a@b.c", "pw")
+        assert result.outcome == "selector_missing"
+        assert lp.selector_misses == ["login_email_input"]
 
     def test_is_logged_in_detects_login_redirect(self, page):
         page.url = "https://www.linkedin.com/login"
@@ -110,7 +117,7 @@ class TestConnectionRequest:
         page.register_role("button", sel.CONNECT_BUTTON, connect)
         page.register_role("button", sel.SEND_BUTTON, send)
 
-        assert LinkedInPage(page).send_connection_request() is True
+        assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert connect.clicked == 1 and send.clicked == 1
 
     def test_falls_back_to_the_more_menu(self, page):
@@ -119,15 +126,30 @@ class TestConnectionRequest:
         page.register_role("menuitem", sel.CONNECT_MENU_ITEM, menu_item)
         page.register_role("button", sel.SEND_BUTTON, send)
 
-        assert LinkedInPage(page).send_connection_request() is True
+        assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert more.clicked == 1 and menu_item.clicked == 1
 
-    def test_no_connect_affordance_at_all(self, page):
-        assert LinkedInPage(page).send_connection_request() is False
+    def test_no_connect_affordance_at_all_is_a_selector_miss(self, page):
+        """No Connect, More, Message or Pending: this is not a profile page we know."""
+        lp = LinkedInPage(page)
+        result = lp.send_connection_request()
+        assert result.outcome == "selector_missing"
+        assert "connect_button" in lp.selector_misses
+
+    def test_already_connected_is_a_normal_absence(self, page):
+        page.register_role("button", sel.MESSAGE_BUTTON, FakeElement())
+        lp = LinkedInPage(page)
+        result = lp.send_connection_request()
+        assert result.outcome == "not_applicable"
+        assert lp.selector_misses == []
+
+    def test_pending_invitation_is_a_normal_absence(self, page):
+        page.register_role("button", sel.PENDING_BUTTON, FakeElement())
+        assert LinkedInPage(page).send_connection_request().outcome == "not_applicable"
 
     def test_more_menu_without_a_connect_item(self, page):
         page.register_role("button", sel.MORE_BUTTON, FakeElement())
-        assert LinkedInPage(page).send_connection_request() is False
+        assert LinkedInPage(page).send_connection_request().outcome == "not_applicable"
 
     def test_note_is_typed_before_sending(self, page):
         note_box = FakeElement()
@@ -136,12 +158,14 @@ class TestConnectionRequest:
         page.register_role("textbox", sel.ADD_NOTE_TEXTBOX, note_box)
         page.register_role("button", sel.SEND_BUTTON, FakeElement())
 
-        assert LinkedInPage(page).send_connection_request(note="Hi Ada") is True
+        assert LinkedInPage(page).send_connection_request(note="Hi Ada").outcome == "ok"
         assert note_box.filled == ["Hi Ada"]
 
-    def test_missing_send_button_reports_failure(self, page):
+    def test_missing_send_button_is_a_selector_miss(self, page):
         page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
-        assert LinkedInPage(page).send_connection_request() is False
+        lp = LinkedInPage(page)
+        assert lp.send_connection_request().outcome == "selector_missing"
+        assert lp.selector_misses == ["send_button"]
 
 
 class TestSendMessage:
@@ -151,48 +175,85 @@ class TestSendMessage:
         page.register_role("textbox", sel.MESSAGE_TEXTBOX, box)
         page.register_role("button", sel.SEND_BUTTON, send)
 
-        assert LinkedInPage(page).send_message("hello") is True
+        assert LinkedInPage(page).send_message("hello").outcome == "ok"
         assert box.filled == ["hello"] and send.clicked == 1
 
-    def test_no_message_button(self, page):
-        assert LinkedInPage(page).send_message("hello") is False
+    def test_no_message_button_is_a_selector_miss(self, page):
+        lp = LinkedInPage(page)
+        assert lp.send_message("hello").outcome == "selector_missing"
+        assert lp.selector_misses == ["message_button"]
+
+    def test_not_connected_is_a_normal_absence(self, page):
+        page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
+        lp = LinkedInPage(page)
+        assert lp.send_message("hello").outcome == "not_applicable"
+        assert lp.selector_misses == []
 
     def test_message_box_never_appears(self, page):
         page.register_role("button", sel.MESSAGE_BUTTON, FakeElement())
-        assert LinkedInPage(page).send_message("hello") is False
+        lp = LinkedInPage(page)
+        assert lp.send_message("hello").outcome == "selector_missing"
+        assert "message_textbox" in lp.selector_misses
 
 
 class TestCreatePost:
-    def _prepare(self, page, with_editor=True, fallback_editor=False):
+    URN = "urn:li:activity:7100000000000000000"
+
+    def _prepare(self, page, with_editor=True, fallback_editor=False, success_link=True):
         page.register_role("button", sel.START_POST_BUTTON, FakeElement())
         if with_editor:
             page.register_role("textbox", sel.POST_EDITOR_TEXTBOX, FakeElement())
         if fallback_editor:
             page.register_css(sel.POST_EDITOR_FALLBACK, FakeElement())
         page.register_role("button", sel.POST_SUBMIT_BUTTON, FakeElement())
+        if success_link:
+            page.register_css(sel.POST_SUCCESS_LINK, FakeElement(href=f"https://www.linkedin.com/feed/update/{self.URN}/"))
         return page
 
-    def test_publishes(self, page):
+    def test_publishes_and_reads_back_the_urn(self, page):
         self._prepare(page)
-        assert LinkedInPage(page).create_post("Shipped a thing") is True
+        result = LinkedInPage(page).create_post("Shipped a thing")
+        assert result.outcome == "ok"
+        assert result.detail == self.URN
         assert page.registry[canonical("role", "textbox", sel.POST_EDITOR_TEXTBOX)][0].filled == ["Shipped a thing"]
 
-    def test_uses_the_quill_fallback_editor(self, page):
+    def test_posted_but_urn_unreadable_is_degraded_and_recorded(self, page):
+        """The post exists on LinkedIn; it can never be joined to its metrics."""
+        self._prepare(page, success_link=False)
+        lp = LinkedInPage(page)
+        result = lp.create_post("Shipped")
+        assert result.outcome == "degraded" and result
+        assert result.detail.startswith("posted, but")
+        assert lp.selector_misses == ["post_success_link"]
+
+    def test_refuses_the_legacy_editor(self, page):
+        """Typing a public post into an editor we no longer recognise is acting on
+        a page we do not understand. It used to type into it and report success."""
         self._prepare(page, with_editor=False, fallback_editor=True)
-        assert LinkedInPage(page).create_post("Shipped") is True
-        assert page.registry[canonical("css", sel.POST_EDITOR_FALLBACK)][0].filled == ["Shipped"]
+        lp = LinkedInPage(page)
+        result = lp.create_post("Shipped")
+        assert result.outcome == "selector_missing"
+        assert "legacy editor" in result.detail
+        assert page.registry[canonical("css", sel.POST_EDITOR_FALLBACK)][0].filled == []
+        assert lp.selector_misses == ["post_editor"]
 
     def test_no_start_post_button(self, page):
-        assert LinkedInPage(page).create_post("x") is False
+        lp = LinkedInPage(page)
+        assert lp.create_post("x").outcome == "selector_missing"
+        assert lp.selector_misses == ["start_post_button"]
 
     def test_no_editor_of_either_kind(self, page):
         self._prepare(page, with_editor=False)
-        assert LinkedInPage(page).create_post("x") is False
+        lp = LinkedInPage(page)
+        assert lp.create_post("x").outcome == "selector_missing"
+        assert lp.selector_misses == ["post_editor"]
 
     def test_no_post_button(self, page):
         page.register_role("button", sel.START_POST_BUTTON, FakeElement())
         page.register_role("textbox", sel.POST_EDITOR_TEXTBOX, FakeElement())
-        assert LinkedInPage(page).create_post("x") is False
+        lp = LinkedInPage(page)
+        assert lp.create_post("x").outcome == "selector_missing"
+        assert lp.selector_misses == ["post_submit_button"]
 
 
 class TestLikeVisiblePosts:
@@ -284,45 +345,55 @@ class TestLikePost:
     def test_likes_by_index(self, page):
         cards = [_feed_card(author="A"), _feed_card(author="B")]
         _with_feed(page, cards)
-        assert LinkedInPage(page).like_post(1) is True
+        assert LinkedInPage(page).like_post(1).outcome == "ok"
         assert cards[1].children[canonical("role", "button", sel.LIKE_BUTTON)][0].clicked == 1
 
     def test_out_of_range_index(self, page):
         _with_feed(page, [_feed_card()])
-        assert LinkedInPage(page).like_post(5) is False
+        assert LinkedInPage(page).like_post(5).outcome == "not_applicable"
 
     def test_already_liked_is_not_unliked(self, page):
         card = _feed_card(liked=True)
         _with_feed(page, [card])
-        assert LinkedInPage(page).like_post(0) is False
+        assert LinkedInPage(page).like_post(0).outcome == "not_applicable"
         assert card.children[canonical("role", "button", sel.LIKE_BUTTON)][0].clicked == 0
 
     def test_no_cards_records_a_miss(self, page):
         lp = LinkedInPage(page)
-        assert lp.like_post(0) is False
+        assert lp.like_post(0).outcome == "selector_missing"
         assert "feed_card" in lp.selector_misses
+
+    def test_card_without_a_like_button_is_a_selector_miss(self, page):
+        _with_feed(page, [FakeCard(None, {})])
+        lp = LinkedInPage(page)
+        assert lp.like_post(0).outcome == "selector_missing"
+        assert lp.selector_misses == ["like_button"]
 
 
 class TestCommentOnPost:
     def test_posts_a_comment(self, page):
         card = _feed_card()
         _with_feed(page, [card])
-        assert LinkedInPage(page).comment_on_post(0, "Nice work") is True
+        assert LinkedInPage(page).comment_on_post(0, "Nice work").outcome == "ok"
         assert card.children[canonical("role", "textbox", sel.COMMENT_TEXTBOX)][0].filled == ["Nice work"]
         assert card.children[canonical("role", "button", sel.COMMENT_SUBMIT_BUTTON)][0].clicked == 1
 
     def test_out_of_range_index(self, page):
         _with_feed(page, [_feed_card()])
-        assert LinkedInPage(page).comment_on_post(3, "hi") is False
+        assert LinkedInPage(page).comment_on_post(3, "hi").outcome == "not_applicable"
 
     def test_missing_comment_button(self, page):
         _with_feed(page, [FakeCard(None, {})])
-        assert LinkedInPage(page).comment_on_post(0, "hi") is False
+        lp = LinkedInPage(page)
+        assert lp.comment_on_post(0, "hi").outcome == "selector_missing"
+        assert lp.selector_misses == ["comment_button"]
 
     def test_comment_box_never_appears(self, page):
         card = FakeCard(None, {canonical("role", "button", sel.COMMENT_BUTTON): [FakeElement()]})
         _with_feed(page, [card])
-        assert LinkedInPage(page).comment_on_post(0, "hi") is False
+        lp = LinkedInPage(page)
+        assert lp.comment_on_post(0, "hi").outcome == "selector_missing"
+        assert lp.selector_misses == ["comment_textbox"]
 
 
 class TestSearchResults:
@@ -388,16 +459,20 @@ class TestProfileEditing:
         page.register_label(sel.HEADLINE_FIELD_LABEL, field)
         page.register_role("button", sel.SAVE_BUTTON, FakeElement())
 
-        assert LinkedInPage(page).update_headline("ML Engineer") is True
+        assert LinkedInPage(page).update_headline("ML Engineer").outcome == "ok"
         assert field.filled == ["ML Engineer"]
 
     def test_update_headline_without_edit_button(self, page):
-        assert LinkedInPage(page).update_headline("x") is False
+        lp = LinkedInPage(page)
+        assert lp.update_headline("x").outcome == "selector_missing"
+        assert lp.selector_misses == ["edit_intro_button"]
 
     def test_update_headline_without_save_button(self, page):
         page.register_role("button", sel.EDIT_INTRO_BUTTON, FakeElement())
         page.register_label(sel.HEADLINE_FIELD_LABEL, FakeElement())
-        assert LinkedInPage(page).update_headline("x") is False
+        lp = LinkedInPage(page)
+        assert lp.update_headline("x").outcome == "selector_missing"
+        assert lp.selector_misses == ["save_button"]
 
     def test_update_about(self, page):
         box = FakeElement()
@@ -406,11 +481,13 @@ class TestProfileEditing:
         page.register_role("textbox", None, box)
         page.register_role("button", sel.SAVE_BUTTON, FakeElement())
 
-        assert LinkedInPage(page).update_about("About me") is True
+        assert LinkedInPage(page).update_about("About me").outcome == "ok"
         assert box.filled == ["About me"]
 
-    def test_update_about_without_an_about_section(self, page):
-        assert LinkedInPage(page).update_about("x") is False
+    def test_update_about_without_an_about_section_is_a_normal_absence(self, page):
+        lp = LinkedInPage(page)
+        assert lp.update_about("x").outcome == "not_applicable"
+        assert lp.selector_misses == []
 
 
 class TestEasyApply:
@@ -472,6 +549,22 @@ class TestSelectorCatalogue:
             lp._record_miss(name)
         health = lp.selector_health()
         assert set(health["selectors"]) == set(sel.FRAGILE_SELECTORS)
+
+    def test_every_write_path_records_a_miss_on_an_empty_page(self):
+        """The health report covered 8 reads and 2 writes; a renamed Connect
+        button was a bare False the report never mentioned."""
+        expected = {
+            "login": (lambda lp: lp.login("e", "p"), "login_email_input"),
+            "connect": (lambda lp: lp.send_connection_request(), "connect_button"),
+            "message": (lambda lp: lp.send_message("hi"), "message_button"),
+            "post": (lambda lp: lp.create_post("x"), "start_post_button"),
+            "headline": (lambda lp: lp.update_headline("x"), "edit_intro_button"),
+        }
+        for name, (act, miss) in expected.items():
+            lp = LinkedInPage(FakePage())
+            assert act(lp).outcome == "selector_missing", name
+            assert miss in lp.selector_misses, name
+            assert miss in lp.selector_health()["selectors"], name
 
     def test_misses_are_deduplicated(self):
         lp = LinkedInPage(FakePage())
@@ -758,7 +851,7 @@ class TestLoginStrictMode:
         return page
 
     def test_login_fills_credentials_despite_duplicate_fields(self, login_page):
-        assert LinkedInPage(login_page).login("me@example.com", "hunter2") is True
+        assert LinkedInPage(login_page).login("me@example.com", "hunter2").outcome == "ok"
 
     def test_login_types_into_the_field_it_selected(self, login_page):
         LinkedInPage(login_page).login("me@example.com", "hunter2")
@@ -775,7 +868,7 @@ class TestLoginStrictMode:
 
     def test_login_reports_failure_when_navigation_never_completes(self, login_page):
         login_page.wait_for_url_fails = True
-        assert LinkedInPage(login_page).login("me@example.com", "hunter2") is False
+        assert not LinkedInPage(login_page).login("me@example.com", "hunter2")
 
 
 class TestJobResultScrolling:

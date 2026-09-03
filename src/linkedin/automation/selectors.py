@@ -28,6 +28,8 @@ LOGIN_PASSWORD_LABEL = "Password"
 SIGN_IN_BUTTON = "Sign in"
 
 CONNECT_BUTTON = "Connect"
+#: Shown in place of Connect while an invitation is outstanding.
+PENDING_BUTTON = re.compile(r"^Pending\b", re.I)
 MORE_BUTTON = "More"
 CONNECT_MENU_ITEM = "Connect"
 ADD_NOTE_BUTTON = "Add a note"
@@ -158,7 +160,13 @@ JOB_EASY_APPLY = (
     ".job-search-card__easy-apply-label"
 )
 
+#: The old Quill editor. Present in the catalogue so a page that shows it can be
+#: named, never typed into: a post goes out publicly under the user's name, and
+#: an editor we no longer recognise is a page we do not understand.
 POST_EDITOR_FALLBACK = "div.ql-editor[contenteditable='true']"
+#: After a successful post LinkedIn shows a "View post" link whose href carries
+#: the activity URN. It is the only way to join a published post to its metrics.
+POST_SUCCESS_LINK = "a[href*='/feed/update/urn:li:']"
 FILE_INPUT = "input[type='file']"
 FORM_ERROR = ".artdeco-inline-feedback--error"
 
@@ -167,6 +175,7 @@ FORM_ERROR = ".artdeco-inline-feedback--error"
 #: entries. Mostly CSS keyed on LinkedIn class names, plus the accessible-name
 #: patterns that a relabelled button would break just as silently.
 FRAGILE_SELECTORS = {
+    # -- reads
     "feed_card": FEED_CARD,
     "like_button": LIKE_BUTTON.pattern,
     "feed_author": FEED_AUTHOR,
@@ -181,6 +190,24 @@ FRAGILE_SELECTORS = {
     "invitation_profile_link": INVITATION_PROFILE_LINK,
     "job_card": JOB_CARD,
     "job_title": JOB_TITLE,
+    # -- writes: a relabelled button here used to be a bare False, indistinguishable
+    # from "already connected", and the health report stayed silent for all of them.
     "login_email_input": LOGIN_EMAIL_INPUT,
     "login_password_input": LOGIN_PASSWORD_INPUT,
+    "sign_in_button": SIGN_IN_BUTTON,
+    "connect_button": CONNECT_BUTTON,
+    "send_button": SEND_BUTTON,
+    "message_button": MESSAGE_BUTTON,
+    "message_textbox": MESSAGE_TEXTBOX,
+    "start_post_button": START_POST_BUTTON.pattern,
+    "post_editor": POST_EDITOR_TEXTBOX.pattern,
+    "post_submit_button": POST_SUBMIT_BUTTON.pattern,
+    "post_success_link": POST_SUCCESS_LINK,
+    "comment_button": COMMENT_BUTTON.pattern,
+    "comment_textbox": COMMENT_TEXTBOX.pattern,
+    "comment_submit_button": COMMENT_SUBMIT_BUTTON.pattern,
+    "edit_intro_button": EDIT_INTRO_BUTTON.pattern,
+    "headline_field": HEADLINE_FIELD_LABEL.pattern,
+    "save_button": SAVE_BUTTON.pattern,
+    "edit_about_button": EDIT_ABOUT_BUTTON.pattern,
 }

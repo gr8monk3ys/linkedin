@@ -283,6 +283,45 @@ Include:
                 max_id = max(max_id, int(raw_id))
         return max_id + 1
 
+    def import_job_results(self, results: list[dict]) -> tuple[list[dict], int]:
+        """Persist job-search rows as scored postings. Returns (added, skipped_count).
+
+        Deduped on URL, falling back to (company, title) for rows LinkedIn
+        rendered without a link — a job search re-run daily otherwise stacks
+        the same posting over and over and drowns the plan's opportunity section.
+        """
+        existing = self.list_postings(limit=10_000)
+        seen_urls = {p.get("url", "").split("?")[0] for p in existing if p.get("url")}
+        seen_roles = {(p.get("company", "").lower(), p.get("title", "").lower()) for p in existing}
+
+        added: list[dict] = []
+        skipped = 0
+        for result in results:
+            title = (result.get("title") or "").strip()
+            company = (result.get("company") or "").strip()
+            if not title:
+                skipped += 1
+                continue
+            url = (result.get("url") or "").split("?")[0]
+            role_key = (company.lower(), title.lower())
+            if (url and url in seen_urls) or (not url and role_key in seen_roles):
+                skipped += 1
+                continue
+            posting = self.add_posting({
+                "title": title,
+                "company": company,
+                "location": result.get("location", ""),
+                "url": url,
+                "source": "linkedin_jobs",
+                "posted_date": result.get("posted", ""),
+                "notes": "Easy Apply" if result.get("easy_apply") else "",
+            })
+            added.append(posting)
+            if url:
+                seen_urls.add(url)
+            seen_roles.add(role_key)
+        return added, skipped
+
     def _load_postings(self) -> list[dict]:
         raw = load_json(self.postings_file, [])
         return raw if isinstance(raw, list) else []

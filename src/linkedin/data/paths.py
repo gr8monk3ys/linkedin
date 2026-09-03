@@ -118,6 +118,10 @@ class DataDir:
     def li_session(self) -> Path:
         return self.root / "li_session.json"
 
+    @property
+    def limits(self) -> Path:
+        return self.root / "limits.json"
+
     # -- backups
     @property
     def backups(self) -> Path:

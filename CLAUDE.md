@@ -67,7 +67,7 @@ uv run ruff format src/ tests/
 - `inbox_service.py` — The inbound edge. Turns message threads and pending invitations into *proposed* pipeline transitions. Pure (dicts in, proposals out, no browser, no repo) because the matching logic is what can corrupt the CRM.
 - `dashboard_service.py`, `analytics_service.py` — Overview aggregation, pipeline conversion, response rates
 
-**Automation** (`src/linkedin/automation/`) — Playwright-based browser automation with session persistence, keyring credentials, rate limiting, and per-day safety limits persisted to `~/.linkedin-cli/automation_usage.json` (20 connections, 25 messages, 3 posts, 30 reactions, 15 Easy Applies). Actions live in `actions/` (connect, message, scrape, search, post, engage, profile_sync, easy_apply). The CLI `automate` group lazy-imports the stack via `_require_automation()`; CLI tests patch `_require_automation`/`_open_linkedin_session` in `linkedin.cli`.
+**Automation** (`src/linkedin/automation/`) — Playwright-based browser automation behind one module, `session.py`. `LinkedInSession.open(data_dir, headless=, dry_run=, on_login_needed=)` starts the browser, establishes the login (saved session first, keyring second, then a person at the window), and always closes. Its named verbs (`connect`, `message`, `post`, `react`, `like_post`, `comment`, `sync_profile`, `easy_apply`, `search`, `jobs`, `scrape`, `inbox`) each do the same six things — budget, pace, navigate, page verb, record on success — and return one `ActionResult(status, reason, data)` with status `ok | skipped | refused | failed`, truthy only on `ok`. A dry run navigates and reads, never writes, never spends. `budget.py` is the daily budget: `Budget.spend(kind, n)` / `remaining(kind)` over one caps table read from `limits.json` (seeded with the ramp caps: 0 connections, 1 post, 5 reactions, 2 comments per day) and today's usage in `automation_usage.json`; `automate limits set <kind> <n>` steps a cap up. There is no "no budget". The CLI opens sessions through `_open_session()`; tests use the `fake_session` fixture, which makes `LinkedInSession.open` yield `tests/fake_session.FakeSession` — the second adapter at the session port, with scripted results and recorded calls.
 
 - **Every module in this package must import without Playwright or keyring** — CI installs only `--extra dev`, and a module-scope `import playwright` drops that module *and everything importing it* to 0% coverage. That is how `linkedin_page.py` (the layer that actually talks to LinkedIn) went untested. Import Playwright types under `TYPE_CHECKING`, and `sync_playwright`/`keyring` inside the function that uses them. `tests/test_automation_import_safety.py` walks the package and fails if this regresses.
 - **`automation/selectors.py` holds every LinkedIn selector.** Never inline one at a call site. Role/label locators are preferred over CSS — accessible names survive class-name churn. `FRAGILE_SELECTORS` catalogues the CSS ones that break on a markup change.
@@ -84,7 +84,7 @@ uv run ruff format src/ tests/
 - **`run-daily` drafts through `DraftService.generate_for_action(action)`**, which reads the planner row. Never add an `if action == ...` branch in the CLI.
 - **`get_next_actions` returns at most one action per contact**, highest priority first. A contact with no `created_at`/`last_contact` yields a `repair_contact` action rather than being skipped; `contacts repair` backfills it.
 - **`run-daily` exits nonzero and reports `no_actions`** when the planner produces nothing while `active_pipeline_count() > 0`, and nonzero on `failed`. It previously returned exit 0 and status `success` in both cases, which is how it logged 136 consecutive green runs over five months while generating zero drafts. Never widen `_daily_run_status` back to unconditional success.
-- **`json_store.save_json` is atomic** (temp file + fsync + `os.replace`). Every mutation rewrites the whole file, so a plain write loses the entire store if interrupted. `automation/safety.py` persists its daily budgets through it for the same reason — a truncated usage file reads back as "no usage today".
+- **`json_store.save_json` is atomic** (temp file + fsync + `os.replace`). Every mutation rewrites the whole file, so a plain write loses the entire store if interrupted. `automation/budget.py` persists today's usage through it for the same reason — a truncated usage file reads back as "no usage today".
 - **Backups enumerate the data directory** (`DataDir.backup_members`), not a list. A list is how job postings, templates, the usage counters, and the inbox proposals were left out of every backup. Excluded on purpose: the browser session (cookies), the lock, temp files.
 - **Nothing inbound auto-advances a contact.** `inbox sync` reads LinkedIn messaging and the sent-invitation manager and writes *proposals* to `inbox_proposals.json`; `inbox review` applies them one at a time. A contact whose status changed since the sync drops its proposal — the hand edit wins. `--yes` covers high-confidence proposals only: a proposal matched on display name alone is `low` confidence and is always asked about, and a name matching two contacts is no evidence about either.
 - **`get_pending_sent_invitations` returns `None`, not `[]`, when it cannot read the list.** Every other page-object method fails soft to an empty result; this one must not. Acceptance is inferred from an invitation's *absence*, so a selector that stopped matching would otherwise read as "every outstanding invitation was accepted" and advance the whole pipeline at once. `[]` is returned only when LinkedIn's own empty state is on the page.
@@ -109,16 +109,16 @@ uv run ruff format src/ tests/
 - `test_data_service.py` — Import/export/backup over a `DataDir(tmp_path)`.
 - `test_json_store.py`, `test_factory.py`, `test_paths.py` — Storage layer tests: `save_json` atomicity, repos per directory, `DataDir` resolution and backup enumeration, and that importing the CLI creates nothing on disk.
 - `test_analytics.py`, `test_market.py`, `test_optimizer.py`, `test_templates.py` — Feature-specific tests.
-- `test_automation.py`, `test_automation_scrape.py` — Automation config and action tests.
+- `test_automation.py` — Browser config (only fields something reads) and pacing.
+- `test_budget.py` — The budget: caps table, per-day persistence, legacy counter names, `limits.json` seeding.
+- `test_session.py` — Every verb's preamble over a MagicMock page: budget before navigation, skipped vs failed, dry run, `open()` lifecycle (login handoff, browser closed on raise, Playwright missing).
+- `test_contact_import.py`, `test_job_import.py` — Search rows and scraped profiles into contacts; job rows into scored postings.
 - `test_linkedin_page.py` — Page object against `tests/fake_page.py`; covers selector misses.
 - `test_automation_import_safety.py` — Walks `linkedin.automation` asserting no module needs Playwright/keyring to import.
-- `test_automation_connect_message_search.py` — Connect/message/search actions and their safety-budget accounting.
 - `test_scheduling.py` — Schedule math and managed-crontab handling.
-- `test_automation_actions.py` — Post/engage/profile-sync/easy-apply actions + persistent safety limits (MagicMock page objects, no Playwright).
 - `test_resume_service.py` — Resume repo bridge (builds a fake checkout + autoapply SQLite db in tmp_path).
-- `test_cli_automate.py` — CLI tests for the `automate` group and resume-repo application commands.
+- `test_cli_automate.py` — CLI tests for the `automate` group through `fake_session`, and resume-repo application commands.
 - `test_inbox_service.py` — The proposal matcher: URL vs name matching, the low-confidence path, and the unreadable-invitation-list case. No browser.
-- `test_automation_inbox_jobs.py` — The read-only `inbox` and `jobs` actions.
 - `test_cli_inbox.py` — CLI tests for `inbox sync/list/review` and `automate jobs`.
 
 **Notes:**

@@ -1,11 +1,9 @@
 """Feed engagement service — like posts and leave AI-personalized comments.
 
-Salvaged from the ci-web-smoke-hardening branch (PR #10) and adapted to the
-current automation stack: the service operates on an already-open
-LinkedInPage session (the CLI owns browser lifecycle and login) and uses
-the shared SafetyLimits budgets for reactions and comments.
+Operates on an open `LinkedInSession` (the CLI owns its lifecycle); the
+session's budget governs reactions and comments and its verbs do the pacing.
 
-Import-safe without Playwright: browser types are only type hints.
+Import-safe without Playwright: the session type is a hint only.
 """
 
 from __future__ import annotations
@@ -14,13 +12,11 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from linkedin.ai.client import ai_call
-from linkedin.automation.rate_limiter import RateLimiter
-from linkedin.automation.safety import SafetyLimits
 from linkedin.data.json_store import JsonProfileRepo
 from linkedin.types import ProfileDict
 
 if TYPE_CHECKING:
-    from linkedin.automation.linkedin_page import LinkedInPage
+    from linkedin.automation.session import LinkedInSession
 
 # A comment is published publicly under the user's real name, so anything the
 # model returns that does not look like a short human remark is dropped rather
@@ -76,14 +72,11 @@ class AutomationService:
 
     def engage_feed(
         self,
-        linkedin: LinkedInPage,
+        session: LinkedInSession,
         *,
         approve_comment: Callable[[dict, str], bool],
         limit: int = 10,
         comment_count: int = 0,
-        safety: SafetyLimits | None = None,
-        rate_limiter: RateLimiter | None = None,
-        dry_run: bool = False,
     ) -> list[dict]:
         """Browse the feed, like up to `limit` posts, AI-comment on up to `comment_count`.
 
@@ -96,9 +89,7 @@ class AutomationService:
         Returns one result dict per post seen:
             {"author", "content_preview", "liked", "commented", "comment_text", "skipped_reason"}
         """
-        from linkedin.automation.actions.engage import comment_on_post, like_post_by_index
-
-        posts = linkedin.get_feed_posts(max_posts=limit)
+        posts = session.page.get_feed_posts(max_posts=limit)
         if not posts:
             return []
 
@@ -107,22 +98,15 @@ class AutomationService:
         results = []
 
         for post in posts:
-            if safety and not safety.can_react():
+            if not session.budget.can("reaction"):
                 break
 
-            liked = like_post_by_index(
-                linkedin,
-                post["element_index"],
-                rate_limiter=rate_limiter,
-                safety=safety,
-                dry_run=dry_run,
-            )
+            liked = bool(session.like_post(post["element_index"]))
 
             commented = False
             comment_text = ""
             skipped_reason = ""
-            can_comment = safety.can_comment() if safety else True
-            if comments_left > 0 and post.get("content") and can_comment:
+            if comments_left > 0 and post.get("content") and session.budget.can("comment"):
                 comment_text = self.generate_feed_comment(profile, post)
                 if not comment_text:
                     skipped_reason = "no usable comment generated"
@@ -130,28 +114,21 @@ class AutomationService:
                     skipped_reason = "declined at review"
                     comment_text = ""
                 if comment_text:
-                    commented = comment_on_post(
-                        linkedin,
-                        post["element_index"],
-                        comment_text,
-                        rate_limiter=rate_limiter,
-                        safety=safety,
-                        dry_run=dry_run,
-                    )
+                    commented = bool(session.comment(post["element_index"], comment_text))
                     if commented:
                         comments_left -= 1
+                    else:
+                        comment_text = ""
 
-            content = post.get("content", "")
-            results.append(
-                {
-                    "author": post.get("author", ""),
-                    "content_preview": (content[:47] + "...") if len(content) > 50 else content,
-                    "liked": liked,
-                    "commented": commented,
-                    "comment_text": comment_text,
-                    "skipped_reason": skipped_reason,
-                }
-            )
+            content = str(post.get("content", ""))
+            results.append({
+                "author": post.get("author", ""),
+                "content_preview": content if len(content) <= 50 else content[:47] + "...",
+                "liked": liked,
+                "commented": commented,
+                "comment_text": comment_text,
+                "skipped_reason": skipped_reason,
+            })
 
         return results
 

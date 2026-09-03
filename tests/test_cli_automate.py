@@ -1,16 +1,18 @@
 """CLI tests for the `automate` group and the resume-repo applications commands.
 
-Browser-touching commands are tested by patching `_require_automation` and
-`_open_linkedin_session` in linkedin.cli, so no Playwright install is needed.
+Browser-touching commands are tested through the session port: `fake_session`
+(conftest) makes `LinkedInSession.open` yield a FakeSession with scripted
+results, so no Playwright install is needed and the test checks what the
+command asked the session to do.
 """
 
 import sqlite3
-from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
 
 import linkedin.cli as cli_mod
+from linkedin.automation.session import ActionResult
 from linkedin.cli import cli
 from linkedin.data.json_store import load_json, save_json
 
@@ -32,38 +34,6 @@ def resume_repo(tmp_path):
     return root
 
 
-class FakeActions:
-    """Stands in for the lazily-imported automation namespace."""
-
-    def __init__(self):
-        from linkedin.automation.rate_limiter import RateLimiter
-        from linkedin.automation.safety import SafetyLimits
-
-        self.page = MagicMock()
-        self.browser = MagicMock()
-        self.namespace = {
-            "RateLimiter": RateLimiter,
-            "SafetyLimits": SafetyLimits,
-            "PersistentSafetyLimits": lambda usage_file=None: SafetyLimits(),
-            "connect": MagicMock(),
-            "easy_apply": MagicMock(),
-            "engage": MagicMock(),
-            "login": MagicMock(),
-            "message": MagicMock(),
-            "post": MagicMock(),
-            "profile_sync": MagicMock(),
-            "scrape": MagicMock(),
-        }
-
-
-@pytest.fixture
-def fake_automation(monkeypatch):
-    fake = FakeActions()
-    monkeypatch.setattr(cli_mod, "_require_automation", lambda: fake.namespace)
-    monkeypatch.setattr(cli_mod, "_open_linkedin_session", lambda auto, headless: (fake.browser, fake.page))
-    return fake
-
-
 def _add_contact(runner, name="Alice", url="https://linkedin.com/in/alice"):
     result = runner.invoke(
         cli,
@@ -73,62 +43,86 @@ def _add_contact(runner, name="Alice", url="https://linkedin.com/in/alice"):
     assert result.exit_code == 0, result.output
 
 
-def test_automate_connect_sends_and_advances_status(runner, fake_automation):
+def test_automate_connect_sends_and_advances_status(runner, fake_session):
     _add_contact(runner)
-    fake_automation.namespace["connect"].send_connection.return_value = True
     result = runner.invoke(cli, ["automate", "connect", "1", "--note", "Hi!"])
     assert result.exit_code == 0, result.output
     assert "connection_sent" in result.output
-    fake_automation.browser.close.assert_called_once()
+    assert fake_session.calls_to("connect") == [(("https://linkedin.com/in/alice",), {"note": "Hi!"})]
+    assert fake_session.closed
     contacts = load_json(cli_mod._app.data_dir.contacts)
     assert contacts[0]["status"] == "connection_sent"
 
 
-def test_automate_connect_requires_linkedin_url(runner, fake_automation):
+def test_automate_connect_skipped_exits_nonzero_and_keeps_status(runner, fake_session):
+    _add_contact(runner)
+    fake_session.results["connect"] = ActionResult("skipped", "no Connect button, or already connected/pending")
+    result = runner.invoke(cli, ["automate", "connect", "1"])
+    assert result.exit_code == 1
+    assert "no Connect button" in result.output
+    assert load_json(cli_mod._app.data_dir.contacts)[0]["status"] == "not_contacted"
+
+
+def test_automate_connect_refused_by_budget(runner, fake_session):
+    _add_contact(runner)
+    fake_session.results["connect"] = ActionResult("refused", "daily connection limit reached")
+    result = runner.invoke(cli, ["automate", "connect", "1"])
+    assert result.exit_code == 1
+    assert "limit" in result.output
+
+
+def test_selector_misses_are_reported_after_the_session(runner, fake_session):
+    _add_contact(runner)
+    fake_session.health = {"healthy": False, "misses": ["connect_button"], "selectors": {"connect_button": "button.x"}}
+    result = runner.invoke(cli, ["automate", "connect", "1"])
+    assert "markup may have changed" in result.output
+    assert "button.x" in result.output
+
+
+def test_automate_connect_requires_linkedin_url(runner, fake_session):
     save_json(cli_mod._app.data_dir.contacts, [{"id": 1, "name": "NoUrl", "status": "not_contacted", "activities": []}])
     result = runner.invoke(cli, ["automate", "connect", "1"])
     assert result.exit_code == 1
     assert "no linkedin_url" in result.output
 
 
-def test_automate_connect_missing_contact(runner, fake_automation):
+def test_automate_connect_missing_contact(runner, fake_session):
     result = runner.invoke(cli, ["automate", "connect", "99"])
     assert result.exit_code == 1
     assert "not found" in result.output
 
 
-def test_automate_connect_dry_run_keeps_status(runner, fake_automation):
+def test_automate_connect_dry_run_keeps_status(runner, fake_session):
     _add_contact(runner)
-    fake_automation.namespace["connect"].send_connection.return_value = True
     result = runner.invoke(cli, ["automate", "connect", "1", "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "Dry run" in result.output
+    assert fake_session.opened_with["dry_run"] is True
     contacts = load_json(cli_mod._app.data_dir.contacts)
     assert contacts[0]["status"] == "not_contacted"
 
 
-def test_automate_message_uses_draft(runner, fake_automation, tmp_path):
+def test_automate_message_uses_draft(runner, fake_session, tmp_path):
     _add_contact(runner)
     save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hello from draft", "type": "message", "source": "ai"}])
-    fake_automation.namespace["message"].send_message.return_value = True
     result = runner.invoke(cli, ["automate", "message", "1", "--draft-id", "1"])
     assert result.exit_code == 0, result.output
-    args, kwargs = fake_automation.namespace["message"].send_message.call_args
-    assert args[2] == "Hello from draft"
+    (args, _), = fake_session.calls_to("message")
+    assert args[1] == "Hello from draft"
+    assert load_json(cli_mod._app.data_dir.contacts)[0]["status"] == "messaged"
 
 
-def test_automate_message_requires_text(runner, fake_automation):
+def test_automate_message_requires_text(runner, fake_session):
     _add_contact(runner)
     result = runner.invoke(cli, ["automate", "message", "1"])
     assert result.exit_code == 1
     assert "Nothing to send" in result.output
 
 
-def test_automate_post_from_calendar_marks_posted(runner, fake_automation):
+def test_automate_post_from_calendar_marks_posted(runner, fake_session):
     save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "My scheduled post", "type": "post", "source": "ai"}])
     result = runner.invoke(cli, ["calendar", "add", "--title", "Post", "--date", "2026-03-01", "--draft-id", "1"])
     assert result.exit_code == 0, result.output
-    fake_automation.namespace["post"].publish_post.return_value = (True, "posted")
     result = runner.invoke(cli, ["automate", "post", "--calendar-id", "1"], input="y\n")
     assert result.exit_code == 0, result.output
     assert "published" in result.output
@@ -136,72 +130,74 @@ def test_automate_post_from_calendar_marks_posted(runner, fake_automation):
     assert "posted" in listing.output
 
 
-def test_automate_post_refuses_template_draft(runner, fake_automation):
+def test_automate_post_refuses_template_draft(runner, fake_session):
     """A template is not a draft; it must never go out under the user's name."""
     save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hi there", "type": "post", "source": "template"}])
     result = runner.invoke(cli, ["automate", "post", "--draft-id", "1"], input="y\n")
     assert result.exit_code == 1
     assert "offline template" in result.output
-    fake_automation.namespace["post"].publish_post.assert_not_called()
+    assert fake_session.calls_to("post") == []
 
 
-def test_automate_post_refuses_draft_of_unknown_provenance(runner, fake_automation):
+def test_automate_post_refuses_draft_of_unknown_provenance(runner, fake_session):
     """Rows saved before provenance was recorded include the templates from 150 unattended runs."""
     save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hi there", "type": "post"}])
     result = runner.invoke(cli, ["automate", "post", "--draft-id", "1"], input="y\n")
     assert result.exit_code == 1
     assert "unknown provenance" in result.output
-    fake_automation.namespace["post"].publish_post.assert_not_called()
+    assert fake_session.calls_to("post") == []
 
 
-def test_automate_message_refuses_template_draft(runner, fake_automation):
+def test_automate_message_refuses_template_draft(runner, fake_session):
     _add_contact(runner)
     save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hi there", "type": "message", "source": "template"}])
     result = runner.invoke(cli, ["automate", "message", "1", "--draft-id", "1"])
     assert result.exit_code == 1
-    fake_automation.namespace["message"].send_message.assert_not_called()
+    assert fake_session.calls_to("message") == []
 
 
-def test_automate_post_requires_content(runner, fake_automation):
+def test_automate_post_requires_content(runner, fake_session):
     result = runner.invoke(cli, ["automate", "post"])
     assert result.exit_code == 1
     assert "Nothing to post" in result.output
 
 
-def test_automate_post_declined_confirmation(runner, fake_automation):
+def test_automate_post_declined_confirmation(runner, fake_session):
     result = runner.invoke(cli, ["automate", "post", "--text", "hello"], input="n\n")
     assert result.exit_code == 0
-    fake_automation.namespace["post"].publish_post.assert_not_called()
+    assert fake_session.calls_to("post") == []
 
 
-def test_automate_engage_contacts_and_feed(runner, fake_automation):
+def test_automate_engage_contacts_and_feed(runner, fake_session):
     _add_contact(runner)
-    fake_automation.namespace["engage"].like_contact_posts.return_value = 2
-    fake_automation.namespace["engage"].like_feed_posts.return_value = 3
+    fake_session.results["react"] = ActionResult("ok", data=2)
     result = runner.invoke(cli, ["automate", "engage", "--contact-id", "1", "--feed", "--likes", "2"])
     assert result.exit_code == 0, result.output
-    assert "5 post(s) total" in result.output
+    assert "4 post(s) total" in result.output
+    calls = fake_session.calls_to("react")
+    assert calls == [((2,), {"profile_url": "https://linkedin.com/in/alice"}), ((2,), {})]
 
 
-def test_automate_engage_requires_target(runner, fake_automation):
+def test_automate_engage_requires_target(runner, fake_session):
     result = runner.invoke(cli, ["automate", "engage"])
     assert result.exit_code == 1
 
 
-def test_automate_sync_profile(runner, fake_automation):
-    fake_automation.namespace["profile_sync"].sync_profile.return_value = {"headline": "updated", "about": "skipped"}
+def test_automate_sync_profile(runner, fake_session):
+    fake_session.results["sync_profile"] = ActionResult("ok", data={"headline": "updated"})
     result = runner.invoke(cli, ["automate", "sync-profile", "--headline", "Builder of things"], input="y\n")
     assert result.exit_code == 0, result.output
     assert "updated" in result.output
+    assert fake_session.calls_to("sync_profile") == [((), {"headline": "Builder of things", "about": ""})]
 
 
-def test_automate_sync_profile_failure_exits_nonzero(runner, fake_automation):
-    fake_automation.namespace["profile_sync"].sync_profile.return_value = {"headline": "failed", "about": "skipped"}
+def test_automate_sync_profile_failure_exits_nonzero(runner, fake_session):
+    fake_session.results["sync_profile"] = ActionResult("failed", "editor", data={"headline": "failed"})
     result = runner.invoke(cli, ["automate", "sync-profile", "--headline", "X"], input="y\n")
     assert result.exit_code == 1
 
 
-def test_automate_easy_apply_submits_and_advances(runner, fake_automation, resume_repo, monkeypatch):
+def test_automate_easy_apply_submits_and_advances(runner, fake_session, resume_repo, monkeypatch):
     monkeypatch.setenv("LINKEDIN_RESUME_REPO", str(resume_repo))
     result = runner.invoke(
         cli,
@@ -219,37 +215,45 @@ def test_automate_easy_apply_submits_and_advances(runner, fake_automation, resum
         ],
     )
     assert result.exit_code == 0, result.output
-    fake_automation.namespace["easy_apply"].apply_to_job.return_value = {"status": "submitted", "detail": "ok"}
+    fake_session.results["easy_apply"] = ActionResult("ok", data={"status": "submitted", "detail": "ok"})
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit", "--headless"])
     assert result.exit_code == 0, result.output
     assert "applied" in result.output
     # The matched variant's PDF was passed through
-    _, kwargs = fake_automation.namespace["easy_apply"].apply_to_job.call_args
+    (_, kwargs), = fake_session.calls_to("easy_apply")
     assert kwargs["resume_path"].endswith("ai-engineer-resume.pdf")
+    assert kwargs["submit"] is True
     view = runner.invoke(cli, ["applications", "view", "1"])
     assert "applied" in view.output
 
 
-def test_automate_easy_apply_dry_run_skips_browser(runner, fake_automation, monkeypatch):
+def test_automate_easy_apply_dry_run_skips_browser(runner, fake_session, monkeypatch):
     monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "Dev", "-u", "https://x/1"])
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "Dry run" in result.output
-    fake_automation.namespace["easy_apply"].apply_to_job.assert_not_called()
+    assert fake_session.opened_with == {}  # no session was opened at all
 
 
-def test_automate_easy_apply_requires_url(runner, fake_automation):
+def test_automate_easy_apply_requires_url(runner, fake_session):
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "Dev"])
     result = runner.invoke(cli, ["automate", "easy-apply", "1"])
     assert result.exit_code == 1
     assert "no job URL" in result.output
 
 
-def test_automate_limits_table(runner):
+def test_automate_limits_table_and_set(runner):
     result = runner.invoke(cli, ["automate", "limits"])
     assert result.exit_code == 0, result.output
-    assert "Connections" in result.output and "Easy Applies" in result.output
+    assert "connection" in result.output and "easy_apply" in result.output
+    assert "limits.json" in result.output
+    result = runner.invoke(cli, ["automate", "limits", "set", "reaction", "9"])
+    assert result.exit_code == 0, result.output
+    assert "9" in runner.invoke(cli, ["automate", "limits"]).output
+    result = runner.invoke(cli, ["automate", "limits", "set", "likes", "9"])
+    assert result.exit_code == 1
+    assert "Unknown kind" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -316,44 +320,40 @@ def test_applications_import_autoapply(runner, resume_repo):
     assert "1 already tracked" in result.output
 
 
-def test_easy_apply_hands_a_question_step_to_the_human_when_headful(runner, fake_automation, monkeypatch):
+def test_easy_apply_hands_a_question_step_to_the_human_when_headful(runner, fake_session, monkeypatch):
     """A required question the automation cannot answer is not a failure when a
     person is watching the browser. Closing the window on `needs_manual_input`
     threw away a half-completed application every time a wizard asked
     anything -- which is most of them."""
     monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
-    fake_automation.namespace["easy_apply"].apply_to_job.return_value = {
-        "status": "needs_manual_input",
-        "detail": "Form has required fields that need manual answers",
-    }
+    fake_session.results["easy_apply"] = ActionResult(
+        "skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "Form has required fields that need manual answers"}
+    )
     # Person finishes the form in the window, then confirms they submitted.
     # (`click.pause` is a no-op without a TTY, so only the confirm reads input.)
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit"], input="y\n")
     assert result.exit_code == 0, result.output
     assert "finish" in result.output.lower()
+    assert fake_session.budget.used["easy_apply"] == 1  # their word records it
     view = runner.invoke(cli, ["applications", "view", "1"])
     assert "applied" in view.output
 
 
-def test_easy_apply_question_step_not_submitted_stays_saved(runner, fake_automation, monkeypatch):
+def test_easy_apply_question_step_not_submitted_stays_saved(runner, fake_session, monkeypatch):
     monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
-    fake_automation.namespace["easy_apply"].apply_to_job.return_value = {
-        "status": "needs_manual_input", "detail": "required fields",
-    }
+    fake_session.results["easy_apply"] = ActionResult("skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "required fields"})
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit"], input="n\n")
     assert result.exit_code == 0, result.output
     view = runner.invoke(cli, ["applications", "view", "1"])
     assert "applied" not in view.output
 
 
-def test_easy_apply_question_step_headless_is_still_a_failure(runner, fake_automation, monkeypatch):
+def test_easy_apply_question_step_headless_is_still_a_failure(runner, fake_session, monkeypatch):
     """With nobody watching there is no one to hand the form to."""
     monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
-    fake_automation.namespace["easy_apply"].apply_to_job.return_value = {
-        "status": "needs_manual_input", "detail": "required fields",
-    }
+    fake_session.results["easy_apply"] = ActionResult("skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "required fields"})
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit", "--headless"])
     assert result.exit_code == 1

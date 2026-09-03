@@ -24,6 +24,14 @@ def isolated_data_dir(tmp_path, monkeypatch) -> DataDir:
 
 
 @pytest.fixture
+def fake_session(monkeypatch):
+    """A FakeSession installed as what `LinkedInSession.open` yields."""
+    from tests.fake_session import FakeSession, install
+
+    return install(monkeypatch, FakeSession())
+
+
+@pytest.fixture
 def json_repos(tmp_path):
     """Full set of JSON repos over a temp directory, in factory order."""
     return create_repos(DataDir(tmp_path)).as_tuple()

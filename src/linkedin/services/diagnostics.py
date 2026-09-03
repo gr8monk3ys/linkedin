@@ -8,7 +8,9 @@ different names (`managed_schedule` vs `crontab`, `automation_env_file` vs
 from __future__ import annotations
 
 import os
+import re
 from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from linkedin.ai.client import probe_api_key
@@ -66,6 +68,7 @@ def diagnostics(
     lock_ttl_minutes: int = 180,
     webhook_url: str = "",
     probe_ai: bool = False,
+    launch_agents_dir: Path | None = None,
 ) -> tuple[list[dict], dict]:
     """The full check list plus the crontab facts it was derived from."""
     checks: list[dict] = []
@@ -87,12 +90,18 @@ def diagnostics(
         checks.append(check("schedule_time", "fail", str(exc)))
 
     facts = crontab_facts(app, cron_lines, cron_error)
+    facts["launchd_job"] = launchd_job(launch_agents_dir)
+    if facts["launchd_job"]:
+        job = facts["launchd_job"]
+        checks.append(check("schedule", "ok", f"launchd: {job['label']} at {job['time'] or 'custom'}" + (" (collects metrics)" if job["collect_metrics"] else " (no --collect-metrics)")))
     if facts["cron_error"]:
         checks.append(check("crontab", "warn", f"Could not inspect crontab: {facts['cron_error']}"))
     elif facts["managed_job"]:
         checks.append(check("crontab", "ok", f"Managed schedule active ({facts['schedule_time'] or 'custom'})."))
     elif facts["unmanaged_jobs"]:
         checks.append(check("crontab", "warn", f"Unmanaged run-daily cron detected ({facts['schedule_time'] or 'custom'}). Run: linkedin-cli automation schedule"))
+    elif facts["launchd_job"]:
+        checks.append(check("crontab", "ok", "No cron job; the schedule is the launchd job above."))
     else:
         checks.append(check("crontab", "warn", "No run-daily schedule found. Run: linkedin-cli automation schedule"))
 
@@ -149,3 +158,35 @@ def diagnostics(
     facts["generated_at"] = datetime.now().isoformat(timespec="seconds")
     facts["latest_run"] = history[-1] if history else {}
     return checks, facts
+
+
+def launchd_job(launch_agents_dir: Path | None = None) -> dict | None:
+    """The macOS LaunchAgent that runs `run-daily`, if one is installed.
+
+    The daily run on this machine is a launchd job, not a cron entry, and the
+    doctor reported "no schedule" for a schedule that fired every morning.
+    Read from the plist text: label, the run-daily command, its hour and
+    minute, and whether it collects metrics.
+    """
+    root = launch_agents_dir or (Path.home() / "Library" / "LaunchAgents")
+    if not root.is_dir():
+        return None
+    for plist in sorted(root.glob("*.plist")):
+        try:
+            text = plist.read_text()
+        except OSError:
+            continue
+        # Other tools on this machine have their own run-daily LaunchAgents
+        # (goodreads does); the job we want names this CLI.
+        if "run-daily" not in text or "linkedin" not in text.lower():
+            continue
+        label = re.search(r"<key>Label</key>\s*<string>([^<]+)</string>", text)
+        hour = re.search(r"<key>Hour</key>\s*<integer>(\d+)</integer>", text)
+        minute = re.search(r"<key>Minute</key>\s*<integer>(\d+)</integer>", text)
+        return {
+            "path": str(plist),
+            "label": label.group(1) if label else plist.stem,
+            "time": f"{int(hour.group(1)):02d}:{int(minute.group(1)):02d}" if hour and minute else "",
+            "collect_metrics": "--collect-metrics" in text,
+        }
+    return None

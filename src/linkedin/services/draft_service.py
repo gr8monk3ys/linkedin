@@ -4,6 +4,7 @@ from datetime import datetime
 
 from linkedin.ai.client import AIResult, ai_call
 from linkedin.data.repository import ContactRepo, DraftRepo, ProfileRepo
+from linkedin.services.planner import draft_spec_for
 from linkedin.types import DraftDict, ProfileDict
 
 FOLLOW_UP_GUIDANCE = {
@@ -119,6 +120,19 @@ class DraftService:
             max_tokens=200,
             fallback_text=self._fallback_follow_up(profile, contact, attempt),
         )
+
+    def generate_for_action(self, action: dict) -> tuple[str, AIResult] | None:
+        """Draft for a planned action, as the planner's ACTIONS row says to.
+
+        Returns (draft_type, result), or None for an action that has no draft
+        (repairing dates, debriefing a call). The mapping lives in the planner
+        so that an action with a rule and no draft cannot exist.
+        """
+        spec = draft_spec_for(action["action"])
+        if spec is None:
+            return None
+        generator = getattr(self, spec["generator"])
+        return spec["type"], generator(action["contact_id"], **spec["kwargs"])
 
     def generate_batch_connections(self, limit: int = 5) -> tuple[str | None, list[tuple[dict, str]]]:
         profile = self.profiles.get()

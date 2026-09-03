@@ -81,6 +81,7 @@ from linkedin.services.inbox_service import InboxService
 from linkedin.services.interview_service import InterviewService
 from linkedin.services.market_service import MarketService
 from linkedin.services.optimizer_service import OptimizerService
+from linkedin.services.planner import command_for, label_for
 from linkedin.services.profile_service import ProfileService
 from linkedin.services.research_service import ResearchService
 from linkedin.services.resume_service import (
@@ -153,44 +154,6 @@ _calendar_svc = ContentCalendarService(_calendar_repo)
 _automation_svc = AutomationService(_profile_repo)
 _inbox_svc = InboxService()
 
-NEXT_ACTION_LABELS = {
-    "follow_up_overdue": "Follow up (overdue)",
-    "follow_up_today": "Follow up (today)",
-    "stale_connection_sent": "Follow up on stale request",
-    "send_first_message": "Send first message",
-    "schedule_call": "Propose a call",
-    "follow_up_messaged": "Follow up (no reply)",
-    "send_connection": "Send connection request",
-    "call_follow_up": "Confirm or debrief call",
-    "repair_contact": "Repair missing dates",
-}
-NEXT_ACTION_COMMANDS = {
-    "follow_up_overdue": "linkedin-cli drafts follow-up {id}",
-    "follow_up_today": "linkedin-cli drafts follow-up {id}",
-    "stale_connection_sent": "linkedin-cli drafts follow-up {id}",
-    "send_first_message": "linkedin-cli drafts message {id}",
-    "schedule_call": "linkedin-cli contacts update {id} --status call_scheduled",
-    "follow_up_messaged": "linkedin-cli drafts follow-up {id}",
-    "send_connection": "linkedin-cli drafts connection {id}",
-    "call_follow_up": "linkedin-cli contacts view {id}",
-    "repair_contact": "linkedin-cli contacts repair",
-}
-
-APPLICATION_ACTION_LABELS = {
-    "apply_to_saved": "Apply (saved, never submitted)",
-    "chase_application": "Chase (no response)",
-    "chase_interview": "Chase interview outcome",
-    "respond_to_offer": "Respond to offer",
-    "repair_application": "Repair missing dates",
-}
-APPLICATION_ACTION_COMMANDS = {
-    "apply_to_saved": "linkedin-cli applications advance {id} --status applied",
-    "chase_application": "linkedin-cli applications view {id}",
-    "chase_interview": "linkedin-cli applications view {id}",
-    "respond_to_offer": "linkedin-cli applications view {id}",
-    "repair_application": "linkedin-cli applications view {id}",
-}
-
 
 def _warn_if_fallback(result: AIResult, used_context: bool = False) -> None:
     """Say out loud when a draft came from the offline template.
@@ -253,11 +216,10 @@ def _save_daily_plan_recap(
         lines.append("- No urgent contact actions today.")
     else:
         for action in actions:
-            command_template = NEXT_ACTION_COMMANDS.get(action["action"], "linkedin-cli contacts view {id}")
             lines.append(
                 f"- [{action['priority']}] {action.get('name', 'Unknown')} ({action.get('company', '')})"
-                f" | {NEXT_ACTION_LABELS.get(action['action'], action['action'])}"
-                f" | `{command_template.format(id=action['contact_id'])}`"
+                f" | {label_for(action['action'])}"
+                f" | `{command_for(action['action'], action['contact_id'])}`"
             )
 
     lines.extend(["", "## Inbound (needs your confirmation)"])
@@ -277,11 +239,10 @@ def _save_daily_plan_recap(
         lines.append("- No applications need attention today.")
     else:
         for action in application_actions:
-            command = APPLICATION_ACTION_COMMANDS.get(action["action"], "linkedin-cli applications view {id}")
             lines.append(
                 f"- [{action['priority']}] {action.get('title', 'Unknown')} @ {action.get('company', '')}"
-                f" | {APPLICATION_ACTION_LABELS.get(action['action'], action['action'])}"
-                f" | `{command.format(id=action['application_id'])}`"
+                f" | {label_for(action['action'])}"
+                f" | `{command_for(action['action'], action['application_id'])}`"
             )
 
     lines.extend(["", "## Best-Match Opportunities"])
@@ -372,12 +333,11 @@ def _render_daily_plan(data: dict) -> None:
         action_table.add_column("Action", style="yellow")
         action_table.add_column("Command", style="green")
         for action in actions:
-            command_template = NEXT_ACTION_COMMANDS.get(action["action"], "linkedin-cli contacts view {id}")
             action_table.add_row(
                 str(action["priority"]),
                 f"{action['name']} ({action.get('company', '')})".strip(),
-                NEXT_ACTION_LABELS.get(action["action"], action["action"]),
-                command_template.format(id=action["contact_id"]),
+                label_for(action["action"]),
+                command_for(action["action"], action["contact_id"]),
             )
         console.print(action_table)
 
@@ -407,12 +367,11 @@ def _render_daily_plan(data: dict) -> None:
         app_table.add_column("Action", style="yellow")
         app_table.add_column("Command", style="green")
         for action in application_actions:
-            command = APPLICATION_ACTION_COMMANDS.get(action["action"], "linkedin-cli applications view {id}")
             app_table.add_row(
                 str(action["priority"]),
                 f"{action.get('title', '')} @ {action.get('company', '')}",
-                APPLICATION_ACTION_LABELS.get(action["action"], action["action"]),
-                command.format(id=action["application_id"]),
+                label_for(action["action"]),
+                command_for(action["action"], action["application_id"]),
             )
         console.print(app_table)
 
@@ -471,25 +430,10 @@ def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show
 
     for action in actions:
         contact_id = action["contact_id"]
-        draft_type = "message"
-
-        if action["action"] in {"follow_up_overdue", "follow_up_today", "stale_connection_sent"}:
-            result = _draft_svc.generate_follow_up(contact_id, attempt=1)
-            draft_type = "follow_up_1"
-        elif action["action"] == "send_first_message":
-            result = _draft_svc.generate_message(
-                contact_id,
-                context="We're connected, and I want to send a concise first message.",
-            )
-            draft_type = "message"
-        elif action["action"] == "schedule_call":
-            result = _draft_svc.generate_message(
-                contact_id,
-                context="They responded recently; propose a short call as the next step.",
-            )
-            draft_type = "message"
-        else:
+        drafted = _draft_svc.generate_for_action(action)
+        if drafted is None:
             continue
+        draft_type, result = drafted
 
         if not result.ok:
             failed += 1
@@ -1427,13 +1371,12 @@ def contacts_next_actions(limit, generate_drafts, save_drafts):
     for action in actions:
         contact_id = action["contact_id"]
         display_name = f"{action['name']} ({action.get('company', '')})".strip()
-        command_template = NEXT_ACTION_COMMANDS.get(action["action"], "linkedin-cli contacts view {id}")
         table.add_row(
             str(action["priority"]),
             display_name,
-            NEXT_ACTION_LABELS.get(action["action"], action["action"]),
+            label_for(action["action"]),
             action["reason"],
-            command_template.format(id=contact_id),
+            command_for(action["action"], contact_id),
         )
 
     console.print(table)

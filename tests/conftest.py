@@ -16,6 +16,10 @@ def isolated_data_dir(tmp_path, monkeypatch) -> DataDir:
     """
     root = tmp_path / ".linkedin-cli"
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(root))
+    # The resume bridge falls back to ~/code/resume on this machine; a test must never see it.
+    from linkedin.services import resume_service
+
+    monkeypatch.setattr(resume_service, "DEFAULT_RESUME_REPO", tmp_path / "no-resume-repo")
     from linkedin.cli import _app
 
     _app.reset()

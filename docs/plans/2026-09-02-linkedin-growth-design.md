@@ -89,6 +89,13 @@ post has a baseline. Without it the skip-by-default rule never fires.
    paste-ready copy. Posting into a half-finished profile wastes every
    impression the posts earn.
 
+## Status 2026-09-02 (end of day)
+
+- API key: **both dead** (cron.env returns 401, shell unset). `automation doctor --probe-ai` now proves it. The user must set one: `linkedin-cli automation env set-anthropic-key`.
+- Headline single source: done (resume repo doc overlays the profile).
+- Metrics scraper: done and verified live — 2,498 followers, 2,506 connections, 46 profile views, 70 search appearances, 0 post impressions. **SSI is discontinued for this account**; the plan's SSI metric is dropped.
+- Baseline: `automation schedule` now installs `run-daily --collect-metrics`; reinstall the schedule to start the 14 days.
+
 ## Kill criteria
 
 If by **2026-12-01** inbound is under 3/month **and** follower growth is

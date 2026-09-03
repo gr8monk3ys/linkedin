@@ -148,3 +148,21 @@ def generate_with_ai(
         f"AI generation failed after {attempts} attempt(s): {last_error}. "
         "Make sure ANTHROPIC_API_KEY is set."
     ) from last_error
+
+
+def probe_api_key(api_key: str | None = None) -> tuple[bool, str]:
+    """Ask the API whether a key works, with the cheapest possible call.
+
+    "Configured" is not "valid": the key in cron.env was present and invalid
+    for five months, and every check that only looked for its presence said ok.
+    """
+    try:
+        import anthropic
+    except Exception as exc:
+        return False, f"anthropic SDK not importable: {exc}"
+    try:
+        client = anthropic.Anthropic(api_key=api_key) if api_key else anthropic.Anthropic()
+        client.models.list(limit=1)
+        return True, "key accepted by the API"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {str(exc)[:160]}"

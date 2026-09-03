@@ -45,3 +45,5 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
 - **Diagnostics**: one check list, one naming, one `doctor` command.
 - **Rank**: a contact's 0–100 score for the target role, with reasons. Decides who gets the day's
   invitations. **Pinned** contacts are exempt: always first, never in the bottom list, always followed.
+- **Metric row**: one day's account numbers (followers, connections, profile views, post impressions,
+  search appearances, SSI). A number that could not be read is None, never 0.

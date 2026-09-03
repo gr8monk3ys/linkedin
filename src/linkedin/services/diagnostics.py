@@ -11,11 +11,13 @@ import os
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from linkedin.ai.client import probe_api_key
 from linkedin.scheduling.crontab import (
     cron_env_file_from_job_line,
     cron_schedule_time_from_job_line,
     default_automation_env_file,
     env_file_status,
+    extract_exported_env_vars,
     extract_managed_cron_job_line,
     find_unmanaged_run_daily_cron_jobs,
 )
@@ -63,6 +65,7 @@ def diagnostics(
     schedule_time: str = "09:00",
     lock_ttl_minutes: int = 180,
     webhook_url: str = "",
+    probe_ai: bool = False,
 ) -> tuple[list[dict], dict]:
     """The full check list plus the crontab facts it was derived from."""
     checks: list[dict] = []
@@ -110,6 +113,16 @@ def diagnostics(
         checks.append(check("anthropic_api_key", "ok", "Configured in cron env file."))
     else:
         checks.append(check("anthropic_api_key", "warn", "Missing. Use: linkedin-cli automation env sync (or set key manually)."))
+
+    if probe_ai:
+        # Presence is not validity. Probe the key scheduled runs will actually use
+        # (cron.env) and, separately, the shell's, so the two cannot disagree silently.
+        for label, key in (("cron env file", extract_exported_env_vars(facts["env_file"]).get("ANTHROPIC_API_KEY", "")), ("shell", os.environ.get("ANTHROPIC_API_KEY", ""))):
+            if not key:
+                checks.append(check(f"ai_probe_{label.split()[0]}", "warn", f"No key in {label}."))
+                continue
+            ok, detail = probe_api_key(key)
+            checks.append(check(f"ai_probe_{label.split()[0]}", "ok" if ok else "fail", f"{label}: {detail}"))
 
     checks.append({"name": "run_lock", **health_lock_check(d, lock_ttl_minutes)})
 

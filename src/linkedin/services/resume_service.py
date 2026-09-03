@@ -38,9 +38,16 @@ class ResumeRepoError(RuntimeError):
     """Raised when the resume repo checkout is missing or malformed."""
 
 
+#: Where the checkout lives on this machine when the env var is not set.
+DEFAULT_RESUME_REPO = Path.home() / "code" / "resume"
+LINKEDIN_COPY_DOC = Path("docs") / "linkedin-copy.md"
+
+
 def resolve_repo_root(repo_root: str = "") -> Path:
     """Resolve and validate the resume repo checkout path."""
     raw = repo_root or os.environ.get(RESUME_REPO_ENV, "")
+    if not raw and _looks_like_resume_repo(DEFAULT_RESUME_REPO):
+        raw = str(DEFAULT_RESUME_REPO)
     if not raw:
         raise ResumeRepoError(
             f"Resume repo path not set. Pass --resume-repo or set {RESUME_REPO_ENV} "
@@ -231,3 +238,47 @@ def merge_into_applications(entries: list[dict], application_repo) -> tuple[list
         seen_roles.add(role_key)
         added.append(app)
     return added, skipped
+
+
+def _looks_like_resume_repo(root: Path) -> bool:
+    return root.is_dir() and ((root / "variants").is_dir() or (root / "default").is_dir())
+
+
+def linkedin_copy(repo_root: str = "") -> dict[str, str]:
+    """The curated LinkedIn headline and About from the resume repo's paste-ready doc.
+
+    The doc is the single source: a second copy of the headline in the CLI's
+    profile file drifted for five months and profile sync would have pushed
+    the stale one. Returns {} when the repo or the doc is not there.
+    """
+    try:
+        root = resolve_repo_root(repo_root)
+    except ResumeRepoError:
+        return {}
+    doc = root / LINKEDIN_COPY_DOC
+    if not doc.exists():
+        return {}
+    out: dict[str, str] = {}
+    for field, heading in (("headline", "## Headline"), ("about", "## About")):
+        block = _fenced_block_after(doc.read_text(), heading)
+        if block:
+            out[field] = block
+    return out
+
+
+def _fenced_block_after(text: str, heading: str) -> str:
+    """The first ``` fenced block after a heading that starts with `heading`."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(heading):
+            for j in range(i + 1, len(lines)):
+                if lines[j].startswith("```"):
+                    body = []
+                    for k in range(j + 1, len(lines)):
+                        if lines[k].startswith("```"):
+                            return "\n".join(body).strip()
+                        body.append(lines[k])
+                    return ""
+                if lines[j].startswith("## "):
+                    return ""
+    return ""

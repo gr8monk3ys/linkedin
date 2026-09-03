@@ -312,6 +312,35 @@ class LinkedInSession:
             return _skipped("no profile name on the page", data=result.data)
         return result
 
+    def metrics(self, post_urns: list[str] | None = None) -> ActionResult:
+        """The account's own numbers, read-only. `data` is one row:
+        {followers, connections, profile_views, post_impressions, search_appearances, ssi,
+         posts: {urn: impressions | None}}. A number is None when its label was not
+        on the page — never 0. Reads happen in a dry run but spend nothing."""
+        if not self.budget.can("metrics"):
+            return _refused("daily metrics limit reached")
+        row: dict[str, Any] = {}
+        try:
+            self.pacer.wait()
+            network = self.page.read_network_counts()
+            self.pacer.wait()
+            row.update(self.page.read_dashboard_metrics())
+            row["connections"] = network.get("connections")
+            if row.get("followers") is None:
+                row["followers"] = network.get("followers_on_profile")
+            self.pacer.wait()
+            row["ssi"] = self.page.read_ssi()
+            posts: dict[str, int | None] = {}
+            for urn in post_urns or []:
+                self.pacer.wait()
+                posts[urn] = self.page.read_post_impressions(urn)
+            row["posts"] = posts
+        except Exception as exc:
+            return _failed(f"{type(exc).__name__}: {exc}", data=row)
+        if not self.dry_run:
+            self.budget.spend("metrics")
+        return _ok(row)
+
     def inbox(self, thread_limit: int = 25) -> ActionResult:
         """Message threads and sent invitations. `data` is {"threads": [...], "pending_invitations": [...] | None}.
 

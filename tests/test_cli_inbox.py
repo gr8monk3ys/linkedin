@@ -10,23 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-import linkedin.data.json_store as js
 from linkedin.cli import cli
-
-
-@pytest.fixture(autouse=True)
-def patch_json_paths(tmp_path, monkeypatch):
-    for name in (
-        "CONTACTS_FILE",
-        "COMPANIES_FILE",
-        "PROFILE_FILE",
-        "DRAFTS_FILE",
-        "APPLICATIONS_FILE",
-        "JOB_POSTINGS_FILE",
-        "INBOX_PROPOSALS_FILE",
-    ):
-        monkeypatch.setattr(js, name, tmp_path / f"{name.lower()}.json")
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
 
 
 @pytest.fixture
@@ -36,7 +20,7 @@ def runner():
 
 @pytest.fixture
 def contact(runner):
-    from linkedin.cli import _contact_repo
+    from linkedin.cli import _app
 
     record = {
         "id": 1,
@@ -48,7 +32,7 @@ def contact(runner):
         "created_at": "2026-08-20T10:00:00",
         "activities": [],
     }
-    _contact_repo.add(record)
+    _app.contact_repo.add(record)
     return record
 
 
@@ -120,47 +104,47 @@ class TestInboxReview:
         }])
 
     def test_confirming_applies_the_transition(self, runner, contact, proposal):
-        from linkedin.cli import _contact_repo, load_inbox_proposals
+        from linkedin.cli import _app, load_inbox_proposals
 
         result = runner.invoke(cli, ["inbox", "review"], input="y\n")
 
         assert result.exit_code == 0
-        assert _contact_repo.get(1)["status"] == "responded"
+        assert _app.contact_repo.get(1)["status"] == "responded"
         assert load_inbox_proposals() == []
 
     def test_declining_leaves_the_contact_alone_and_keeps_the_proposal(self, runner, contact, proposal):
-        from linkedin.cli import _contact_repo, load_inbox_proposals
+        from linkedin.cli import _app, load_inbox_proposals
 
         result = runner.invoke(cli, ["inbox", "review"], input="n\n")
 
         assert result.exit_code == 0
-        assert _contact_repo.get(1)["status"] == "messaged"
+        assert _app.contact_repo.get(1)["status"] == "messaged"
         assert len(load_inbox_proposals()) == 1
 
     def test_stale_proposal_is_dropped_when_the_status_moved_on(self, runner, contact, proposal):
         """A status changed by hand since the sync must win over the proposal."""
-        from linkedin.cli import _contact_repo
+        from linkedin.cli import _app
 
-        record = _contact_repo.get(1)
+        record = _app.contact_repo.get(1)
         record["status"] = "call_scheduled"
-        _contact_repo.update(record)
+        _app.contact_repo.update(record)
 
         result = runner.invoke(cli, ["inbox", "review"], input="\n")
 
         assert "dropping this proposal" in result.output
-        assert _contact_repo.get(1)["status"] == "call_scheduled"
+        assert _app.contact_repo.get(1)["status"] == "call_scheduled"
 
     def test_yes_flag_applies_high_confidence_without_prompting(self, runner, contact, proposal):
-        from linkedin.cli import _contact_repo
+        from linkedin.cli import _app
 
         result = runner.invoke(cli, ["inbox", "review", "--yes"])
 
         assert result.exit_code == 0
-        assert _contact_repo.get(1)["status"] == "responded"
+        assert _app.contact_repo.get(1)["status"] == "responded"
 
     def test_yes_flag_still_prompts_for_a_low_confidence_proposal(self, runner, contact):
         """--yes must not silently apply a match made on display name alone."""
-        from linkedin.cli import _contact_repo, save_inbox_proposals
+        from linkedin.cli import _app, save_inbox_proposals
 
         save_inbox_proposals([{
             "contact_id": 1,
@@ -175,7 +159,7 @@ class TestInboxReview:
         result = runner.invoke(cli, ["inbox", "review", "--yes"], input="n\n")
 
         assert "Apply?" in result.output
-        assert _contact_repo.get(1)["status"] == "messaged"
+        assert _app.contact_repo.get(1)["status"] == "messaged"
 
     def test_review_with_nothing_pending(self, runner):
         result = runner.invoke(cli, ["inbox", "review"])

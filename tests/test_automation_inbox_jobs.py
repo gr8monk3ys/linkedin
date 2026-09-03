@@ -8,7 +8,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import linkedin.data.json_store as js
 from linkedin.automation.actions.inbox import read_inbox
 from linkedin.automation.actions.jobs import import_job_results, search_jobs
 from linkedin.automation.safety import SafetyLimits
@@ -17,11 +16,8 @@ from linkedin.services.market_service import MarketService
 
 
 @pytest.fixture
-def market(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "JOB_POSTINGS_FILE", tmp_path / "job_postings.json")
-    monkeypatch.setattr(js, "PROFILE_FILE", tmp_path / "profile.json")
-    return MarketService(JsonProfileRepo())
+def market(tmp_path):
+    return MarketService(JsonProfileRepo(tmp_path / "profile.json"), tmp_path / "job_postings.json")
 
 
 # --- Inbox -------------------------------------------------------------------

@@ -2,12 +2,12 @@
 
 from datetime import datetime
 
-from linkedin.data.repository import CompanyRepo, ContactRepo
+from linkedin.data.json_store import JsonCompanyRepo, JsonContactRepo
 from linkedin.types import CompanyDict
 
 
 class CompanyService:
-    def __init__(self, company_repo: CompanyRepo, contact_repo: ContactRepo):
+    def __init__(self, company_repo: JsonCompanyRepo, contact_repo: JsonContactRepo):
         self.companies = company_repo
         self.contacts = contact_repo
 

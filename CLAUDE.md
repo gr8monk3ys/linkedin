@@ -43,9 +43,10 @@ uv run ruff format src/ tests/
 - `src/linkedin/ai/client.py` — the AI seam. `ai_call(prompt, *, max_tokens, fallback=None) -> AIResult(text, error, was_fallback)` is what services call; it never raises. `generate_with_ai(...)` underneath is the raw call that raises `AIClientError` (auth errors are not retried) and is what tests patch. Model from `LINKEDIN_AI_MODEL`; retry/backoff via `LINKEDIN_AI_*` env vars.
 
 **Data layer:**
-- `src/linkedin/data/repository.py` — Abstract base classes for all repos, including `ApplicationRepo`, `InterviewPrepRepo`, `ConversationRepo`, `CalendarRepo`.
-- `src/linkedin/data/json_store.py` — JSON file implementations (default). All file path constants (`CONTACTS_FILE`, `APPLICATIONS_FILE`, etc.) are module-level and monkeypatched in tests.
-- `src/linkedin/data/factory.py` — `create_repos()` builds the JSON repo set. A SQLModel/Postgres backend behind `LINKEDIN_BACKEND=db` was removed 2026-08-29 (unused since February; four of its nine repos silently fell back to JSON, splitting the dataset).
+- `src/linkedin/data/paths.py` — `DataDir`: the one root every file lives under (`LINKEDIN_DATA_DIR`, default `~/.linkedin-cli`), one property per file. Nothing reads a module-level path constant at call time; there are none.
+- `src/linkedin/data/json_store.py` — JSON file stores. Each `Json*Repo(path)` takes its file at construction. `load_json` / `save_json` are the only module functions.
+- `src/linkedin/data/factory.py` — `create_repos(data_dir) -> Repos`. The abstract repository classes were deleted with the SQLModel/Postgres backend (removed 2026-08-29; four of its nine repos silently fell back to JSON, splitting the dataset): a seam with one adapter is hypothetical.
+- `src/linkedin/app.py` — `App(data_dir)`: every repo and service for one directory. `cli.py` holds a lazy `_app` handle built from the environment on first use, so importing the CLI never touches disk. Commands reach `_app.contact_svc`, `_app.data_dir.recaps`, and so on.
 
 **Services** (`src/linkedin/services/`) — All business logic. Accept/return plain dicts:
 - `planner.py` — every table the planner reads: `STATUS_RULES`, `APPLICATION_STATUS_RULES`, and `ACTIONS` (one row per action name: `label`, `command`, `draft` spec or None). Three coverage checks run at import; `contact_service` and `application_service` re-export the rule tables from here.
@@ -84,6 +85,7 @@ uv run ruff format src/ tests/
 - **`get_next_actions` returns at most one action per contact**, highest priority first. A contact with no `created_at`/`last_contact` yields a `repair_contact` action rather than being skipped; `contacts repair` backfills it.
 - **`run-daily` exits nonzero and reports `no_actions`** when the planner produces nothing while `active_pipeline_count() > 0`, and nonzero on `failed`. It previously returned exit 0 and status `success` in both cases, which is how it logged 136 consecutive green runs over five months while generating zero drafts. Never widen `_daily_run_status` back to unconditional success.
 - **`json_store.save_json` is atomic** (temp file + fsync + `os.replace`). Every mutation rewrites the whole file, so a plain write loses the entire store if interrupted. `automation/safety.py` persists its daily budgets through it for the same reason — a truncated usage file reads back as "no usage today".
+- **Backups enumerate the data directory** (`DataDir.backup_members`), not a list. A list is how job postings, templates, the usage counters, and the inbox proposals were left out of every backup. Excluded on purpose: the browser session (cookies), the lock, temp files.
 - **Nothing inbound auto-advances a contact.** `inbox sync` reads LinkedIn messaging and the sent-invitation manager and writes *proposals* to `inbox_proposals.json`; `inbox review` applies them one at a time. A contact whose status changed since the sync drops its proposal — the hand edit wins. `--yes` covers high-confidence proposals only: a proposal matched on display name alone is `low` confidence and is always asked about, and a name matching two contacts is no evidence about either.
 - **`get_pending_sent_invitations` returns `None`, not `[]`, when it cannot read the list.** Every other page-object method fails soft to an empty result; this one must not. Acceptance is inferred from an invitation's *absence*, so a selector that stopped matching would otherwise read as "every outstanding invitation was accepted" and advance the whole pipeline at once. `[]` is returned only when LinkedIn's own empty state is on the page.
 - **The reply signal rests entirely on `THREAD_OWN_MESSAGE_PREFIX`.** LinkedIn prefixes a thread snippet with `You:` when the last message is the user's own; that prefix is the only thing separating a real reply from an echo of the message we sent. Lose it and every outbound message becomes a fake response.
@@ -94,17 +96,18 @@ uv run ruff format src/ tests/
 ## Testing
 
 **Fixtures** (`tests/conftest.py`):
-- `json_repos` — monkeypatches all `json_store` file path constants to a `tmp_path`; use for service tests.
+- `isolated_data_dir` (autouse) — sets `LINKEDIN_DATA_DIR` to a per-test directory and resets `cli._app`. Every test, in every file, runs against its own directory; never monkeypatch a path.
+- `json_repos` — `create_repos(DataDir(tmp_path)).as_tuple()` in factory order; use for service tests. Stateful services take their file explicitly: `TemplateService(..., templates_file)`, `MarketService(..., postings_file)`, `DataService(data_dir)`.
 - `sample_contact`, `sample_company`, `sample_profile` — factory functions (accept `**overrides`). `sample_profile` includes `resume_text` by default.
 
 **Test files:**
 - `test_cli.py` — CLI integration tests via Click's `CliRunner` (88 tests, covers original commands).
-- `test_cli_applications.py` — CLI integration tests for `applications`, `interview`, `conversations`, `calendar` command groups. Has `patch_json_paths` autouse fixture patching all file constants.
+- `test_cli_applications.py` — CLI integration tests for `applications`, `interview`, `conversations`, `calendar` command groups.
 - `test_ai_client.py` — The AI seam: `ai_call` result contract, fallback on/off, model from env.
 - `test_services.py` — Service unit tests for original services.
 - `test_application_service.py`, `test_interview_service.py`, `test_conversation_service.py`, `test_calendar_service.py` — Service tests for new features including `AIClientError` paths.
-- `test_data_service.py` — Needs its own monkeypatching of the `data_service` module's constants (separate from `json_store`).
-- `test_json_store.py`, `test_factory.py` — Storage layer tests, including `save_json` atomicity.
+- `test_data_service.py` — Import/export/backup over a `DataDir(tmp_path)`.
+- `test_json_store.py`, `test_factory.py`, `test_paths.py` — Storage layer tests: `save_json` atomicity, repos per directory, `DataDir` resolution and backup enumeration, and that importing the CLI creates nothing on disk.
 - `test_analytics.py`, `test_market.py`, `test_optimizer.py`, `test_templates.py` — Feature-specific tests.
 - `test_automation.py`, `test_automation_scrape.py` — Automation config and action tests.
 - `test_linkedin_page.py` — Page object against `tests/fake_page.py`; covers selector misses.

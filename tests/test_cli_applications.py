@@ -3,23 +3,7 @@
 import pytest
 from click.testing import CliRunner
 
-import linkedin.data.json_store as js
 from linkedin.cli import cli
-
-
-@pytest.fixture(autouse=True)
-def patch_json_paths(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "APPLICATIONS_FILE", tmp_path / "applications.json")
-    monkeypatch.setattr(js, "PROFILE_FILE", tmp_path / "profile.json")
-    monkeypatch.setattr(js, "CONTACTS_FILE", tmp_path / "contacts.json")
-    monkeypatch.setattr(js, "COMPANIES_FILE", tmp_path / "companies.json")
-    monkeypatch.setattr(js, "DRAFTS_FILE", tmp_path / "drafts.json")
-    monkeypatch.setattr(js, "RESEARCH_FILE", tmp_path / "research.json")
-    monkeypatch.setattr(js, "TEMPLATES_FILE", tmp_path / "templates.json")
-    monkeypatch.setattr(js, "INTERVIEW_PREP_FILE", tmp_path / "interview_prep.json")
-    monkeypatch.setattr(js, "CONVERSATIONS_FILE", tmp_path / "conversations.json")
-    monkeypatch.setattr(js, "CALENDAR_FILE", tmp_path / "content_calendar.json")
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ from tests.conftest import sample_contact
 class TestTemplateService:
     def test_save_and_list(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         svc.save_template("Intro Template", "connection", "Hi {{name}}, I'd love to connect!")
         templates = svc.list_templates()
@@ -16,7 +16,7 @@ class TestTemplateService:
 
     def test_use_template(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         contact_repo.add(sample_contact(name="Alice Smith", company="Acme", id=1))
         svc.save_template("Test", "connection", "Hi {{first_name}} from {{company}}!")
@@ -26,7 +26,7 @@ class TestTemplateService:
 
     def test_use_template_increments_usage(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         contact_repo.add(sample_contact(name="Alice", id=1))
         svc.save_template("Test", "connection", "Hi {{name}}")
@@ -38,7 +38,7 @@ class TestTemplateService:
 
     def test_record_response(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         svc.save_template("Test", "connection", "Hi")
         assert svc.record_response(1) is True
@@ -47,12 +47,12 @@ class TestTemplateService:
 
     def test_record_response_missing_template(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
         assert svc.record_response(999) is False
 
     def test_use_template_tracks_contact_usage_history(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         contact_repo.add(sample_contact(name="Alice", id=1))
         svc.save_template("Conn", "connection", "Hi {{name}}")
@@ -66,7 +66,7 @@ class TestTemplateService:
 
     def test_auto_record_outcome_credits_once(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         contact_repo.add(sample_contact(name="Alice", id=1))
         svc.save_template("Conn", "connection", "Hi {{name}}")
@@ -84,7 +84,7 @@ class TestTemplateService:
 
     def test_auto_record_outcome_uses_matching_template_type(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         contact_repo.add(sample_contact(name="Alice", id=1))
         svc.save_template("Conn", "connection", "Hi {{name}}")
@@ -100,7 +100,7 @@ class TestTemplateService:
 
     def test_ab_results_no_variants(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         svc.save_template("Test", "connection", "Hi", variant="A")
         results = svc.get_ab_results()
@@ -108,7 +108,7 @@ class TestTemplateService:
 
     def test_ab_results_with_variants(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         t1 = svc.save_template("Intro", "connection", "Hi {{name}}", variant="A")
         t2 = svc.save_template("Intro", "connection", "Hello {{name}}!", variant="B")
@@ -132,7 +132,7 @@ class TestTemplateService:
 
     def test_suggest_best(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
 
         contact_repo.add(sample_contact(name="Alice", id=1))
         t1 = svc.save_template("Good", "connection", "Hi")
@@ -156,22 +156,22 @@ class TestTemplateService:
 
     def test_suggest_best_no_usage(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
         svc.save_template("Unused", "connection", "Hi")
         assert svc.suggest_best("connection") is None
 
     def test_template_not_found(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc = TemplateService(contact_repo, draft_repo)
+        svc = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
         assert svc.get_template(999) is None
         assert svc.use_template(999, 1) is None
 
     def test_templates_persist_across_instances(self, json_repos):
         contact_repo, _, _, draft_repo, *_= json_repos
-        svc_one = TemplateService(contact_repo, draft_repo)
+        svc_one = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
         svc_one.save_template("Persistent", "connection", "Hi {{name}}")
 
-        svc_two = TemplateService(contact_repo, draft_repo)
+        svc_two = TemplateService(contact_repo, draft_repo, contact_repo.path.parent / "templates.json")
         templates = svc_two.list_templates()
         assert len(templates) == 1
         assert templates[0]["name"] == "Persistent"

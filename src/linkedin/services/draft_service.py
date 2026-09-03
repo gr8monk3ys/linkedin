@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from linkedin.ai.client import AIResult, ai_call
-from linkedin.data.repository import ContactRepo, DraftRepo, ProfileRepo
+from linkedin.data.json_store import JsonContactRepo, JsonDraftRepo, JsonProfileRepo
 from linkedin.services.planner import draft_spec_for
 from linkedin.types import DraftDict, ProfileDict
 
@@ -15,7 +15,7 @@ FOLLOW_UP_GUIDANCE = {
 
 
 class DraftService:
-    def __init__(self, draft_repo: DraftRepo, contact_repo: ContactRepo, profile_repo: ProfileRepo):
+    def __init__(self, draft_repo: JsonDraftRepo, contact_repo: JsonContactRepo, profile_repo: JsonProfileRepo):
         self.drafts = draft_repo
         self.contacts = contact_repo
         self.profiles = profile_repo

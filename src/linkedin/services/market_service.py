@@ -7,14 +7,14 @@ from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
-import linkedin.data.json_store as json_store
 from linkedin.ai.client import ai_call
-from linkedin.data.repository import ProfileRepo
+from linkedin.data.json_store import JsonProfileRepo, load_json, save_json
 
 
 class MarketService:
-    def __init__(self, profile_repo: ProfileRepo):
+    def __init__(self, profile_repo: JsonProfileRepo, postings_file: Path):
         self.profiles = profile_repo
+        self.postings_file = postings_file
         self._postings: list[dict] = self._load_postings()
         self._insights: list[dict] = []
 
@@ -284,11 +284,11 @@ Include:
         return max_id + 1
 
     def _load_postings(self) -> list[dict]:
-        raw = json_store.load_json(json_store.JOB_POSTINGS_FILE, [])
+        raw = load_json(self.postings_file, [])
         return raw if isinstance(raw, list) else []
 
     def _refresh_postings(self) -> None:
         self._postings = self._load_postings()
 
     def _save_postings(self) -> None:
-        json_store.save_json(json_store.JOB_POSTINGS_FILE, self._postings)
+        save_json(self.postings_file, self._postings)

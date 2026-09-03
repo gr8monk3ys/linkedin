@@ -2,14 +2,14 @@
 
 from datetime import datetime
 
-from linkedin.data.repository import ContactRepo, ConversationRepo
+from linkedin.data.json_store import JsonContactRepo, JsonConversationRepo
 from linkedin.types import ConversationDict, MessageDict
 
 VALID_SENDERS = {"me", "them"}
 
 
 class ConversationService:
-    def __init__(self, conversation_repo: ConversationRepo, contact_repo: ContactRepo):
+    def __init__(self, conversation_repo: JsonConversationRepo, contact_repo: JsonContactRepo):
         self.conversations = conversation_repo
         self.contacts = contact_repo
 

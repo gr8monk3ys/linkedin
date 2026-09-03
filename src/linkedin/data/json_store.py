@@ -1,21 +1,10 @@
-"""JSON file-based implementation of repository interfaces."""
+"""JSON file stores. Each repo is constructed with the file it owns."""
 
 import json
 import os
 import tempfile
 from pathlib import Path
 
-from linkedin.data.repository import (
-    ApplicationRepo,
-    CalendarRepo,
-    CompanyRepo,
-    ContactRepo,
-    ConversationRepo,
-    DraftRepo,
-    InterviewPrepRepo,
-    ProfileRepo,
-    ResearchRepo,
-)
 from linkedin.types import (
     ApplicationDict,
     CompanyDict,
@@ -27,28 +16,6 @@ from linkedin.types import (
     ProfileDict,
     ResearchDict,
 )
-
-DATA_DIR = Path.home() / ".linkedin-cli"
-PROFILE_FILE = DATA_DIR / "my_profile.json"
-CONTACTS_FILE = DATA_DIR / "contacts.json"
-COMPANIES_FILE = DATA_DIR / "companies.json"
-DRAFTS_FILE = DATA_DIR / "drafts.json"
-RESEARCH_FILE = DATA_DIR / "research.json"
-TEMPLATES_FILE = DATA_DIR / "templates.json"
-JOB_POSTINGS_FILE = DATA_DIR / "job_postings.json"
-RUN_DAILY_STATE_FILE = DATA_DIR / "run_daily_state.json"
-RUN_DAILY_LOG_FILE = DATA_DIR / "run_daily.log.jsonl"
-RUN_DAILY_LOCK_FILE = DATA_DIR / "run_daily.lock"
-BACKUPS_DIR = DATA_DIR / "backups"
-APPLICATIONS_FILE = DATA_DIR / "applications.json"
-CONVERSATIONS_FILE = DATA_DIR / "conversations.json"
-CALENDAR_FILE = DATA_DIR / "content_calendar.json"
-INTERVIEW_PREP_FILE = DATA_DIR / "interview_prep.json"
-INBOX_PROPOSALS_FILE = DATA_DIR / "inbox_proposals.json"
-
-
-def ensure_dirs():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def load_json(path: Path, default=None):
@@ -83,6 +50,13 @@ def save_json(path: Path, data):
         raise
 
 
+class _JsonRepo:
+    """A store over one JSON file, given at construction."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+
 def _next_id(items: list[dict]) -> int:
     """Return the next integer ID, resilient to deletions and sparse IDs."""
     max_id = 0
@@ -95,9 +69,9 @@ def _next_id(items: list[dict]) -> int:
     return max_id + 1
 
 
-class JsonContactRepo(ContactRepo):
+class JsonContactRepo(_JsonRepo):
     def list_all(self) -> list[ContactDict]:
-        return load_json(CONTACTS_FILE)
+        return load_json(self.path)
 
     def get(self, contact_id: int) -> ContactDict | None:
         return next((c for c in self.list_all() if c["id"] == contact_id), None)
@@ -105,7 +79,7 @@ class JsonContactRepo(ContactRepo):
     def add(self, contact: ContactDict) -> ContactDict:
         contacts = self.list_all()
         contacts.append(contact)
-        save_json(CONTACTS_FILE, contacts)
+        save_json(self.path, contacts)
         return contact
 
     def update(self, contact: ContactDict) -> None:
@@ -114,14 +88,14 @@ class JsonContactRepo(ContactRepo):
             if c["id"] == contact["id"]:
                 contacts[i] = contact
                 break
-        save_json(CONTACTS_FILE, contacts)
+        save_json(self.path, contacts)
 
     def delete(self, contact_id: int) -> bool:
         contacts = self.list_all()
         new_contacts = [c for c in contacts if c["id"] != contact_id]
         if len(new_contacts) == len(contacts):
             return False
-        save_json(CONTACTS_FILE, new_contacts)
+        save_json(self.path, new_contacts)
         return True
 
     def next_id(self) -> int:
@@ -129,12 +103,12 @@ class JsonContactRepo(ContactRepo):
         return _next_id(contacts)
 
     def save_all(self, contacts: list[ContactDict]) -> None:
-        save_json(CONTACTS_FILE, contacts)
+        save_json(self.path, contacts)
 
 
-class JsonCompanyRepo(CompanyRepo):
+class JsonCompanyRepo(_JsonRepo):
     def list_all(self) -> list[CompanyDict]:
-        return load_json(COMPANIES_FILE)
+        return load_json(self.path)
 
     def get(self, company_id: int) -> CompanyDict | None:
         return next((c for c in self.list_all() if c["id"] == company_id), None)
@@ -142,7 +116,7 @@ class JsonCompanyRepo(CompanyRepo):
     def add(self, company: CompanyDict) -> CompanyDict:
         companies = self.list_all()
         companies.append(company)
-        save_json(COMPANIES_FILE, companies)
+        save_json(self.path, companies)
         return company
 
     def update(self, company: CompanyDict) -> None:
@@ -151,14 +125,14 @@ class JsonCompanyRepo(CompanyRepo):
             if c["id"] == company["id"]:
                 companies[i] = company
                 break
-        save_json(COMPANIES_FILE, companies)
+        save_json(self.path, companies)
 
     def delete(self, company_id: int) -> bool:
         companies = self.list_all()
         new_companies = [c for c in companies if c["id"] != company_id]
         if len(new_companies) == len(companies):
             return False
-        save_json(COMPANIES_FILE, new_companies)
+        save_json(self.path, new_companies)
         return True
 
     def next_id(self) -> int:
@@ -166,17 +140,17 @@ class JsonCompanyRepo(CompanyRepo):
         return _next_id(companies)
 
 
-class JsonProfileRepo(ProfileRepo):
+class JsonProfileRepo(_JsonRepo):
     def get(self) -> ProfileDict:
-        return load_json(PROFILE_FILE, {})
+        return load_json(self.path, {})
 
     def save(self, profile: ProfileDict) -> None:
-        save_json(PROFILE_FILE, profile)
+        save_json(self.path, profile)
 
 
-class JsonDraftRepo(DraftRepo):
+class JsonDraftRepo(_JsonRepo):
     def list_all(self) -> list[DraftDict]:
-        return load_json(DRAFTS_FILE)
+        return load_json(self.path)
 
     def get(self, draft_id: int) -> DraftDict | None:
         return next((d for d in self.list_all() if d["id"] == draft_id), None)
@@ -184,7 +158,7 @@ class JsonDraftRepo(DraftRepo):
     def add(self, draft: DraftDict) -> DraftDict:
         drafts = self.list_all()
         drafts.append(draft)
-        save_json(DRAFTS_FILE, drafts)
+        save_json(self.path, drafts)
         return draft
 
     def next_id(self) -> int:
@@ -196,21 +170,21 @@ class JsonDraftRepo(DraftRepo):
         remaining = [d for d in drafts if d["id"] != draft_id]
         if len(remaining) == len(drafts):
             return False
-        save_json(DRAFTS_FILE, remaining)
+        save_json(self.path, remaining)
         return True
 
 
-class JsonResearchRepo(ResearchRepo):
+class JsonResearchRepo(_JsonRepo):
     def get(self) -> ResearchDict:
-        return load_json(RESEARCH_FILE, {"ideas": []})
+        return load_json(self.path, {"ideas": []})
 
     def save(self, data: ResearchDict) -> None:
-        save_json(RESEARCH_FILE, data)
+        save_json(self.path, data)
 
 
-class JsonApplicationRepo(ApplicationRepo):
+class JsonApplicationRepo(_JsonRepo):
     def list_all(self) -> list[ApplicationDict]:
-        return load_json(APPLICATIONS_FILE)
+        return load_json(self.path)
 
     def get(self, application_id: int) -> ApplicationDict | None:
         return next((a for a in self.list_all() if a["id"] == application_id), None)
@@ -218,7 +192,7 @@ class JsonApplicationRepo(ApplicationRepo):
     def add(self, application: ApplicationDict) -> ApplicationDict:
         apps = self.list_all()
         apps.append(application)
-        save_json(APPLICATIONS_FILE, apps)
+        save_json(self.path, apps)
         return application
 
     def update(self, application: ApplicationDict) -> None:
@@ -227,23 +201,23 @@ class JsonApplicationRepo(ApplicationRepo):
             if a["id"] == application["id"]:
                 apps[i] = application
                 break
-        save_json(APPLICATIONS_FILE, apps)
+        save_json(self.path, apps)
 
     def delete(self, application_id: int) -> bool:
         apps = self.list_all()
         new_apps = [a for a in apps if a["id"] != application_id]
         if len(new_apps) == len(apps):
             return False
-        save_json(APPLICATIONS_FILE, new_apps)
+        save_json(self.path, new_apps)
         return True
 
     def next_id(self) -> int:
         return _next_id(self.list_all())
 
 
-class JsonConversationRepo(ConversationRepo):
+class JsonConversationRepo(_JsonRepo):
     def list_all(self) -> list[ConversationDict]:
-        return load_json(CONVERSATIONS_FILE)
+        return load_json(self.path)
 
     def get_by_contact(self, contact_id: int) -> ConversationDict | None:
         return next((c for c in self.list_all() if c["contact_id"] == contact_id), None)
@@ -253,15 +227,15 @@ class JsonConversationRepo(ConversationRepo):
         for i, c in enumerate(convs):
             if c["contact_id"] == conversation["contact_id"]:
                 convs[i] = conversation
-                save_json(CONVERSATIONS_FILE, convs)
+                save_json(self.path, convs)
                 return
         convs.append(conversation)
-        save_json(CONVERSATIONS_FILE, convs)
+        save_json(self.path, convs)
 
 
-class JsonCalendarRepo(CalendarRepo):
+class JsonCalendarRepo(_JsonRepo):
     def list_all(self) -> list[ContentPostDict]:
-        return load_json(CALENDAR_FILE)
+        return load_json(self.path)
 
     def get(self, post_id: int) -> ContentPostDict | None:
         return next((p for p in self.list_all() if p["id"] == post_id), None)
@@ -269,7 +243,7 @@ class JsonCalendarRepo(CalendarRepo):
     def add(self, post: ContentPostDict) -> ContentPostDict:
         posts = self.list_all()
         posts.append(post)
-        save_json(CALENDAR_FILE, posts)
+        save_json(self.path, posts)
         return post
 
     def update(self, post: ContentPostDict) -> None:
@@ -278,31 +252,31 @@ class JsonCalendarRepo(CalendarRepo):
             if p["id"] == post["id"]:
                 posts[i] = post
                 break
-        save_json(CALENDAR_FILE, posts)
+        save_json(self.path, posts)
 
     def delete(self, post_id: int) -> bool:
         posts = self.list_all()
         new_posts = [p for p in posts if p["id"] != post_id]
         if len(new_posts) == len(posts):
             return False
-        save_json(CALENDAR_FILE, new_posts)
+        save_json(self.path, new_posts)
         return True
 
     def next_id(self) -> int:
         return _next_id(self.list_all())
 
 
-class JsonInterviewPrepRepo(InterviewPrepRepo):
+class JsonInterviewPrepRepo(_JsonRepo):
     def get_by_application(self, application_id: int) -> InterviewPrepDict | None:
-        all_prep = load_json(INTERVIEW_PREP_FILE)
+        all_prep = load_json(self.path)
         return next((p for p in all_prep if p["application_id"] == application_id), None)
 
     def upsert(self, prep: InterviewPrepDict) -> None:
-        all_prep = load_json(INTERVIEW_PREP_FILE)
+        all_prep = load_json(self.path)
         for i, p in enumerate(all_prep):
             if p["application_id"] == prep["application_id"]:
                 all_prep[i] = prep
-                save_json(INTERVIEW_PREP_FILE, all_prep)
+                save_json(self.path, all_prep)
                 return
         all_prep.append(prep)
-        save_json(INTERVIEW_PREP_FILE, all_prep)
+        save_json(self.path, all_prep)

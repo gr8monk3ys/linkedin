@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from linkedin.cli import _app_version, cli
-from linkedin.data.json_store import ensure_dirs, load_json, save_json
+from linkedin.cli import _app, _app_version, cli
+from linkedin.data.json_store import load_json, save_json
 
 
 @pytest.fixture
@@ -19,42 +19,18 @@ def runner():
 
 
 @pytest.fixture
-def temp_data_dir(tmp_path, monkeypatch):
-    """Use a temporary directory for data storage."""
-    test_data_dir = tmp_path / ".linkedin-cli"
-    monkeypatch.setattr("linkedin.data.json_store.DATA_DIR", test_data_dir)
-    monkeypatch.setattr("linkedin.data.json_store.PROFILE_FILE", test_data_dir / "my_profile.json")
-    monkeypatch.setattr("linkedin.data.json_store.CONTACTS_FILE", test_data_dir / "contacts.json")
-    monkeypatch.setattr("linkedin.data.json_store.COMPANIES_FILE", test_data_dir / "companies.json")
-    monkeypatch.setattr("linkedin.data.json_store.DRAFTS_FILE", test_data_dir / "drafts.json")
-    monkeypatch.setattr("linkedin.data.json_store.RESEARCH_FILE", test_data_dir / "research.json")
-    monkeypatch.setattr("linkedin.data.json_store.TEMPLATES_FILE", test_data_dir / "templates.json")
-    monkeypatch.setattr("linkedin.data.json_store.JOB_POSTINGS_FILE", test_data_dir / "job_postings.json")
-    monkeypatch.setattr("linkedin.data.json_store.RUN_DAILY_STATE_FILE", test_data_dir / "run_daily_state.json")
-    monkeypatch.setattr("linkedin.data.json_store.RUN_DAILY_LOG_FILE", test_data_dir / "run_daily.log.jsonl")
-    monkeypatch.setattr("linkedin.data.json_store.RUN_DAILY_LOCK_FILE", test_data_dir / "run_daily.lock")
-    monkeypatch.setattr("linkedin.data.json_store.BACKUPS_DIR", test_data_dir / "backups")
-    # Also patch the data_service module which imports these directly
-    monkeypatch.setattr("linkedin.services.data_service.CONTACTS_FILE", test_data_dir / "contacts.json")
-    monkeypatch.setattr("linkedin.services.data_service.COMPANIES_FILE", test_data_dir / "companies.json")
-    monkeypatch.setattr("linkedin.services.data_service.DRAFTS_FILE", test_data_dir / "drafts.json")
-    monkeypatch.setattr("linkedin.services.data_service.PROFILE_FILE", test_data_dir / "my_profile.json")
-    monkeypatch.setattr("linkedin.services.data_service.RESEARCH_FILE", test_data_dir / "research.json")
-    monkeypatch.setattr("linkedin.services.data_service.TEMPLATES_FILE", test_data_dir / "templates.json")
-    monkeypatch.setattr("linkedin.services.data_service.JOB_POSTINGS_FILE", test_data_dir / "job_postings.json")
-    monkeypatch.setattr("linkedin.services.data_service.RUN_DAILY_STATE_FILE", test_data_dir / "run_daily_state.json")
-    monkeypatch.setattr("linkedin.services.data_service.RUN_DAILY_LOG_FILE", test_data_dir / "run_daily.log.jsonl")
-    monkeypatch.setattr("linkedin.services.data_service.BACKUPS_DIR", test_data_dir / "backups")
-    return test_data_dir
+def temp_data_dir(isolated_data_dir):
+    """The per-test data directory (see conftest.isolated_data_dir)."""
+    return isolated_data_dir.root
 
 
 class TestDataStorage:
     """Tests for data storage functions."""
 
     def test_ensure_dirs_creates_directory(self, temp_data_dir):
-        """ensure_dirs should create the data directory."""
+        """DataDir.ensure should create the data directory."""
         assert not temp_data_dir.exists()
-        ensure_dirs()
+        _app.data_dir.ensure()
         assert temp_data_dir.exists()
 
     def test_load_json_returns_default_when_file_missing(self, temp_data_dir):
@@ -478,8 +454,6 @@ class TestDashboard:
         every morning because the template counted as a generated draft.
         """
         from linkedin.ai.client import AIClientError
-        from linkedin.data import json_store
-
         mock_ai.side_effect = AIClientError("API unavailable")
         runner.invoke(
             cli,
@@ -504,7 +478,7 @@ class TestDashboard:
         assert payload["drafts"]["generated"] == 0
         assert payload["drafts"]["templates"] >= 1
         assert "template" in payload["reason"]
-        assert json_store.load_json(json_store.DRAFTS_FILE) == []
+        assert load_json(_app.data_dir.drafts) == []
 
     def test_run_daily_skips_when_lock_exists(self, runner, temp_data_dir):
         """run-daily should not execute when another lock is active."""
@@ -534,7 +508,7 @@ class TestDashboard:
             row["follow_up_date"] = None
         contacts_file.write_text(json.dumps(rows))
 
-        with patch("linkedin.cli._contact_svc.get_next_actions", return_value=[]):
+        with patch("linkedin.cli._app.contact_svc.get_next_actions", return_value=[]):
             result = runner.invoke(cli, ["run-daily", "--json"])
 
         assert result.exit_code == 1

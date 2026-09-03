@@ -5,7 +5,7 @@ import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from linkedin.data.repository import CompanyRepo, ContactRepo
+from linkedin.data.json_store import JsonCompanyRepo, JsonContactRepo
 from linkedin.services.planner import (
     FOLLOW_UP_OVERDUE,
     FOLLOW_UP_TODAY,
@@ -69,7 +69,7 @@ def cadence_follow_up_date(status: str, *, since: dt.date | None = None) -> str 
 
 
 class ContactService:
-    def __init__(self, contact_repo: ContactRepo, company_repo: CompanyRepo):
+    def __init__(self, contact_repo: JsonContactRepo, company_repo: JsonCompanyRepo):
         self.contacts = contact_repo
         self.companies = company_repo
 

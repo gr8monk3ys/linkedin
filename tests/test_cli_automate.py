@@ -11,23 +11,8 @@ import pytest
 from click.testing import CliRunner
 
 import linkedin.cli as cli_mod
-import linkedin.data.json_store as js
 from linkedin.cli import cli
-
-
-@pytest.fixture(autouse=True)
-def patch_json_paths(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "APPLICATIONS_FILE", tmp_path / "applications.json")
-    monkeypatch.setattr(js, "PROFILE_FILE", tmp_path / "profile.json")
-    monkeypatch.setattr(js, "CONTACTS_FILE", tmp_path / "contacts.json")
-    monkeypatch.setattr(js, "COMPANIES_FILE", tmp_path / "companies.json")
-    monkeypatch.setattr(js, "DRAFTS_FILE", tmp_path / "drafts.json")
-    monkeypatch.setattr(js, "RESEARCH_FILE", tmp_path / "research.json")
-    monkeypatch.setattr(js, "TEMPLATES_FILE", tmp_path / "templates.json")
-    monkeypatch.setattr(js, "INTERVIEW_PREP_FILE", tmp_path / "interview_prep.json")
-    monkeypatch.setattr(js, "CONVERSATIONS_FILE", tmp_path / "conversations.json")
-    monkeypatch.setattr(js, "CALENDAR_FILE", tmp_path / "content_calendar.json")
+from linkedin.data.json_store import load_json, save_json
 
 
 @pytest.fixture
@@ -59,7 +44,7 @@ class FakeActions:
         self.namespace = {
             "RateLimiter": RateLimiter,
             "SafetyLimits": SafetyLimits,
-            "PersistentSafetyLimits": SafetyLimits,
+            "PersistentSafetyLimits": lambda usage_file=None: SafetyLimits(),
             "connect": MagicMock(),
             "easy_apply": MagicMock(),
             "engage": MagicMock(),
@@ -95,12 +80,12 @@ def test_automate_connect_sends_and_advances_status(runner, fake_automation):
     assert result.exit_code == 0, result.output
     assert "connection_sent" in result.output
     fake_automation.browser.close.assert_called_once()
-    contacts = js.load_json(js.CONTACTS_FILE)
+    contacts = load_json(cli_mod._app.data_dir.contacts)
     assert contacts[0]["status"] == "connection_sent"
 
 
 def test_automate_connect_requires_linkedin_url(runner, fake_automation):
-    js.save_json(js.CONTACTS_FILE, [{"id": 1, "name": "NoUrl", "status": "not_contacted", "activities": []}])
+    save_json(cli_mod._app.data_dir.contacts, [{"id": 1, "name": "NoUrl", "status": "not_contacted", "activities": []}])
     result = runner.invoke(cli, ["automate", "connect", "1"])
     assert result.exit_code == 1
     assert "no linkedin_url" in result.output
@@ -118,13 +103,13 @@ def test_automate_connect_dry_run_keeps_status(runner, fake_automation):
     result = runner.invoke(cli, ["automate", "connect", "1", "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "Dry run" in result.output
-    contacts = js.load_json(js.CONTACTS_FILE)
+    contacts = load_json(cli_mod._app.data_dir.contacts)
     assert contacts[0]["status"] == "not_contacted"
 
 
 def test_automate_message_uses_draft(runner, fake_automation, tmp_path):
     _add_contact(runner)
-    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hello from draft", "type": "message", "source": "ai"}])
+    save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hello from draft", "type": "message", "source": "ai"}])
     fake_automation.namespace["message"].send_message.return_value = True
     result = runner.invoke(cli, ["automate", "message", "1", "--draft-id", "1"])
     assert result.exit_code == 0, result.output
@@ -140,7 +125,7 @@ def test_automate_message_requires_text(runner, fake_automation):
 
 
 def test_automate_post_from_calendar_marks_posted(runner, fake_automation):
-    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "My scheduled post", "type": "post", "source": "ai"}])
+    save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "My scheduled post", "type": "post", "source": "ai"}])
     result = runner.invoke(cli, ["calendar", "add", "--title", "Post", "--date", "2026-03-01", "--draft-id", "1"])
     assert result.exit_code == 0, result.output
     fake_automation.namespace["post"].publish_post.return_value = (True, "posted")
@@ -153,7 +138,7 @@ def test_automate_post_from_calendar_marks_posted(runner, fake_automation):
 
 def test_automate_post_refuses_template_draft(runner, fake_automation):
     """A template is not a draft; it must never go out under the user's name."""
-    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hi there", "type": "post", "source": "template"}])
+    save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hi there", "type": "post", "source": "template"}])
     result = runner.invoke(cli, ["automate", "post", "--draft-id", "1"], input="y\n")
     assert result.exit_code == 1
     assert "offline template" in result.output
@@ -162,7 +147,7 @@ def test_automate_post_refuses_template_draft(runner, fake_automation):
 
 def test_automate_post_refuses_draft_of_unknown_provenance(runner, fake_automation):
     """Rows saved before provenance was recorded include the templates from 150 unattended runs."""
-    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hi there", "type": "post"}])
+    save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hi there", "type": "post"}])
     result = runner.invoke(cli, ["automate", "post", "--draft-id", "1"], input="y\n")
     assert result.exit_code == 1
     assert "unknown provenance" in result.output
@@ -171,7 +156,7 @@ def test_automate_post_refuses_draft_of_unknown_provenance(runner, fake_automati
 
 def test_automate_message_refuses_template_draft(runner, fake_automation):
     _add_contact(runner)
-    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hi there", "type": "message", "source": "template"}])
+    save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hi there", "type": "message", "source": "template"}])
     result = runner.invoke(cli, ["automate", "message", "1", "--draft-id", "1"])
     assert result.exit_code == 1
     fake_automation.namespace["message"].send_message.assert_not_called()
@@ -261,10 +246,7 @@ def test_automate_easy_apply_requires_url(runner, fake_automation):
     assert "no job URL" in result.output
 
 
-def test_automate_limits_table(runner, tmp_path, monkeypatch):
-    import linkedin.automation.safety as safety_mod
-
-    monkeypatch.setattr(safety_mod, "USAGE_FILE", tmp_path / "usage.json")
+def test_automate_limits_table(runner):
     result = runner.invoke(cli, ["automate", "limits"])
     assert result.exit_code == 0, result.output
     assert "Connections" in result.output and "Easy Applies" in result.output
@@ -295,7 +277,7 @@ def test_applications_attach_resume_auto_match(runner, resume_repo):
     result = runner.invoke(cli, ["applications", "attach-resume", "1", "--resume-repo", str(resume_repo)])
     assert result.exit_code == 0, result.output
     assert "ai-engineer" in result.output
-    apps = js.load_json(js.APPLICATIONS_FILE)
+    apps = load_json(cli_mod._app.data_dir.applications)
     assert apps[0]["resume_variant"] == "ai-engineer"
     assert apps[0]["resume_path"].endswith("ai-engineer-resume.pdf")
 

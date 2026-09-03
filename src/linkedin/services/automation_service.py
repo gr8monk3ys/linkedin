@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from linkedin.ai.client import ai_call
 from linkedin.automation.rate_limiter import RateLimiter
 from linkedin.automation.safety import SafetyLimits
-from linkedin.data.repository import ProfileRepo
+from linkedin.data.json_store import JsonProfileRepo
 from linkedin.types import ProfileDict
 
 if TYPE_CHECKING:
@@ -71,7 +71,7 @@ def publish_unreviewed(post: dict, text: str) -> bool:
 class AutomationService:
     """Business logic for feed engagement runs."""
 
-    def __init__(self, profile_repo: ProfileRepo):
+    def __init__(self, profile_repo: JsonProfileRepo):
         self.profiles = profile_repo
 
     def engage_feed(

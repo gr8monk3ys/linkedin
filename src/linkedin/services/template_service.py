@@ -2,9 +2,9 @@
 
 import math
 from datetime import datetime
+from pathlib import Path
 
-import linkedin.data.json_store as json_store
-from linkedin.data.repository import ContactRepo, DraftRepo
+from linkedin.data.json_store import JsonContactRepo, JsonDraftRepo, load_json, save_json
 
 OUTCOME_TEMPLATE_TYPES = {
     "connected": {"connection"},
@@ -15,9 +15,10 @@ OUTCOME_TEMPLATE_TYPES = {
 
 
 class TemplateService:
-    def __init__(self, contact_repo: ContactRepo, draft_repo: DraftRepo):
+    def __init__(self, contact_repo: JsonContactRepo, draft_repo: JsonDraftRepo, templates_file: Path):
         self.contacts = contact_repo
         self.drafts = draft_repo
+        self.templates_file = templates_file
         self._templates: list[dict] = self._load_templates()
 
     def list_templates(self) -> list[dict]:
@@ -253,11 +254,11 @@ class TemplateService:
         return max_id + 1
 
     def _load_templates(self) -> list[dict]:
-        raw = json_store.load_json(json_store.TEMPLATES_FILE, [])
+        raw = load_json(self.templates_file, [])
         return raw if isinstance(raw, list) else []
 
     def _save_templates(self) -> None:
-        json_store.save_json(json_store.TEMPLATES_FILE, self._templates)
+        save_json(self.templates_file, self._templates)
 
     def _refresh_templates(self) -> None:
         self._templates = self._load_templates()

@@ -9,22 +9,11 @@ from linkedin.services.data_service import DataService
 
 
 @pytest.fixture
-def data_svc(json_repos, tmp_path, monkeypatch):
-    """DataService with patched paths matching json_repos."""
-    import linkedin.services.data_service as ds
+def data_svc(json_repos, tmp_path):
+    """DataService over the same directory as json_repos."""
+    from linkedin.data.paths import DataDir
 
-    monkeypatch.setattr(ds, "PROFILE_FILE", tmp_path / "profile.json")
-    monkeypatch.setattr(ds, "CONTACTS_FILE", tmp_path / "contacts.json")
-    monkeypatch.setattr(ds, "COMPANIES_FILE", tmp_path / "companies.json")
-    monkeypatch.setattr(ds, "DRAFTS_FILE", tmp_path / "drafts.json")
-    monkeypatch.setattr(ds, "RESEARCH_FILE", tmp_path / "research.json")
-    monkeypatch.setattr(ds, "TEMPLATES_FILE", tmp_path / "templates.json")
-    monkeypatch.setattr(ds, "JOB_POSTINGS_FILE", tmp_path / "job_postings.json")
-    monkeypatch.setattr(ds, "RUN_DAILY_STATE_FILE", tmp_path / "run_daily_state.json")
-    monkeypatch.setattr(ds, "RUN_DAILY_LOG_FILE", tmp_path / "run_daily.log.jsonl")
-    monkeypatch.setattr(ds, "BACKUPS_DIR", tmp_path / "backups")
-
-    return DataService()
+    return DataService(DataDir(tmp_path))
 
 
 class TestDataService:

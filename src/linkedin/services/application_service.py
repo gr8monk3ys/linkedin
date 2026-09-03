@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from linkedin.ai.client import ai_call
-from linkedin.data.repository import ApplicationRepo, ContactRepo, ProfileRepo
+from linkedin.data.json_store import JsonApplicationRepo, JsonContactRepo, JsonProfileRepo
 from linkedin.services.contact_service import parse_iso_date
 from linkedin.services.planner import (
     APPLICATION_STATUS_RULES,
@@ -26,9 +26,9 @@ __all__ = [
 class ApplicationService:
     def __init__(
         self,
-        application_repo: ApplicationRepo,
-        profile_repo: ProfileRepo,
-        contact_repo: ContactRepo,
+        application_repo: JsonApplicationRepo,
+        profile_repo: JsonProfileRepo,
+        contact_repo: JsonContactRepo,
     ):
         self.applications = application_repo
         self.profiles = profile_repo

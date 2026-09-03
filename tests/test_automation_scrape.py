@@ -4,7 +4,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import linkedin.data.json_store as js
 from linkedin.automation.actions.scrape import (
     _parse_headline,
     import_search_results,
@@ -16,10 +15,7 @@ from linkedin.data.json_store import JsonContactRepo
 
 @pytest.fixture
 def contact_repo(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "CONTACTS_FILE", tmp_path / "contacts.json")
-    monkeypatch.setattr(js, "COMPANIES_FILE", tmp_path / "companies.json")
-    return JsonContactRepo()
+    return JsonContactRepo(tmp_path / "contacts.json")
 
 
 def test_parse_headline_at():

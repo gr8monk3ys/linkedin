@@ -24,8 +24,8 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
 
-import linkedin.data.json_store as json_store
 from linkedin.ai.client import AIResult
+from linkedin.app import App
 from linkedin.constants import (
     ACTIVITY_EMOJI,
     COMPANY_PRIORITIES,
@@ -39,7 +39,7 @@ from linkedin.constants import (
     CompanyPriority,
     ContactStatus,
 )
-from linkedin.data.factory import create_repos
+from linkedin.data.json_store import load_json, save_json
 from linkedin.scheduling.crontab import (
     AUTOMATION_ENV_KEYS,
     build_cron_shell_command,
@@ -66,24 +66,9 @@ from linkedin.scheduling.schedule import (
     runner_tokens_from_option,
     scheduled_run_for_date,
 )
-from linkedin.services.analytics_service import AnalyticsService
-from linkedin.services.application_service import ApplicationService
-from linkedin.services.automation_service import AutomationService, publish_unreviewed
-from linkedin.services.calendar_service import ContentCalendarService
-from linkedin.services.company_service import CompanyService
-from linkedin.services.contact_service import STATUS_RULES, ContactService, parse_iso_date
-from linkedin.services.conversation_service import ConversationService
-from linkedin.services.dashboard_service import DashboardService
-from linkedin.services.data_service import DataService
-from linkedin.services.discover_service import DiscoverService
-from linkedin.services.draft_service import DraftService
-from linkedin.services.inbox_service import InboxService
-from linkedin.services.interview_service import InterviewService
-from linkedin.services.market_service import MarketService
-from linkedin.services.optimizer_service import OptimizerService
+from linkedin.services.automation_service import publish_unreviewed
+from linkedin.services.contact_service import STATUS_RULES, parse_iso_date
 from linkedin.services.planner import command_for, label_for
-from linkedin.services.profile_service import ProfileService
-from linkedin.services.research_service import ResearchService
 from linkedin.services.resume_service import (
     ResumeRepoError,
     import_autoapply_applications,
@@ -108,7 +93,6 @@ from linkedin.services.run_state import (
     send_run_notification,
     set_last_failure_streak_notified,
 )
-from linkedin.services.template_service import TemplateService
 
 console = Console()
 
@@ -121,38 +105,30 @@ def _app_version() -> str:
         return "0.0.0"
 
 
-# Repositories
-(
-    _contact_repo,
-    _company_repo,
-    _profile_repo,
-    _draft_repo,
-    _research_repo,
-    _application_repo,
-    _conversation_repo,
-    _calendar_repo,
-    _interview_prep_repo,
-) = create_repos()
+class _AppHandle:
+    """The App for this process, built from the environment on first use.
 
-# Services
-_profile_svc = ProfileService(_profile_repo)
-_contact_svc = ContactService(_contact_repo, _company_repo)
-_company_svc = CompanyService(_company_repo, _contact_repo)
-_draft_svc = DraftService(_draft_repo, _contact_repo, _profile_repo)
-_discover_svc = DiscoverService(_profile_repo, _company_repo, _contact_repo)
-_research_svc = ResearchService(_profile_repo, _research_repo, _draft_repo)
-_data_svc = DataService()
-_dashboard_svc = DashboardService(_profile_repo, _contact_repo, _company_repo, _draft_repo)
-_analytics_svc = AnalyticsService(_contact_repo, _draft_repo)
-_market_svc = MarketService(_profile_repo)
-_optimizer_svc = OptimizerService(_profile_repo)
-_template_svc = TemplateService(_contact_repo, _draft_repo)
-_application_svc = ApplicationService(_application_repo, _profile_repo, _contact_repo)
-_interview_svc = InterviewService(_application_repo, _interview_prep_repo, _profile_repo)
-_conversation_svc = ConversationService(_conversation_repo, _contact_repo)
-_calendar_svc = ContentCalendarService(_calendar_repo)
-_automation_svc = AutomationService(_profile_repo)
-_inbox_svc = InboxService()
+    Commands reach services as `_app.contact_svc`. Nothing is built at import,
+    so importing the CLI never touches disk, and a test redirects every store
+    by setting LINKEDIN_DATA_DIR and calling `_app.reset()`.
+    """
+
+    def __init__(self) -> None:
+        self._app: App | None = None
+
+    def get(self) -> App:
+        if self._app is None:
+            self._app = App.from_env()
+        return self._app
+
+    def reset(self, app: App | None = None) -> None:
+        self._app = app
+
+    def __getattr__(self, name: str):
+        return getattr(self.get(), name)
+
+
+_app = _AppHandle()
 
 
 def _warn_if_fallback(result: AIResult, used_context: bool = False) -> None:
@@ -176,11 +152,11 @@ def _warn_if_fallback(result: AIResult, used_context: bool = False) -> None:
 
 def load_inbox_proposals() -> list[dict]:
     """Proposed pipeline transitions awaiting confirmation."""
-    return json_store.load_json(json_store.INBOX_PROPOSALS_FILE, [])
+    return load_json(_app.data_dir.inbox_proposals, [])
 
 
 def save_inbox_proposals(proposals: list[dict]) -> None:
-    json_store.save_json(json_store.INBOX_PROPOSALS_FILE, proposals)
+    save_json(_app.data_dir.inbox_proposals, proposals)
 
 
 def _save_daily_plan_recap(
@@ -195,7 +171,7 @@ def _save_daily_plan_recap(
     """Persist a markdown snapshot of the daily plan and return its path."""
     application_actions = application_actions or []
     proposals = proposals or []
-    out_dir = Path(recap_dir) if recap_dir else json_store.DATA_DIR / "recaps"
+    out_dir = Path(recap_dir) if recap_dir else _app.data_dir.recaps
     out_dir.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -280,16 +256,16 @@ def _response_rate_from_counts(template: dict) -> str:
 
 
 def _build_daily_plan_data(actions_limit: int, postings_limit: int, min_posting_score: int) -> tuple[dict, list[tuple[str, dict]]]:
-    profile = _profile_svc.get_profile()
-    actions = _contact_svc.get_next_actions(limit=actions_limit)
-    postings = _market_svc.list_postings(limit=postings_limit, min_score=min_posting_score)
-    application_actions = _application_svc.get_application_actions(limit=actions_limit)
+    profile = _app.profile_svc.get_profile()
+    actions = _app.contact_svc.get_next_actions(limit=actions_limit)
+    postings = _app.market_svc.list_postings(limit=postings_limit, min_score=min_posting_score)
+    application_actions = _app.application_svc.get_application_actions(limit=actions_limit)
     proposals = load_inbox_proposals()
 
     template_rows: list[tuple[str, dict]] = []
     template_recommendations: list[dict] = []
     for template_type in ("connection", "message", "follow_up"):
-        best = _template_svc.suggest_best(template_type)
+        best = _app.template_svc.suggest_best(template_type)
         if not best:
             continue
         best_entry = dict(best)
@@ -430,7 +406,7 @@ def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show
 
     for action in actions:
         contact_id = action["contact_id"]
-        drafted = _draft_svc.generate_for_action(action)
+        drafted = _app.draft_svc.generate_for_action(action)
         if drafted is None:
             continue
         draft_type, result = drafted
@@ -460,7 +436,7 @@ def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show
             console.print(Panel(draft_text, border_style="cyan"))
 
         if save_drafts:
-            _draft_svc.save_draft(
+            _app.draft_svc.save_draft(
                 contact_id, draft_type, draft_text, source=result.source, generated_from=action["action"]
             )
             saved += 1
@@ -566,7 +542,7 @@ def _daily_run_status(data: dict) -> tuple[str, list[dict]]:
         return "failed", []
     if data.get("actions"):
         return "success", []
-    stalled = _contact_svc.stalled_contacts()
+    stalled = _app.contact_svc.stalled_contacts()
     return ("no_actions" if stalled else "success"), stalled
 
 
@@ -595,7 +571,7 @@ def _run_daily_with_reliability(
     started_at = datetime.now()
     effective_key = effective_idempotency_key(idempotency_key, watch_mode, schedule_time, run_at)
 
-    if effective_key and not allow_duplicate and idempotency_key_seen(effective_key):
+    if effective_key and not allow_duplicate and idempotency_key_seen(_app.data_dir, effective_key):
         result = {
             "status": "skipped_duplicate",
             "run_id": run_id,
@@ -605,7 +581,7 @@ def _run_daily_with_reliability(
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "reason": "Idempotency key already completed.",
         }
-        append_run_log(result)
+        append_run_log(_app.data_dir, result)
         return result
 
     streak_threshold = max(1, int(failure_streak_threshold))
@@ -631,8 +607,8 @@ def _run_daily_with_reliability(
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "error": str(exc),
         }
-        append_run_log(failed)
-        history = load_run_history_entries()
+        append_run_log(_app.data_dir, failed)
+        history = load_run_history_entries(_app.data_dir)
         current_streak = failure_streak(history)
         failed["failure_streak"] = current_streak
 
@@ -643,14 +619,14 @@ def _run_daily_with_reliability(
             and notify_on_failure
             and streak_mode
         ):
-            last_notified = get_last_failure_streak_notified()
+            last_notified = get_last_failure_streak_notified(_app.data_dir)
             if current_streak > last_notified:
                 alert_payload = dict(failed)
                 alert_payload["status"] = "failed_streak"
                 alert_payload["failure_streak_threshold"] = streak_threshold
                 notification_error = send_run_notification(notify_webhook, alert_payload)
                 if not notification_error:
-                    set_last_failure_streak_notified(current_streak)
+                    set_last_failure_streak_notified(_app.data_dir, current_streak)
 
         if (not streak_mode) and notification_error is None and notify_webhook and notify_on_failure:
             notification_error = send_run_notification(notify_webhook, failed)
@@ -659,7 +635,7 @@ def _run_daily_with_reliability(
             failed["notification_error"] = notification_error
         return failed
 
-    history_before_success = load_run_history_entries()
+    history_before_success = load_run_history_entries(_app.data_dir)
     prior_failure_streak = failure_streak(history_before_success)
     finished_at = datetime.now()
     data["status"], stalled = _daily_run_status(data)
@@ -693,14 +669,14 @@ def _run_daily_with_reliability(
         "drafts_saved": int(data.get("drafts", {}).get("saved", 0)),
         "recap_path": data.get("recap_path", ""),
     }
-    append_run_log(log_entry)
+    append_run_log(_app.data_dir, log_entry)
 
     if effective_key:
-        record_idempotency_key(effective_key, run_id)
+        record_idempotency_key(_app.data_dir, effective_key, run_id)
 
     if prior_failure_streak > 0:
         data["recovered_from_failure_streak"] = prior_failure_streak
-    set_last_failure_streak_notified(0)
+    set_last_failure_streak_notified(_app.data_dir, 0)
 
     notify_error = None
     if notify_webhook and streak_threshold > 1 and prior_failure_streak >= streak_threshold and notify_on_recovery:
@@ -851,7 +827,7 @@ def profile_setup(resume_file):
     console.print("\n[bold]Profile Setup[/bold]")
     console.print("This info helps AI generate personalized outreach.\n")
 
-    existing = _profile_svc.get_profile()
+    existing = _app.profile_svc.get_profile()
 
     data = {
         "name": click.prompt("Your name", default=existing.get("name", "")),
@@ -899,14 +875,14 @@ def profile_setup(resume_file):
             resume_text = current_resume
     data["resume_text"] = resume_text
 
-    _profile_svc.save_profile(data)
+    _app.profile_svc.save_profile(data)
     console.print("\n[green]✓ Profile saved![/green]")
 
 
 @profile.command("show")
 def profile_show():
     """Display your saved profile."""
-    data = _profile_svc.get_profile()
+    data = _app.profile_svc.get_profile()
 
     if not data:
         console.print("[yellow]No profile set up. Run: linkedin-cli profile setup[/yellow]")
@@ -943,7 +919,7 @@ def companies():
 @click.option("--priority", "-p", type=click.Choice(COMPANY_PRIORITIES), default="medium", help="Priority level")
 def companies_add(name, industry, size, linkedin, website, why, priority):
     """Add a new target company."""
-    company = _company_svc.add_company(name, industry, size, linkedin, website, why, priority)
+    company = _app.company_svc.add_company(name, industry, size, linkedin, website, why, priority)
     console.print(f"\n[green]✓ Added company: {name} ({industry})[/green]")
     console.print(f"  ID: #{company['id']} | Priority: {priority}")
 
@@ -953,7 +929,7 @@ def companies_add(name, industry, size, linkedin, website, why, priority):
 @click.option("--industry", "-i", default=None, help="Filter by industry")
 def companies_list_cmd(priority, industry):
     """List all target companies."""
-    result = _company_svc.list_companies(priority, industry)
+    result = _app.company_svc.list_companies(priority, industry)
 
     if not result:
         console.print("[yellow]No companies yet. Run: linkedin-cli companies add[/yellow]")
@@ -986,7 +962,7 @@ def companies_list_cmd(priority, industry):
 @click.argument("company_id", type=int)
 def companies_view(company_id):
     """View detailed info for a company."""
-    result = _company_svc.get_company(company_id)
+    result = _app.company_svc.get_company(company_id)
     if not result:
         console.print(f"[red]Company #{company_id} not found[/red]")
         return
@@ -1027,7 +1003,7 @@ def companies_view(company_id):
 @click.option("--website", "-w", help="Update website")
 def companies_update(company_id, priority, notes, add_role, linkedin, website):
     """Update a company's info."""
-    result = _company_svc.update_company(company_id, priority, notes, add_role, linkedin, website)
+    result = _app.company_svc.update_company(company_id, priority, notes, add_role, linkedin, website)
     if not result:
         console.print(f"[red]Company #{company_id} not found[/red]")
         return
@@ -1039,7 +1015,7 @@ def companies_update(company_id, priority, notes, add_role, linkedin, website):
 @click.confirmation_option(prompt="Are you sure you want to delete this company?")
 def companies_delete(company_id):
     """Delete a company."""
-    result = _company_svc.delete_company(company_id)
+    result = _app.company_svc.delete_company(company_id)
     if not result:
         console.print(f"[red]Company #{company_id} not found[/red]")
         return
@@ -1050,7 +1026,7 @@ def companies_delete(company_id):
 @click.argument("company_id", type=int)
 def companies_contacts(company_id):
     """List contacts at a company."""
-    company, company_contacts = _company_svc.get_company_contacts(company_id)
+    company, company_contacts = _app.company_svc.get_company_contacts(company_id)
 
     if not company:
         console.print(f"[red]Company #{company_id} not found[/red]")
@@ -1101,7 +1077,7 @@ def contacts():
 @click.option("--referral-id", type=int, default=None, help="Contact ID who referred them")
 def contacts_add(name, title, company, linkedin, notes, company_id, email, source, referral_id):
     """Add a new contact to track."""
-    result = _contact_svc.add_contact(name, title, company, linkedin, notes, company_id, email, source, referral_id)
+    result = _app.contact_svc.add_contact(name, title, company, linkedin, notes, company_id, email, source, referral_id)
 
     if isinstance(result, str):
         console.print(f"[red]{result}[/red]")
@@ -1118,11 +1094,11 @@ def contacts_add(name, title, company, linkedin, notes, company_id, email, sourc
 @click.confirmation_option(prompt="Delete this contact? Their drafts and history stay behind.")
 def contacts_delete(contact_id):
     """Delete a contact."""
-    contact = _contact_svc.contacts.get(contact_id)
+    contact = _app.contact_svc.contacts.get(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found.[/red]")
         raise SystemExit(1)
-    _contact_svc.delete_contact(contact_id)
+    _app.contact_svc.delete_contact(contact_id)
     console.print(f"[green]Deleted {contact.get('name', 'contact')} (#{contact_id}).[/green]")
 
 
@@ -1135,7 +1111,7 @@ def contacts_list(status, company, company_id, source):
     """List all contacts."""
     from datetime import datetime
 
-    filtered = _contact_svc.list_contacts(status, company, company_id, source)
+    filtered = _app.contact_svc.list_contacts(status, company, company_id, source)
 
     if not filtered:
         console.print("[yellow]No contacts yet. Run: linkedin-cli contacts add[/yellow]")
@@ -1175,14 +1151,14 @@ def contacts_list(status, company, company_id, source):
 @click.option("--email", "-e", help="Set email address")
 def contacts_update(contact_id, status, notes, follow_up, email):
     """Update a contact's status or notes."""
-    result = _contact_svc.update_contact(contact_id, status, notes, follow_up, email)
+    result = _app.contact_svc.update_contact(contact_id, status, notes, follow_up, email)
     if not result:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
 
     feedback = None
     if status:
-        feedback = _template_svc.auto_record_outcome(contact_id, status)
+        feedback = _app.template_svc.auto_record_outcome(contact_id, status)
 
     console.print(f"[green]✓ Updated contact #{contact_id}[/green]")
     if feedback and feedback.get("recorded"):
@@ -1198,7 +1174,7 @@ def contacts_update(contact_id, status, notes, follow_up, email):
 @click.argument("contact_id", type=int)
 def contacts_view(contact_id):
     """View detailed info for a contact."""
-    result = _contact_svc.view_contact(contact_id)
+    result = _app.contact_svc.view_contact(contact_id)
     if not result:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
@@ -1233,7 +1209,7 @@ def contacts_view(contact_id):
 @contacts.command("stats")
 def contacts_stats():
     """Show outreach statistics."""
-    stats = _contact_svc.get_stats()
+    stats = _app.contact_svc.get_stats()
 
     if stats["total"] == 0:
         console.print("[yellow]No contacts yet[/yellow]")
@@ -1261,7 +1237,7 @@ def contacts_stats():
 @click.argument("contact_id", type=int)
 def contacts_activity(contact_id):
     """View activity log for a contact."""
-    contact = _contact_svc.get_contact(contact_id)
+    contact = _app.contact_svc.get_contact(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
@@ -1290,13 +1266,13 @@ def contacts_activity(contact_id):
 @click.argument("company_id", type=int)
 def contacts_link_company(contact_id, company_id):
     """Link a contact to a company."""
-    error = _contact_svc.link_company(contact_id, company_id)
+    error = _app.contact_svc.link_company(contact_id, company_id)
     if error:
         console.print(f"[red]{error}[/red]")
         return
 
-    contact = _contact_svc.get_contact(contact_id)
-    company = _company_svc.companies.get(company_id)
+    contact = _app.contact_svc.get_contact(contact_id)
+    company = _app.company_svc.companies.get(company_id)
     console.print(f"[green]✓ Linked {contact['name']} to {company['name']}[/green]")
 
 
@@ -1304,12 +1280,12 @@ def contacts_link_company(contact_id, company_id):
 @click.option("--days", "-d", type=int, default=0, help="Show follow-ups due within N days (0 = overdue only)")
 def contacts_due(days):
     """Show contacts with overdue or upcoming follow-ups."""
-    all_contacts = _contact_svc.list_contacts()
+    all_contacts = _app.contact_svc.list_contacts()
     if not all_contacts:
         console.print("[yellow]No contacts yet[/yellow]")
         return
 
-    due_data = _contact_svc.get_due_contacts(days)
+    due_data = _app.contact_svc.get_due_contacts(days)
 
     overdue = due_data["overdue"]
     due_today = due_data["due_today"]
@@ -1356,7 +1332,7 @@ def contacts_next_actions(limit, generate_drafts, save_drafts):
     if save_drafts:
         generate_drafts = True
 
-    actions = _contact_svc.get_next_actions(limit=limit)
+    actions = _app.contact_svc.get_next_actions(limit=limit)
     if not actions:
         console.print("[green]✓ No urgent actions right now.[/green]")
         return
@@ -1392,7 +1368,7 @@ def contacts_next_actions(limit, generate_drafts, save_drafts):
 @click.option("--limit", type=int, default=20, help="Maximum duplicate pairs to show")
 def contacts_dedupe(min_score, limit):
     """Find likely duplicate contacts."""
-    candidates = _contact_svc.find_duplicate_candidates(min_score=min_score, limit=limit)
+    candidates = _app.contact_svc.find_duplicate_candidates(min_score=min_score, limit=limit)
     if not candidates:
         console.print("[green]✓ No likely duplicates found.[/green]")
         return
@@ -1424,7 +1400,7 @@ def contacts_dedupe(min_score, limit):
 @click.option("--prefer", type=click.Choice(["primary", "duplicate"]), default="primary", help="Preferred record fields")
 def contacts_merge(primary_id, duplicate_id, prefer):
     """Merge two contacts into one canonical record."""
-    result = _contact_svc.merge_contacts(primary_id, duplicate_id, prefer=prefer)
+    result = _app.contact_svc.merge_contacts(primary_id, duplicate_id, prefer=prefer)
     if isinstance(result, str):
         console.print(f"[red]{result}[/red]")
         return
@@ -1438,12 +1414,12 @@ def contacts_merge(primary_id, duplicate_id, prefer):
 @click.option("--date", help="Set specific follow-up date (YYYY-MM-DD)")
 def contacts_remind(contact_id, days, date):
     """Set a follow-up reminder for a contact."""
-    follow_up_date = _contact_svc.set_reminder(contact_id, days, date)
+    follow_up_date = _app.contact_svc.set_reminder(contact_id, days, date)
     if not follow_up_date:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
 
-    contact = _contact_svc.get_contact(contact_id)
+    contact = _app.contact_svc.get_contact(contact_id)
     console.print(f"[green]✓ Reminder set for {contact['name']}: {follow_up_date}[/green]")
 
 
@@ -1451,7 +1427,7 @@ def contacts_remind(contact_id, days, date):
 @click.option("--dry-run", is_flag=True, help="Show what would be fixed without writing")
 def contacts_repair(dry_run):
     """Backfill missing timestamps and follow-up dates so contacts become actionable."""
-    result = _contact_svc.repair_contacts(dry_run=dry_run)
+    result = _app.contact_svc.repair_contacts(dry_run=dry_run)
     if not result["total"]:
         console.print("[green]All contacts already have timestamps and follow-up dates.[/green]")
         return
@@ -1491,7 +1467,7 @@ def campaigns():
 @click.option("--start-date", default="", help="Campaign start date (YYYY-MM-DD)")
 def campaigns_enroll(contact_id, campaign_name, start_date):
     """Enroll a contact into a campaign sequence."""
-    result = _contact_svc.enroll_campaign(
+    result = _app.contact_svc.enroll_campaign(
         contact_id,
         campaign_name=campaign_name,
         start_date=start_date or None,
@@ -1518,7 +1494,7 @@ def campaigns_enroll(contact_id, campaign_name, start_date):
 def campaigns_status(contact_id, active_only, campaign_name, as_json):
     """Show campaign progress for one contact or all enrolled contacts."""
     if contact_id is not None:
-        status = _contact_svc.campaign_status(contact_id)
+        status = _app.contact_svc.campaign_status(contact_id)
         if status is None:
             message = f"Contact #{contact_id} not found."
             if as_json:
@@ -1551,7 +1527,7 @@ def campaigns_status(contact_id, active_only, campaign_name, as_json):
             console.print(f"[bold]Completed:[/bold] {status.get('completed_at')}")
         return
 
-    rows = _contact_svc.list_campaign_contacts(active_only=active_only, campaign_name=campaign_name)
+    rows = _app.contact_svc.list_campaign_contacts(active_only=active_only, campaign_name=campaign_name)
     if as_json:
         click.echo(json.dumps({"campaigns": rows}, indent=2))
         return
@@ -1583,7 +1559,7 @@ def campaigns_status(contact_id, active_only, campaign_name, as_json):
 @click.option("--json", "as_json", is_flag=True, help="Output due campaign steps as JSON")
 def campaigns_due(limit, as_json):
     """Show currently due campaign steps with suggested commands."""
-    due = _contact_svc.get_due_campaign_steps(limit=limit)
+    due = _app.contact_svc.get_due_campaign_steps(limit=limit)
     if as_json:
         click.echo(json.dumps({"due_steps": due, "count": len(due)}, indent=2))
         return
@@ -1616,7 +1592,7 @@ def campaigns_due(limit, as_json):
 @click.option("--complete", is_flag=True, help="Mark campaign as complete immediately")
 def campaigns_advance(contact_id, complete):
     """Advance a contact to the next campaign step."""
-    result = _contact_svc.advance_campaign(contact_id, complete=complete)
+    result = _app.contact_svc.advance_campaign(contact_id, complete=complete)
     if result is None:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
@@ -1624,7 +1600,7 @@ def campaigns_advance(contact_id, complete):
         console.print(f"[yellow]{result}[/yellow]")
         return
 
-    status = _contact_svc.campaign_status(contact_id) or {}
+    status = _app.contact_svc.campaign_status(contact_id) or {}
     if not status:
         console.print(f"[green]✓ Campaign completed for contact #{contact_id}.[/green]")
         return
@@ -1653,14 +1629,14 @@ def drafts():
 @click.argument("contact_id", type=int)
 def drafts_connection(contact_id):
     """Generate a personalized connection request for a contact."""
-    contact = _contact_svc.get_contact(contact_id)
+    contact = _app.contact_svc.get_contact(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
 
     console.print(f"\n[bold]Generating connection request for {contact['name']}...[/bold]\n")
 
-    result = _draft_svc.generate_connection(contact_id)
+    result = _app.draft_svc.generate_connection(contact_id)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1671,7 +1647,7 @@ def drafts_connection(contact_id):
     console.print(f"\n[dim]Characters: {len(draft)}/300[/dim]")
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "connection", draft, source=result.source)
+        _app.draft_svc.save_draft(contact_id, "connection", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1680,14 +1656,14 @@ def drafts_connection(contact_id):
 @click.option("--context", "-c", default="", help="Additional context for the message")
 def drafts_message(contact_id, context):
     """Generate a personalized follow-up message."""
-    contact = _contact_svc.get_contact(contact_id)
+    contact = _app.contact_svc.get_contact(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
 
     console.print(f"\n[bold]Generating message for {contact['name']}...[/bold]\n")
 
-    result = _draft_svc.generate_message(contact_id, context)
+    result = _app.draft_svc.generate_message(contact_id, context)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1697,7 +1673,7 @@ def drafts_message(contact_id, context):
     _warn_if_fallback(result, used_context=True)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "message", draft, source=result.source)
+        _app.draft_svc.save_draft(contact_id, "message", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1708,7 +1684,7 @@ def drafts_intro_request(contact_id, target_id):
     """Generate a message asking for an introduction to another contact."""
     console.print("\n[bold]Generating intro request...[/bold]\n")
 
-    result = _draft_svc.generate_intro_request(contact_id, target_id)
+    result = _app.draft_svc.generate_intro_request(contact_id, target_id)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1718,7 +1694,7 @@ def drafts_intro_request(contact_id, target_id):
     _warn_if_fallback(result, used_context=False)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "intro_request", draft, source=result.source, target_contact_id=target_id)
+        _app.draft_svc.save_draft(contact_id, "intro_request", draft, source=result.source, target_contact_id=target_id)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1727,14 +1703,14 @@ def drafts_intro_request(contact_id, target_id):
 @click.option("--context", "-c", default="", help="What to thank them for")
 def drafts_thank_you(contact_id, context):
     """Generate a thank you message after a call or meeting."""
-    contact = _contact_svc.get_contact(contact_id)
+    contact = _app.contact_svc.get_contact(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
 
     console.print(f"\n[bold]Generating thank you note for {contact['name']}...[/bold]\n")
 
-    result = _draft_svc.generate_thank_you(contact_id, context)
+    result = _app.draft_svc.generate_thank_you(contact_id, context)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1744,7 +1720,7 @@ def drafts_thank_you(contact_id, context):
     _warn_if_fallback(result, used_context=True)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "thank_you", draft, source=result.source)
+        _app.draft_svc.save_draft(contact_id, "thank_you", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1753,14 +1729,14 @@ def drafts_thank_you(contact_id, context):
 @click.option("--attempt", "-a", type=int, default=1, help="Which follow-up attempt (1, 2, or 3)")
 def drafts_follow_up(contact_id, attempt):
     """Generate a follow-up message after no response."""
-    contact = _contact_svc.get_contact(contact_id)
+    contact = _app.contact_svc.get_contact(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found[/red]")
         return
 
     console.print(f"\n[bold]Generating follow-up #{attempt} for {contact['name']}...[/bold]\n")
 
-    result = _draft_svc.generate_follow_up(contact_id, attempt)
+    result = _app.draft_svc.generate_follow_up(contact_id, attempt)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1770,7 +1746,7 @@ def drafts_follow_up(contact_id, attempt):
     _warn_if_fallback(result)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, f"follow_up_{attempt}", draft, source=result.source)
+        _app.draft_svc.save_draft(contact_id, f"follow_up_{attempt}", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1779,7 +1755,7 @@ def drafts_follow_up(contact_id, attempt):
 @click.option("--save-all", is_flag=True, help="Save all drafts without prompting")
 def drafts_batch_connections(limit, save_all):
     """Generate connection requests for all not_contacted contacts."""
-    error, results = _draft_svc.generate_batch_connections(limit)
+    error, results = _app.draft_svc.generate_batch_connections(limit)
 
     if error:
         console.print(f"[yellow]{error}[/yellow]")
@@ -1800,7 +1776,7 @@ def drafts_batch_connections(limit, save_all):
         console.print(f"[dim]Characters: {len(draft)}/300[/dim]\n")
 
         if save_all or click.confirm("Save this draft?"):
-            _draft_svc.save_draft(contact["id"], "connection", draft, source=result.source)
+            _app.draft_svc.save_draft(contact["id"], "connection", draft, source=result.source)
             generated += 1
 
     console.print(f"\n[green]✓ Generated and saved {generated} drafts![/green]")
@@ -1811,7 +1787,7 @@ def drafts_batch_connections(limit, save_all):
 @click.confirmation_option(prompt="Delete this draft?")
 def drafts_delete(draft_id):
     """Delete a saved draft."""
-    if _draft_svc.delete_draft(draft_id):
+    if _app.draft_svc.delete_draft(draft_id):
         console.print(f"[green]Deleted draft #{draft_id}.[/green]")
     else:
         console.print(f"[red]Draft #{draft_id} not found.[/red]")
@@ -1821,7 +1797,7 @@ def drafts_delete(draft_id):
 @drafts.command("list")
 def drafts_list_cmd():
     """List all saved drafts."""
-    result = _draft_svc.list_drafts()
+    result = _app.draft_svc.list_drafts()
 
     if not result:
         console.print("[yellow]No drafts yet. Generate one with: linkedin-cli drafts connection <id>[/yellow]")
@@ -1851,7 +1827,7 @@ def drafts_list_cmd():
 @click.argument("draft_id", type=int)
 def drafts_view(draft_id):
     """View a saved draft."""
-    draft = _draft_svc.get_draft(draft_id)
+    draft = _app.draft_svc.get_draft(draft_id)
     if not draft:
         console.print(f"[red]Draft #{draft_id} not found[/red]")
         return
@@ -1874,7 +1850,7 @@ def discover():
 @click.option("--role", "-r", default=None, help="Suggest contacts by role/title")
 def discover_contacts(company, role):
     """Get AI suggestions for who to connect with."""
-    error, suggestions = _discover_svc.discover_contacts(company, role)
+    error, suggestions = _app.discover_svc.discover_contacts(company, role)
 
     if error:
         if "Specify" in error:
@@ -1894,7 +1870,7 @@ def discover_contacts(company, role):
 @discover.command("companies")
 def discover_companies():
     """Get AI suggestions for companies to target."""
-    error, suggestions = _discover_svc.discover_companies()
+    error, suggestions = _app.discover_svc.discover_companies()
 
     if error:
         console.print(f"[yellow]{error}[/yellow]")
@@ -1920,7 +1896,7 @@ def research():
 @research.command("engagement")
 def research_engagement():
     """Show high-engagement content strategies for LinkedIn."""
-    content = _research_svc.get_engagement_strategies()
+    content = _app.research_svc.get_engagement_strategies()
     console.print(Markdown(content))
 
 
@@ -1928,7 +1904,7 @@ def research_engagement():
 @click.option("--topic", "-t", default=None, help="Topic to generate ideas for")
 def research_ideas(topic):
     """Generate post ideas based on your profile."""
-    focus, result = _research_svc.generate_ideas(topic)
+    focus, result = _app.research_svc.generate_ideas(topic)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1938,7 +1914,7 @@ def research_ideas(topic):
     console.print(Panel(ideas, title="Post Ideas", border_style="green"))
 
     if click.confirm("\nSave these ideas?"):
-        _research_svc.save_ideas(focus, ideas)
+        _app.research_svc.save_ideas(focus, ideas)
         console.print("[green]✓ Ideas saved![/green]")
 
 
@@ -1949,7 +1925,7 @@ def research_draft_post(topic, style):
     """Generate a full post draft."""
     console.print(f"\n[bold]Generating {style} post about: {topic}...[/bold]\n")
 
-    result = _research_svc.generate_post_draft(topic, style)
+    result = _app.research_svc.generate_post_draft(topic, style)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1957,7 +1933,7 @@ def research_draft_post(topic, style):
     console.print(Panel(draft, title=f"Post Draft ({style})", border_style="green"))
 
     if click.confirm("\nSave this draft?"):
-        _research_svc.save_post_draft(topic, style, draft)
+        _app.research_svc.save_post_draft(topic, style, draft)
         console.print("[green]✓ Post draft saved![/green]")
 
 
@@ -1967,7 +1943,7 @@ def research_hashtags(topic):
     """Get hashtag recommendations for a topic."""
     console.print(f"\n[bold]Finding hashtags for: {topic}...[/bold]\n")
 
-    result = _research_svc.generate_hashtags(topic)
+    result = _app.research_svc.generate_hashtags(topic)
     if not result:
         console.print(f"[yellow]{result.error}[/yellow]")
         return
@@ -1992,7 +1968,7 @@ def data():
 def data_export(data_type, output, fmt):
     """Export contacts or companies to a file."""
     if data_type in ("contacts", "all"):
-        count, out_file = _data_svc.export_contacts(output, fmt)
+        count, out_file = _app.data_svc.export_contacts(output, fmt)
         if count:
             console.print(f"[green]✓ Exported {count} contacts to {out_file}[/green]")
         else:
@@ -2006,7 +1982,7 @@ def data_export(data_type, output, fmt):
                 comp_output = str(out_path.with_name(out_path.name.replace("contacts", "companies", 1)))
             else:
                 comp_output = str(out_path.with_name(f"{out_path.stem}_companies{out_path.suffix}"))
-        count, out_file = _data_svc.export_companies(comp_output, fmt)
+        count, out_file = _app.data_svc.export_companies(comp_output, fmt)
         if count:
             console.print(f"[green]✓ Exported {count} companies to {out_file}[/green]")
         else:
@@ -2020,10 +1996,10 @@ def data_export(data_type, output, fmt):
 def data_import(data_type, file_path, merge):
     """Import contacts or companies from a file."""
     if data_type == "contacts":
-        count = _data_svc.import_contacts(file_path, merge)
+        count = _app.data_svc.import_contacts(file_path, merge)
         console.print(f"[green]✓ Imported {count} contacts[/green]")
     else:
-        count = _data_svc.import_companies(file_path, merge)
+        count = _app.data_svc.import_companies(file_path, merge)
         console.print(f"[green]✓ Imported {count} companies[/green]")
 
 
@@ -2032,11 +2008,11 @@ def data_import(data_type, file_path, merge):
 @click.option("--verify", is_flag=True, help="Verify backup integrity after creation")
 def data_backup(output, verify):
     """Create a backup of all data files."""
-    backup_name, backed_up = _data_svc.create_backup(output)
+    backup_name, backed_up = _app.data_svc.create_backup(output)
     console.print(f"[green]✓ Backup created: {backup_name}[/green]")
     console.print(f"  Backed up {backed_up} files")
     if verify:
-        report = _data_svc.verify_backup(backup_name)
+        report = _app.data_svc.verify_backup(backup_name)
         if report.get("valid"):
             console.print(
                 "[green]"
@@ -2057,7 +2033,7 @@ def data_restore(backup_file, dry_run):
         console.print("[yellow]Restore cancelled.[/yellow]")
         return
 
-    restored = _data_svc.restore_backup(backup_file, dry_run=dry_run)
+    restored = _app.data_svc.restore_backup(backup_file, dry_run=dry_run)
     if restored is None:
         console.print("[red]Invalid or unsafe backup file.[/red]")
         return
@@ -2072,7 +2048,7 @@ def data_restore(backup_file, dry_run):
 @click.option("--json", "as_json", is_flag=True, help="Output verification report as JSON")
 def data_verify_backup(backup_file, as_json):
     """Verify backup safety and file integrity."""
-    report = _data_svc.verify_backup(backup_file)
+    report = _app.data_svc.verify_backup(backup_file)
     if as_json:
         click.echo(json.dumps(report, indent=2))
         return
@@ -2090,7 +2066,7 @@ def data_verify_backup(backup_file, as_json):
 @data.command("backups")
 def data_backups():
     """List available backups."""
-    backups = _data_svc.list_backups()
+    backups = _app.data_svc.list_backups()
 
     if not backups:
         console.print("[yellow]No backups found[/yellow]")
@@ -2116,7 +2092,7 @@ def data_backups():
 @cli.command()
 def dashboard():
     """Show overview of your job hunt progress."""
-    data = _dashboard_svc.get_dashboard_data()
+    data = _app.dashboard_svc.get_dashboard_data()
 
     console.print("\n[bold]📊 Job Hunt Dashboard[/bold]\n")
 
@@ -2267,7 +2243,7 @@ def run_daily(
 
     notify_target = notify_webhook.strip() or os.environ.get("LINKEDIN_RUN_NOTIFY_WEBHOOK", "").strip()
 
-    lock_acquired, lock_error = acquire_run_lock(lock_ttl_minutes=lock_ttl_minutes)
+    lock_acquired, lock_error = acquire_run_lock(_app.data_dir, lock_ttl_minutes=lock_ttl_minutes)
     if not lock_acquired:
         skipped = {
             "status": "skipped_locked",
@@ -2276,7 +2252,7 @@ def run_daily(
             "started_at": datetime.now().isoformat(timespec="seconds"),
             "finished_at": datetime.now().isoformat(timespec="seconds"),
         }
-        append_run_log(skipped)
+        append_run_log(_app.data_dir, skipped)
         _emit_run_status(skipped, as_json=as_json)
         return
 
@@ -2438,7 +2414,7 @@ def run_daily(
         if not as_json:
             console.print("\n[yellow]Stopped run-daily.[/yellow]")
     finally:
-        release_run_lock()
+        release_run_lock(_app.data_dir)
 
 
 @cli.command("health")
@@ -2454,11 +2430,11 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
     cron_env_status: dict | None = None
 
     try:
-        json_store.ensure_dirs()
-        probe = json_store.DATA_DIR / ".healthcheck.tmp"
+        _app.data_dir.ensure()
+        probe = _app.data_dir.root / ".healthcheck.tmp"
         probe.write_text("ok")
         probe.unlink(missing_ok=True)
-        checks.append({"name": "data_dir", "status": "ok", "detail": f"Writable: {json_store.DATA_DIR}"})
+        checks.append({"name": "data_dir", "status": "ok", "detail": f"Writable: {_app.data_dir.root}"})
     except Exception as exc:
         checks.append({"name": "data_dir", "status": "fail", "detail": f"Not writable: {exc}"})
 
@@ -2483,7 +2459,7 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
         managed_job = extract_managed_cron_job_line(cron_lines)
         unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(cron_lines)
         active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-        cron_env_path = cron_env_file_from_job_line(active_job) or default_automation_env_file()
+        cron_env_path = cron_env_file_from_job_line(active_job) or default_automation_env_file(_app.data_dir)
         cron_env_status = env_file_status(cron_env_path)
 
         if managed_job:
@@ -2544,17 +2520,17 @@ def health(schedule_time, lock_ttl_minutes, webhook_url, as_json):
                 "detail": f"{cron_env_status.get('path')} not found.",
             })
 
-    checks.append({"name": "run_lock", **health_lock_check(lock_ttl_minutes)})
+    checks.append({"name": "run_lock", **health_lock_check(_app.data_dir, lock_ttl_minutes)})
 
     try:
-        state = load_run_state()
+        state = load_run_state(_app.data_dir)
         completed = state.get("completed_idempotency_keys", [])
         count = len(completed) if isinstance(completed, list) else 0
         checks.append({"name": "idempotency_state", "status": "ok", "detail": f"{count} key(s) tracked."})
     except Exception as exc:
         checks.append({"name": "idempotency_state", "status": "warn", "detail": f"Could not load state: {exc}"})
 
-    history = load_run_history_entries()
+    history = load_run_history_entries(_app.data_dir)
     if not history:
         checks.append({"name": "run_history", "status": "warn", "detail": "No run history yet."})
     else:
@@ -2623,7 +2599,7 @@ def run_history(limit, status_filter, trigger, since_days, as_json):
         console.print("[red]--since-days must be 0 or greater.[/red]")
         return
 
-    entries = load_run_history_entries()
+    entries = load_run_history_entries(_app.data_dir)
     if not entries:
         message = "No run history yet. Run: linkedin-cli run-daily --json"
         if as_json:
@@ -2693,11 +2669,11 @@ def automation_status(as_json):
     unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(lines) if not cron_error else []
     active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
     schedule_time = cron_schedule_time_from_job_line(active_job) if active_job else ""
-    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file()
+    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file(_app.data_dir)
     env_status = env_file_status(env_file)
-    history = load_run_history_entries()
+    history = load_run_history_entries(_app.data_dir)
     latest = history[-1] if history else None
-    lock_check = health_lock_check(lock_ttl_minutes=180)
+    lock_check = health_lock_check(_app.data_dir, lock_ttl_minutes=180)
 
     result = {
         "backend": "cron",
@@ -2708,7 +2684,7 @@ def automation_status(as_json):
         "unmanaged_jobs": unmanaged_jobs,
         "env_file": env_status,
         "crontab_error": cron_error or "",
-        "run_log_file": str(json_store.RUN_DAILY_LOG_FILE),
+        "run_log_file": str(_app.data_dir.run_daily_log),
         "latest_run": {
             "status": latest.get("status", ""),
             "finished_at": latest.get("finished_at", ""),
@@ -2784,7 +2760,7 @@ def automation_env():
 
 
 @automation_env.command("status")
-@click.option("--env-file", default=str(default_automation_env_file()), help="Env file path")
+@click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file path")
 @click.option("--json", "as_json", is_flag=True, help="Output env status as JSON")
 def automation_env_status(env_file, as_json):
     """Show env-file readiness for scheduled runs."""
@@ -2808,7 +2784,7 @@ def automation_env_status(env_file, as_json):
 
 
 @automation_env.command("sync")
-@click.option("--env-file", default=str(default_automation_env_file()), help="Env file path")
+@click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file path")
 @click.option("--json", "as_json", is_flag=True, help="Output sync result as JSON")
 def automation_env_sync(env_file, as_json):
     """Sync supported environment variables from current shell into env file."""
@@ -2846,7 +2822,7 @@ def automation_env_sync(env_file, as_json):
 
 
 @automation_env.command("set-anthropic-key")
-@click.option("--env-file", default=str(default_automation_env_file()), help="Env file path")
+@click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file path")
 @click.option("--key", prompt=True, hide_input=True, confirmation_prompt=True, help="Anthropic API key")
 @click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
 def automation_env_set_anthropic_key(env_file, key, as_json):
@@ -2889,11 +2865,11 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
         checks.append({"name": "schedule_time", "status": "fail", "detail": str(exc)})
         errors.append(str(exc))
 
-    lock_check = health_lock_check(lock_ttl_minutes=180)
+    lock_check = health_lock_check(_app.data_dir, lock_ttl_minutes=180)
     checks.append({"name": "run_lock", **lock_check})
     if fix and lock_check.get("status") == "warn" and "Stale lock" in lock_check.get("detail", ""):
         try:
-            json_store.RUN_DAILY_LOCK_FILE.unlink(missing_ok=True)
+            _app.data_dir.run_daily_lock.unlink(missing_ok=True)
             fixes.append("Cleared stale run lock.")
             checks.append({"name": "run_lock_fix", "status": "ok", "detail": "Stale lock removed."})
         except OSError as exc:
@@ -2904,7 +2880,7 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
     managed_job = extract_managed_cron_job_line(cron_lines) if not cron_error else ""
     unmanaged_jobs = find_unmanaged_run_daily_cron_jobs(cron_lines) if not cron_error else []
     active_job = managed_job or (unmanaged_jobs[0] if unmanaged_jobs else "")
-    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file()
+    env_file = cron_env_file_from_job_line(active_job) or default_automation_env_file(_app.data_dir)
     env_status = env_file_status(env_file)
 
     if cron_error:
@@ -2956,8 +2932,8 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
             job_line = build_managed_cron_job_line(
                 schedule_time=schedule_time,
                 cron_command=cron_command,
-                stdout_log=json_store.DATA_DIR / "run_daily.cron.out.log",
-                stderr_log=json_store.DATA_DIR / "run_daily.cron.err.log",
+                stdout_log=_app.data_dir.cron_out_log,
+                stderr_log=_app.data_dir.cron_err_log,
             )
 
             cleaned_lines, _ = strip_managed_cron_block(cron_lines)
@@ -3053,15 +3029,15 @@ def automation_doctor(schedule_time, fix, run_smoke, as_json):
 @click.option("--generate-drafts/--no-generate-drafts", default=True, help="Generate drafts during scheduled runs")
 @click.option("--save-drafts/--no-save-drafts", default=True, help="Persist generated drafts during scheduled runs")
 @click.option("--adopt-existing/--no-adopt-existing", default=True, help="Replace unmanaged run-daily cron entries")
-@click.option("--env-file", default=str(default_automation_env_file()), help="Env file sourced by cron before run-daily")
+@click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file sourced by cron before run-daily")
 @click.option("--sync-env/--no-sync-env", default=True, help="Sync shell ANTHROPIC_API_KEY into env file when present")
 @click.option("--retry-attempts", type=int, default=2, help="Additional retries when a scheduled run fails")
 @click.option("--retry-backoff-seconds", type=float, default=10.0, help="Base seconds for retry backoff")
 @click.option("--failure-streak-threshold", type=int, default=3, help="Notify when N consecutive scheduled runs fail")
 @click.option("--notify-on-recovery/--no-notify-on-recovery", default=True, help="Notify when scheduled runs recover")
 @click.option("--notify-webhook", default="", help="Webhook URL for failure notifications")
-@click.option("--stdout-log", default=str(json_store.DATA_DIR / "run_daily.cron.out.log"), help="Cron stdout log path")
-@click.option("--stderr-log", default=str(json_store.DATA_DIR / "run_daily.cron.err.log"), help="Cron stderr log path")
+@click.option("--stdout-log", default=None, help="Cron stdout log path (default: <data dir>/run_daily.cron.out.log)")
+@click.option("--stderr-log", default=None, help="Cron stderr log path (default: <data dir>/run_daily.cron.err.log)")
 @click.option("--json", "as_json", is_flag=True, help="Output schedule details as JSON")
 def automation_schedule(
     schedule_time,
@@ -3113,8 +3089,8 @@ def automation_schedule(
         console.print(f"[red]Invalid --workdir: {workdir_path}[/red]")
         return
 
-    stdout_path = Path(stdout_log).expanduser()
-    stderr_path = Path(stderr_log).expanduser()
+    stdout_path = Path(stdout_log).expanduser() if stdout_log else _app.data_dir.cron_out_log
+    stderr_path = Path(stderr_log).expanduser() if stderr_log else _app.data_dir.cron_err_log
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
     env_file_path = Path(env_file).expanduser()
@@ -3296,7 +3272,7 @@ def automation_import_search(query, limit):
             raise SystemExit(1)
         results = search_and_collect(page, query, limit=limit)
 
-    added, skipped = import_search_results(results, _contact_repo)
+    added, skipped = import_search_results(results, _app.contact_repo)
     console.print(f"[green]Imported {len(added)} new contacts.[/green] Skipped {len(skipped)} duplicates.")
     for c in added:
         console.print(f"  #{c['id']} {c['name']} — {c.get('title', '')} at {c.get('company', '')}")
@@ -3315,7 +3291,7 @@ def automation_profile(linkedin_url):
         raise SystemExit(1)
 
     existing = next(
-        (c for c in _contact_repo.list_all() if c.get("linkedin_url") == linkedin_url),
+        (c for c in _app.contact_repo.list_all() if c.get("linkedin_url") == linkedin_url),
         None,
     )
     with BrowserManager() as browser:
@@ -3323,7 +3299,7 @@ def automation_profile(linkedin_url):
         if not page.is_logged_in():
             console.print("[yellow]Not logged in. Run: linkedin-cli automation login[/yellow]")
             raise SystemExit(1)
-        contact = scrape_and_import_profile(page, linkedin_url, _contact_repo)
+        contact = scrape_and_import_profile(page, linkedin_url, _app.contact_repo)
 
     if not contact:
         console.print("[red]Could not scrape profile. Check URL and login status.[/red]")
@@ -3346,7 +3322,7 @@ def analytics():
 @analytics.command("summary")
 def analytics_summary():
     """Show analytics summary with key metrics."""
-    data = _analytics_svc.get_summary()
+    data = _app.analytics_svc.get_summary()
 
     console.print(Panel("[bold]Analytics Summary[/bold]", style="blue"))
     console.print(f"  Total contacts: {data['total_contacts']}")
@@ -3374,7 +3350,7 @@ def analytics_summary():
 @analytics.command("conversion")
 def analytics_conversion():
     """Show pipeline conversion funnel."""
-    funnel = _analytics_svc.get_conversion_funnel()
+    funnel = _app.analytics_svc.get_conversion_funnel()
     if not funnel:
         console.print("[yellow]No contacts yet. Add contacts to see conversion data.[/yellow]")
         return
@@ -3390,7 +3366,7 @@ def analytics_conversion():
 @click.option("--weeks", default=8, help="Number of weeks to show")
 def analytics_velocity(weeks):
     """Show outreach velocity over time."""
-    data = _analytics_svc.get_velocity(weeks)
+    data = _app.analytics_svc.get_velocity(weeks)
 
     console.print(Panel("[bold]Outreach Velocity[/bold]", style="blue"))
     max_count = max((d["contacts"] for d in data), default=1) or 1
@@ -3417,7 +3393,7 @@ def market():
 def market_analyze(role, industry):
     """Get AI market analysis for a role/industry."""
     console.print("\n[bold]Analyzing market...[/bold]\n")
-    error, result = _market_svc.analyze_market(role, industry)
+    error, result = _app.market_svc.analyze_market(role, industry)
     if error:
         console.print(f"[red]{error}[/red]")
     else:
@@ -3430,7 +3406,7 @@ def market_analyze(role, industry):
 def market_salary(role, location):
     """Get AI salary estimates for a role."""
     console.print("\n[bold]Estimating salary...[/bold]\n")
-    error, result = _market_svc.estimate_salary(role, location)
+    error, result = _app.market_svc.estimate_salary(role, location)
     if error:
         console.print(f"[red]{error}[/red]")
     else:
@@ -3442,7 +3418,7 @@ def market_salary(role, location):
 def market_trends(industry):
     """Get AI hiring trend analysis."""
     console.print("\n[bold]Analyzing trends...[/bold]\n")
-    error, result = _market_svc.analyze_trends(industry)
+    error, result = _app.market_svc.analyze_trends(industry)
     if error:
         console.print(f"[red]{error}[/red]")
     else:
@@ -3461,7 +3437,7 @@ def market_trends(industry):
 @click.option("--notes", default="", help="Additional notes")
 def market_add_posting(title, company, location, skills, url, source, salary_min, salary_max, notes):
     """Add a job posting to track and score."""
-    posting = _market_svc.add_posting({
+    posting = _app.market_svc.add_posting({
         "title": title,
         "company": company,
         "location": location,
@@ -3481,7 +3457,7 @@ def market_add_posting(title, company, location, skills, url, source, salary_min
 def market_import_postings(file_path, merge):
     """Import job postings from CSV or JSON."""
     try:
-        imported, skipped = _market_svc.import_postings(file_path, merge=merge)
+        imported, skipped = _app.market_svc.import_postings(file_path, merge=merge)
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         return
@@ -3496,7 +3472,7 @@ def market_import_postings(file_path, merge):
 @click.option("--min-score", type=int, default=0, help="Minimum profile-match score (0-100)")
 def market_postings(limit, min_score):
     """List tracked postings ranked by profile match."""
-    postings = _market_svc.list_postings(limit=limit, min_score=min_score)
+    postings = _app.market_svc.list_postings(limit=limit, min_score=min_score)
     if not postings:
         console.print("[yellow]No postings found. Add one with: linkedin-cli market add-posting[/yellow]")
         return
@@ -3539,7 +3515,7 @@ def optimize():
 def optimize_headline():
     """Generate optimized headline variants."""
     console.print("\n[bold]Generating headline options...[/bold]\n")
-    error, result = _optimizer_svc.optimize_headline()
+    error, result = _app.optimizer_svc.optimize_headline()
     if error:
         console.print(f"[red]{error}[/red]")
     else:
@@ -3550,7 +3526,7 @@ def optimize_headline():
 def optimize_about():
     """Generate optimized About section."""
     console.print("\n[bold]Generating About section...[/bold]\n")
-    error, result = _optimizer_svc.optimize_about()
+    error, result = _app.optimizer_svc.optimize_about()
     if error:
         console.print(f"[red]{error}[/red]")
     else:
@@ -3561,7 +3537,7 @@ def optimize_about():
 def optimize_skills():
     """Analyze and optimize skills."""
     console.print("\n[bold]Analyzing skills...[/bold]\n")
-    error, result = _optimizer_svc.optimize_skills()
+    error, result = _app.optimizer_svc.optimize_skills()
     if error:
         console.print(f"[red]{error}[/red]")
     else:
@@ -3572,7 +3548,7 @@ def optimize_skills():
 def optimize_full():
     """Full profile optimization review."""
     console.print("\n[bold]Running full optimization review...[/bold]\n")
-    error, result = _optimizer_svc.optimize_full()
+    error, result = _app.optimizer_svc.optimize_full()
     if error:
         console.print(f"[red]{error}[/red]")
     else:
@@ -3593,7 +3569,7 @@ def templates():
 @templates.command("list")
 def templates_list():
     """List all saved templates."""
-    all_templates = _template_svc.list_templates()
+    all_templates = _app.template_svc.list_templates()
     if not all_templates:
         console.print("[yellow]No templates saved yet. Use 'linkedin-cli templates save' to create one.[/yellow]")
         return
@@ -3626,7 +3602,7 @@ def templates_list():
 @click.option("--variant", default="A", help="A/B variant (A or B)")
 def templates_save(name, template_type, content, variant):
     """Save a new message template."""
-    template = _template_svc.save_template(name, template_type, content, variant)
+    template = _app.template_svc.save_template(name, template_type, content, variant)
     console.print(f"[green]Template '{template['name']}' saved (ID: {template['id']}, variant {variant})[/green]")
 
 
@@ -3635,7 +3611,7 @@ def templates_save(name, template_type, content, variant):
 @click.argument("contact_id", type=int)
 def templates_use(template_id, contact_id):
     """Apply a template for a specific contact."""
-    rendered = _template_svc.use_template(template_id, contact_id)
+    rendered = _app.template_svc.use_template(template_id, contact_id)
     if not rendered:
         console.print("[red]Template or contact not found.[/red]")
         return
@@ -3645,7 +3621,7 @@ def templates_use(template_id, contact_id):
 @templates.command("ab-results")
 def templates_ab_results():
     """Show A/B test results."""
-    results = _template_svc.get_ab_results()
+    results = _app.template_svc.get_ab_results()
     if not results:
         console.print("[yellow]No A/B tests found. Create templates with the same name but different variants.[/yellow]")
         return
@@ -3666,11 +3642,11 @@ def templates_record_response(template_id, count):
         console.print("[red]Count must be at least 1.[/red]")
         return
 
-    if not _template_svc.record_response(template_id, count):
+    if not _app.template_svc.record_response(template_id, count):
         console.print(f"[red]Template #{template_id} not found.[/red]")
         return
 
-    template = _template_svc.get_template(template_id)
+    template = _app.template_svc.get_template(template_id)
     console.print(
         f"[green]✓ Recorded {count} response(s) for '{template['name']}' "
         f"(total: {template.get('response_count', 0)})[/green]"
@@ -3681,7 +3657,7 @@ def templates_record_response(template_id, count):
 @click.option("--type", "template_type", required=True, help="Template type (connection, message, follow_up)")
 def templates_suggest_best(template_type):
     """Suggest the best-performing template for a type."""
-    best = _template_svc.suggest_best(template_type)
+    best = _app.template_svc.suggest_best(template_type)
     if not best:
         console.print(
             f"[yellow]No used templates found for type '{template_type}'. "
@@ -3699,7 +3675,7 @@ def templates_suggest_best(template_type):
 @templates.command("dashboard")
 def templates_dashboard():
     """Show template experiment metrics by type and overall."""
-    all_templates = _template_svc.list_templates()
+    all_templates = _app.template_svc.list_templates()
     if not all_templates:
         console.print("[yellow]No templates saved yet.[/yellow]")
         return
@@ -3781,7 +3757,7 @@ def applications():
 @click.option("--notes", "-n", default="", help="Notes")
 def applications_add(company, title, url, jd, notes):
     """Add a new job application."""
-    app = _application_svc.add_application(company, title, url=url, jd_text=jd, notes=notes)
+    app = _app.application_svc.add_application(company, title, url=url, jd_text=jd, notes=notes)
     console.print(f"[green]Added application #{app['id']}:[/green] {title} at {company}")
 
 
@@ -3790,7 +3766,7 @@ def applications_add(company, title, url, jd, notes):
 @click.option("--company", default="", help="Filter by company name")
 def applications_list(status, company):
     """List job applications."""
-    apps = _application_svc.list_applications(status=status, company=company)
+    apps = _app.application_svc.list_applications(status=status, company=company)
     if not apps:
         console.print("[dim]No applications found.[/dim]")
         return
@@ -3815,7 +3791,7 @@ def applications_list(status, company):
 @click.argument("application_id", type=int)
 def applications_view(application_id):
     """View application details and history."""
-    app = _application_svc.get_application(application_id)
+    app = _app.application_svc.get_application(application_id)
     if not app:
         console.print(f"[red]Application #{application_id} not found.[/red]")
         raise SystemExit(1)
@@ -3846,7 +3822,7 @@ def applications_view(application_id):
 @click.option("--notes", "-n", default="", help="Notes for this stage")
 def applications_advance(application_id, status, notes):
     """Advance application to next status."""
-    error, app = _application_svc.advance(application_id, status, notes=notes)
+    error, app = _app.application_svc.advance(application_id, status, notes=notes)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3866,7 +3842,7 @@ def applications_tailor_resume(application_id, resume_file):
         except OSError as e:
             console.print(f"[red]Cannot read file: {e}[/red]")
             raise SystemExit(1)
-    error, result = _application_svc.tailor_resume(application_id, resume_override=resume_text)
+    error, result = _app.application_svc.tailor_resume(application_id, resume_override=resume_text)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3877,7 +3853,7 @@ def applications_tailor_resume(application_id, resume_file):
 @click.argument("application_id", type=int)
 def applications_cover_letter(application_id):
     """AI-generate a cover letter for this application."""
-    error, result = _application_svc.cover_letter(application_id)
+    error, result = _app.application_svc.cover_letter(application_id)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3888,7 +3864,7 @@ def applications_cover_letter(application_id):
 @click.argument("application_id", type=int)
 def applications_skills_gap(application_id):
     """AI skills gap analysis vs the job description."""
-    error, result = _application_svc.skills_gap(application_id)
+    error, result = _app.application_svc.skills_gap(application_id)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3898,7 +3874,7 @@ def applications_skills_gap(application_id):
 @applications.command("stats")
 def applications_stats():
     """Application funnel statistics."""
-    stats = _application_svc.get_stats()
+    stats = _app.application_svc.get_stats()
     console.print(f"\n[bold]Application Stats[/bold]  (total: {stats['total']})\n")
     for status, count in sorted(stats["by_status"].items()):
         console.print(f"  {status:<20} {count}")
@@ -3909,7 +3885,7 @@ def applications_stats():
 @click.confirmation_option(prompt="Delete this application?")
 def applications_delete(application_id):
     """Delete an application."""
-    if not _application_svc.delete(application_id):
+    if not _app.application_svc.delete(application_id):
         console.print(f"[red]Application #{application_id} not found.[/red]")
         raise SystemExit(1)
     console.print(f"[green]Deleted application #{application_id}.[/green]")
@@ -3929,7 +3905,7 @@ def interview():
 @click.argument("application_id", type=int)
 def interview_prep_cmd(application_id):
     """Generate interview questions and model STAR answers (saved for later)."""
-    error, result = _interview_svc.prep(application_id)
+    error, result = _app.interview_svc.prep(application_id)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3940,7 +3916,7 @@ def interview_prep_cmd(application_id):
 @click.argument("application_id", type=int)
 def interview_research(application_id):
     """Generate company research briefing for the interview."""
-    error, result = _interview_svc.research(application_id)
+    error, result = _app.interview_svc.research(application_id)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3951,7 +3927,7 @@ def interview_research(application_id):
 @click.argument("application_id", type=int)
 def interview_star(application_id):
     """Generate STAR method answer scaffolds for top behavioral questions."""
-    error, result = _interview_svc.star(application_id)
+    error, result = _app.interview_svc.star(application_id)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3962,7 +3938,7 @@ def interview_star(application_id):
 @click.argument("application_id", type=int)
 def interview_questions(application_id):
     """Generate smart questions to ask the interviewer."""
-    error, result = _interview_svc.questions_to_ask(application_id)
+    error, result = _app.interview_svc.questions_to_ask(application_id)
     if error:
         console.print(f"[red]{error}[/red]")
         raise SystemExit(1)
@@ -3973,7 +3949,7 @@ def interview_questions(application_id):
 @click.argument("application_id", type=int)
 def interview_view(application_id):
     """Show all saved prep for an application."""
-    prep = _interview_svc.get_prep(application_id)
+    prep = _app.interview_svc.get_prep(application_id)
     if not prep:
         console.print("[dim]No prep saved yet. Run `interview prep <id>` first.[/dim]")
         return
@@ -4005,7 +3981,7 @@ def conversations():
 def conversations_log(contact_id, sender, text, timestamp):
     """Log a message in a contact's conversation thread."""
     try:
-        _conversation_svc.log(contact_id, sender=sender, text=text, timestamp=timestamp)
+        _app.conversation_svc.log(contact_id, sender=sender, text=text, timestamp=timestamp)
         console.print(f"[green]Logged message from {sender}.[/green]")
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
@@ -4016,7 +3992,7 @@ def conversations_log(contact_id, sender, text, timestamp):
 @click.argument("contact_id", type=int)
 def conversations_view(contact_id):
     """View conversation thread with a contact."""
-    thread = _conversation_svc.get_thread(contact_id)
+    thread = _app.conversation_svc.get_thread(contact_id)
     if not thread:
         console.print("[dim]No messages logged yet. Use `conversations log` to add messages.[/dim]")
         return
@@ -4031,7 +4007,7 @@ def conversations_view(contact_id):
 @click.argument("contact_id", type=int)
 def conversations_export(contact_id):
     """Export conversation thread as plain text."""
-    text = _conversation_svc.export(contact_id)
+    text = _app.conversation_svc.export(contact_id)
     if not text:
         console.print("[dim]No messages logged.[/dim]")
         return
@@ -4055,7 +4031,7 @@ def calendar():
 @click.option("--platform", default="linkedin", help="Platform (default: linkedin)")
 def calendar_add(title, date, draft_id, platform):
     """Add a post to the content calendar."""
-    post = _calendar_svc.add(title=title, scheduled_date=date, draft_id=draft_id, platform=platform)
+    post = _app.calendar_svc.add(title=title, scheduled_date=date, draft_id=draft_id, platform=platform)
     console.print(f"[green]Scheduled post #{post['id']}:[/green] {title} on {date}")
 
 
@@ -4065,11 +4041,11 @@ def calendar_add(title, date, draft_id, platform):
 def calendar_list(week, month):
     """List content calendar."""
     if week:
-        posts = _calendar_svc.list_upcoming(days=7)
+        posts = _app.calendar_svc.list_upcoming(days=7)
     elif month:
-        posts = _calendar_svc.list_upcoming(days=30)
+        posts = _app.calendar_svc.list_upcoming(days=30)
     else:
-        posts = _calendar_svc.list_all()
+        posts = _app.calendar_svc.list_all()
     if not posts:
         console.print("[dim]No posts scheduled.[/dim]")
         return
@@ -4095,7 +4071,7 @@ def calendar_list(week, month):
 @click.option("--date", default="", help="Actual posted date (YYYY-MM-DD, defaults to today)")
 def calendar_mark_posted(post_id, date):
     """Mark a scheduled post as posted."""
-    post = _calendar_svc.mark_posted(post_id, posted_date=date)
+    post = _app.calendar_svc.mark_posted(post_id, posted_date=date)
     if not post:
         console.print(f"[red]Post #{post_id} not found.[/red]")
         raise SystemExit(1)
@@ -4105,7 +4081,7 @@ def calendar_mark_posted(post_id, date):
 @calendar.command("stats")
 def calendar_stats():
     """Content calendar statistics."""
-    stats = _calendar_svc.get_stats()
+    stats = _app.calendar_svc.get_stats()
     console.print("\n[bold]Content Calendar Stats[/bold]")
     console.print(f"  Total:     {stats['total']}")
     console.print(f"  Scheduled: {stats['scheduled']}")
@@ -4123,7 +4099,7 @@ def calendar_stats():
 @click.option("--resume-repo", default="", help="Path to resume repo checkout (or set LINKEDIN_RESUME_REPO)")
 def applications_suggest_resume(application_id, resume_repo):
     """Rank resume variants from the resume repo against this job's description."""
-    app = _application_svc.get_application(application_id)
+    app = _app.application_svc.get_application(application_id)
     if not app:
         console.print(f"[red]Application #{application_id} not found.[/red]")
         raise SystemExit(1)
@@ -4154,7 +4130,7 @@ def applications_suggest_resume(application_id, resume_repo):
 @click.option("--resume-repo", default="", help="Path to resume repo checkout (or set LINKEDIN_RESUME_REPO)")
 def applications_attach_resume(application_id, variant, resume_repo):
     """Attach a resume variant (and its built PDFs) from the resume repo to this application."""
-    app = _application_svc.get_application(application_id)
+    app = _app.application_svc.get_application(application_id)
     if not app:
         console.print(f"[red]Application #{application_id} not found.[/red]")
         raise SystemExit(1)
@@ -4176,7 +4152,7 @@ def applications_attach_resume(application_id, variant, resume_repo):
         raise SystemExit(1)
     if not resume_pdf:
         console.print(f"[yellow]No built PDF for '{variant}' (run ./build.sh in the resume repo). Recording variant only.[/yellow]")
-    error, _ = _application_svc.attach_resume(
+    error, _ = _app.application_svc.attach_resume(
         application_id,
         variant,
         resume_path=str(resume_pdf) if resume_pdf else "",
@@ -4202,7 +4178,7 @@ def applications_import_autoapply(resume_repo, include_queued):
     except ResumeRepoError as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1)
-    added, skipped = merge_into_applications(entries, _application_repo)
+    added, skipped = merge_into_applications(entries, _app.application_repo)
     console.print(f"[green]Imported {len(added)} application(s)[/green] ({skipped} already tracked).")
     for app in added:
         console.print(f"  #{app['id']} {app['title']} at {app['company']} [{app['status']}]")
@@ -4212,7 +4188,6 @@ def applications_import_autoapply(resume_repo, include_queued):
 # Browser automation (automate group) — requires `uv sync --extra automation`
 # ---------------------------------------------------------------------------
 
-_SESSION_FILE = json_store.DATA_DIR / "li_session.json"
 
 
 def _require_automation():
@@ -4267,7 +4242,7 @@ def _open_linkedin_session(auto, headless: bool):
     Exits with guidance when login cannot be established. Caller must close
     the returned browser manager.
     """
-    config = auto["AutomationConfig"](headless=headless, cookies_path=str(_SESSION_FILE))
+    config = auto["AutomationConfig"](headless=headless, cookies_path=str(_app.data_dir.li_session))
     browser = auto["BrowserManager"](config)
     page = browser.start()
     linkedin_page = auto["LinkedInPage"](page)
@@ -4315,7 +4290,7 @@ def _close_linkedin_session(browser, linkedin_page) -> None:
 
 def _safety_and_limiter(auto, dry_run: bool):
     """Persistent daily limits for real runs; in-memory ones for dry runs."""
-    safety = auto["SafetyLimits"]() if dry_run else auto["PersistentSafetyLimits"]()
+    safety = auto["SafetyLimits"]() if dry_run else auto["PersistentSafetyLimits"](usage_file=_app.data_dir.automation_usage)
     return safety, auto["RateLimiter"]()
 
 
@@ -4346,7 +4321,7 @@ def automate_login(headless):
     auto = _require_automation()
     browser, _ = _open_linkedin_session(auto, headless=headless)
     browser.close()
-    console.print(f"[green]Logged in. Session saved to {_SESSION_FILE}.[/green]")
+    console.print(f"[green]Logged in. Session saved to {_app.data_dir.li_session}.[/green]")
 
 
 @automate.command("limits")
@@ -4354,7 +4329,7 @@ def automate_limits():
     """Show today's automation usage vs daily safety limits."""
     from linkedin.automation.safety import PersistentSafetyLimits
 
-    summary = PersistentSafetyLimits().summary()
+    summary = PersistentSafetyLimits(usage_file=_app.data_dir.automation_usage).summary()
     table = Table(title="Today's automation usage")
     table.add_column("Action")
     table.add_column("Used", justify="right")
@@ -4408,7 +4383,7 @@ def automate_import_search(query, limit, headless):
         results = auto["scrape"].search_and_collect(linkedin_page, query, limit=limit, rate_limiter=limiter, safety=safety)
     finally:
         _close_linkedin_session(browser, linkedin_page)
-    added, skipped = auto["scrape"].import_search_results(results, _contact_repo)
+    added, skipped = auto["scrape"].import_search_results(results, _app.contact_repo)
     console.print(f"[green]Imported {len(added)} contact(s)[/green] ({len(skipped)} already in CRM).")
     for c in added:
         console.print(f"  #{c['id']} {c['name']} — {c.get('title', '')}")
@@ -4423,7 +4398,7 @@ def automate_profile(url, headless):
     browser, linkedin_page = _open_linkedin_session(auto, headless=headless)
     try:
         _, limiter = _safety_and_limiter(auto, dry_run=False)
-        contact = auto["scrape"].scrape_and_import_profile(linkedin_page, url, _contact_repo, rate_limiter=limiter)
+        contact = auto["scrape"].scrape_and_import_profile(linkedin_page, url, _app.contact_repo, rate_limiter=limiter)
     finally:
         _close_linkedin_session(browser, linkedin_page)
     if not contact:
@@ -4440,7 +4415,7 @@ def automate_profile(url, headless):
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def automate_connect(contact_id, note, draft_id, dry_run, headless):
     """Send a connection request to a CRM contact (uses their linkedin_url)."""
-    contact = _contact_repo.get(contact_id)
+    contact = _app.contact_repo.get(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found.[/red]")
         raise SystemExit(1)
@@ -4448,7 +4423,7 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
         console.print(f"[red]Contact #{contact_id} has no linkedin_url. Set one with: contacts update {contact_id} --linkedin-url …[/red]")
         raise SystemExit(1)
     if draft_id is not None:
-        draft = _draft_repo.get(draft_id)
+        draft = _app.draft_repo.get(draft_id)
         if not draft:
             console.print(f"[red]Draft #{draft_id} not found.[/red]")
             raise SystemExit(1)
@@ -4475,7 +4450,7 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
     if not success:
         console.print("[red]Could not send the connection request (no Connect button, or already connected/pending).[/red]")
         raise SystemExit(1)
-    _contact_svc.update_contact(contact_id, status="connection_sent")
+    _app.contact_svc.update_contact(contact_id, status="connection_sent")
     console.print(f"[green]Connection request sent to {contact['name']}.[/green] Status → connection_sent")
 
 
@@ -4487,7 +4462,7 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def automate_message(contact_id, text, draft_id, dry_run, headless):
     """Send a LinkedIn message to a connected CRM contact."""
-    contact = _contact_repo.get(contact_id)
+    contact = _app.contact_repo.get(contact_id)
     if not contact:
         console.print(f"[red]Contact #{contact_id} not found.[/red]")
         raise SystemExit(1)
@@ -4495,7 +4470,7 @@ def automate_message(contact_id, text, draft_id, dry_run, headless):
         console.print(f"[red]Contact #{contact_id} has no linkedin_url.[/red]")
         raise SystemExit(1)
     if draft_id is not None:
-        draft = _draft_repo.get(draft_id)
+        draft = _app.draft_repo.get(draft_id)
         if not draft:
             console.print(f"[red]Draft #{draft_id} not found.[/red]")
             raise SystemExit(1)
@@ -4530,7 +4505,7 @@ def automate_message(contact_id, text, draft_id, dry_run, headless):
     if not success:
         console.print("[red]Could not send the message (not connected, or dialog not found).[/red]")
         raise SystemExit(1)
-    _contact_svc.update_contact(contact_id, status="messaged")
+    _app.contact_svc.update_contact(contact_id, status="messaged")
     console.print(f"[green]Message sent to {contact['name']}.[/green] Status → messaged")
 
 
@@ -4544,7 +4519,7 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
     """Publish a post to your LinkedIn feed (from text, a draft, or the content calendar)."""
     calendar_entry = None
     if calendar_id is not None:
-        calendar_entry = _calendar_repo.get(calendar_id)
+        calendar_entry = _app.calendar_repo.get(calendar_id)
         if not calendar_entry:
             console.print(f"[red]Calendar entry #{calendar_id} not found.[/red]")
             raise SystemExit(1)
@@ -4554,7 +4529,7 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
             console.print(f"[red]Calendar entry #{calendar_id} has no linked draft — pass --text as well.[/red]")
             raise SystemExit(1)
     if draft_id is not None:
-        draft = _draft_repo.get(draft_id)
+        draft = _app.draft_repo.get(draft_id)
         if not draft:
             console.print(f"[red]Draft #{draft_id} not found.[/red]")
             raise SystemExit(1)
@@ -4591,7 +4566,7 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
         raise SystemExit(1)
     console.print("[green]Post published.[/green]")
     if calendar_entry is not None:
-        _calendar_svc.mark_posted(calendar_id)
+        _app.calendar_svc.mark_posted(calendar_id)
         console.print(f"Calendar entry #{calendar_id} marked posted.")
 
 
@@ -4636,7 +4611,7 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
         console.print("[yellow]--yes: AI comments will be published unreviewed under your name.[/yellow]")
     targets = []
     for cid in contact_ids:
-        contact = _contact_repo.get(cid)
+        contact = _app.contact_repo.get(cid)
         if not contact:
             console.print(f"[red]Contact #{cid} not found.[/red]")
             raise SystemExit(1)
@@ -4657,7 +4632,7 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
             total += liked
             console.print(f"  {contact['name']}: {'would like' if dry_run else 'liked'} {liked} post(s)")
         if feed and comments:
-            results = _automation_svc.engage_feed(
+            results = _app.automation_svc.engage_feed(
                 linkedin_page,
                 limit=max(likes, comments),
                 comment_count=comments,
@@ -4696,7 +4671,7 @@ def automate_engage(contact_ids, feed, likes, comments, dry_run, yes, headless):
 def automate_sync_profile(headline, headline_from_profile, about, about_file, dry_run, headless):
     """Push your headline/About to LinkedIn (pairs with `optimizer` output)."""
     if headline_from_profile:
-        profile = _profile_repo.get()
+        profile = _app.profile_repo.get()
         if not profile or not profile.get("headline"):
             console.print("[red]No local profile headline found. Run: linkedin-cli profile setup[/red]")
             raise SystemExit(1)
@@ -4740,7 +4715,7 @@ def automate_sync_profile(headline, headline_from_profile, about, about_file, dr
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
 def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
     """Run LinkedIn Easy Apply for a tracked application, using its attached resume PDF."""
-    app = _application_svc.get_application(application_id)
+    app = _app.application_svc.get_application(application_id)
     if not app:
         console.print(f"[red]Application #{application_id} not found.[/red]")
         raise SystemExit(1)
@@ -4804,7 +4779,7 @@ def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
     status = result.get("status", "error")
     detail = result.get("detail", "")
     if status == "submitted":
-        _application_svc.advance(application_id, "applied", notes="Submitted via LinkedIn Easy Apply")
+        _app.application_svc.advance(application_id, "applied", notes="Submitted via LinkedIn Easy Apply")
         console.print(f"[green]Submitted![/green] Application #{application_id} → applied")
     elif status == "ready_to_submit":
         console.print(f"[yellow]{detail}[/yellow]")
@@ -4856,7 +4831,7 @@ def automate_jobs(query, location, limit, headless, dry_run):
         console.print(f"[yellow]Dry run — {len(results)} posting(s) not imported.[/yellow]")
         return
 
-    added, skipped = auto["jobs"].import_job_results(results, _market_svc)
+    added, skipped = auto["jobs"].import_job_results(results, _app.market_svc)
     console.print(f"[green]Imported {len(added)} posting(s)[/green]" + (f", skipped {skipped} duplicate(s)" if skipped else ""))
 
 
@@ -4892,8 +4867,8 @@ def inbox_sync(limit, headless):
             "[dim]An empty list would mean 'every invitation was accepted', so it is not assumed.[/dim]"
         )
 
-    proposals = _inbox_svc.propose_transitions(
-        signals["threads"], pending, _contact_repo.list_all()
+    proposals = _app.inbox_svc.propose_transitions(
+        signals["threads"], pending, _app.contact_repo.list_all()
     )
     save_inbox_proposals(proposals)
 
@@ -4931,7 +4906,7 @@ def inbox_review(yes):
     applied, skipped, remaining = 0, 0, []
     for proposal in proposals:
         contact_id = proposal.get("contact_id")
-        contact = _contact_repo.get(contact_id) if contact_id else None
+        contact = _app.contact_repo.get(contact_id) if contact_id else None
         if not contact:
             console.print(f"[yellow]Contact #{contact_id} no longer exists — dropping.[/yellow]")
             continue
@@ -4957,7 +4932,7 @@ def inbox_review(yes):
             confirmed = click.confirm("  Apply?", default=not low)
 
         if confirmed:
-            _contact_svc.update_contact(contact_id, status=proposal["to_status"])
+            _app.contact_svc.update_contact(contact_id, status=proposal["to_status"])
             applied += 1
         else:
             skipped += 1

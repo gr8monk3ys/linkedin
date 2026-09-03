@@ -25,8 +25,13 @@ MAX_SESSION_MINUTES = 30
 MIN_DELAY_SECONDS = 3.0
 MAX_DELAY_SECONDS = 8.0
 
-# Persisted usage counters, keyed by ISO date (monkeypatched in tests)
-USAGE_FILE = Path.home() / ".linkedin-cli" / "automation_usage.json"
+
+
+def default_usage_file() -> Path:
+    """Where daily counters live when no path is given: the data dir's usage file."""
+    from linkedin.data.paths import DataDir
+
+    return DataDir.from_env().automation_usage
 
 
 @dataclass
@@ -159,7 +164,7 @@ class PersistentSafetyLimits(SafetyLimits):
 
     def __init__(self, usage_file: Path | None = None):
         super().__init__()
-        self.usage_file = usage_file or USAGE_FILE
+        self.usage_file = usage_file or default_usage_file()
         self._today = date.today().isoformat()
         self._load()
 

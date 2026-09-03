@@ -4,7 +4,6 @@ import sqlite3
 
 import pytest
 
-import linkedin.data.json_store as js
 from linkedin.data.json_store import JsonApplicationRepo
 from linkedin.services.resume_service import (
     ResumeRepoError,
@@ -43,9 +42,7 @@ def resume_repo(tmp_path):
 
 @pytest.fixture
 def application_repo(tmp_path, monkeypatch):
-    monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(js, "APPLICATIONS_FILE", tmp_path / "applications.json")
-    return JsonApplicationRepo()
+    return JsonApplicationRepo(tmp_path / "applications.json")
 
 
 def _seed_autoapply_db(root, rows):

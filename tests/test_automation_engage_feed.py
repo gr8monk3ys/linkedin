@@ -154,14 +154,6 @@ class TestEngageFeed:
 
 
 class TestEngageCliCommentsFlag:
-    @pytest.fixture(autouse=True)
-    def patch_paths(self, tmp_path, monkeypatch):
-        import linkedin.data.json_store as js
-
-        monkeypatch.setattr(js, "DATA_DIR", tmp_path)
-        monkeypatch.setattr(js, "CONTACTS_FILE", tmp_path / "contacts.json")
-        monkeypatch.setattr(js, "PROFILE_FILE", tmp_path / "profile.json")
-
     def test_comments_requires_feed(self):
         from click.testing import CliRunner
 
@@ -182,13 +174,13 @@ class TestEngageCliCommentsFlag:
         namespace = {
             "RateLimiter": RateLimiter,
             "SafetyLimits": SafetyLimits,
-            "PersistentSafetyLimits": SafetyLimits,
+            "PersistentSafetyLimits": lambda usage_file=None: SafetyLimits(),
             "engage": MagicMock(),
         }
         monkeypatch.setattr(cli_mod, "_require_automation", lambda: namespace)
         monkeypatch.setattr(cli_mod, "_open_linkedin_session", lambda auto, headless: (fake_browser, fake_page))
         monkeypatch.setattr(
-            cli_mod._automation_svc,
+            cli_mod._app.automation_svc,
             "engage_feed",
             MagicMock(
                 return_value=[
@@ -337,12 +329,12 @@ class TestEngageCliApproval:
         namespace = {
             "RateLimiter": RateLimiter,
             "SafetyLimits": SafetyLimits,
-            "PersistentSafetyLimits": SafetyLimits,
+            "PersistentSafetyLimits": lambda usage_file=None: SafetyLimits(),
             "engage": MagicMock(),
         }
         monkeypatch.setattr(cli_mod, "_require_automation", lambda: namespace)
         monkeypatch.setattr(cli_mod, "_open_linkedin_session", lambda auto, headless: (fake_browser, fake_page))
-        monkeypatch.setattr(cli_mod._automation_svc, "engage_feed", engage_feed_mock)
+        monkeypatch.setattr(cli_mod._app.automation_svc, "engage_feed", engage_feed_mock)
         return CliRunner().invoke(cli, argv, input=cli_input)
 
     def test_review_hook_is_passed_by_default(self, monkeypatch):

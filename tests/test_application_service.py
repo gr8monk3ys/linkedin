@@ -106,7 +106,7 @@ def test_tailor_resume_with_ai(svc, app_repos, monkeypatch):
     svc.add_application("Acme", "ML Engineer", jd_text="Need Python, MLOps")
     app_id = svc.list_applications()[0]["id"]
     monkeypatch.setattr(
-        "linkedin.services.application_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=800: "• Built ML pipelines\n• Deployed models with MLOps",
     )
     error, result = svc.tailor_resume(app_id)
@@ -120,7 +120,7 @@ def test_cover_letter_with_ai(svc, app_repos, monkeypatch):
     svc.add_application("Acme", "ML Engineer", jd_text="Python ML engineer")
     app_id = svc.list_applications()[0]["id"]
     monkeypatch.setattr(
-        "linkedin.services.application_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=800: "Dear Hiring Manager, I am excited...",
     )
     error, result = svc.cover_letter(app_id)
@@ -134,7 +134,7 @@ def test_skills_gap_with_ai(svc, app_repos, monkeypatch):
     svc.add_application("Acme", "ML Engineer", jd_text="Python, Kubernetes, MLOps")
     app_id = svc.list_applications()[0]["id"]
     monkeypatch.setattr(
-        "linkedin.services.application_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=600: "You have: Python, ML\nMissing: Kubernetes, MLOps",
     )
     error, result = svc.skills_gap(app_id)
@@ -148,7 +148,7 @@ def test_tailor_resume_ai_error(svc, app_repos, monkeypatch):
     profile_repo.save(sample_profile())
     svc.add_application("Acme", "ML Engineer", jd_text="Python required")
     app_id = svc.list_applications()[0]["id"]
-    monkeypatch.setattr("linkedin.services.application_service.generate_with_ai", _raise_ai_error)
+    monkeypatch.setattr("linkedin.ai.client.generate_with_ai", _raise_ai_error)
     error, result = svc.tailor_resume(app_id)
     assert error is not None
     assert result == ""
@@ -160,7 +160,7 @@ def test_cover_letter_ai_error(svc, app_repos, monkeypatch):
     profile_repo.save(sample_profile())
     svc.add_application("Acme", "ML Engineer")
     app_id = svc.list_applications()[0]["id"]
-    monkeypatch.setattr("linkedin.services.application_service.generate_with_ai", _raise_ai_error)
+    monkeypatch.setattr("linkedin.ai.client.generate_with_ai", _raise_ai_error)
     error, result = svc.cover_letter(app_id)
     assert error is not None
     assert result == ""
@@ -172,7 +172,7 @@ def test_skills_gap_ai_error(svc, app_repos, monkeypatch):
     profile_repo.save(sample_profile())
     svc.add_application("Acme", "ML Engineer", jd_text="Python required")
     app_id = svc.list_applications()[0]["id"]
-    monkeypatch.setattr("linkedin.services.application_service.generate_with_ai", _raise_ai_error)
+    monkeypatch.setattr("linkedin.ai.client.generate_with_ai", _raise_ai_error)
     error, result = svc.skills_gap(app_id)
     assert error is not None
     assert result == ""
@@ -183,7 +183,7 @@ def test_tailor_resume_with_resume_override(svc, monkeypatch):
     svc.add_application("Acme", "ML Engineer", jd_text="Python required")
     app_id = svc.list_applications()[0]["id"]
     monkeypatch.setattr(
-        "linkedin.services.application_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=800: "• Optimized data pipelines",
     )
     error, result = svc.tailor_resume(app_id, resume_override="Led ML team for 3 years.")

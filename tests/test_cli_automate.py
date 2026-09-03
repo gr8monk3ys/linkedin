@@ -124,7 +124,7 @@ def test_automate_connect_dry_run_keeps_status(runner, fake_automation):
 
 def test_automate_message_uses_draft(runner, fake_automation, tmp_path):
     _add_contact(runner)
-    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hello from draft", "type": "message"}])
+    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hello from draft", "type": "message", "source": "ai"}])
     fake_automation.namespace["message"].send_message.return_value = True
     result = runner.invoke(cli, ["automate", "message", "1", "--draft-id", "1"])
     assert result.exit_code == 0, result.output
@@ -140,7 +140,7 @@ def test_automate_message_requires_text(runner, fake_automation):
 
 
 def test_automate_post_from_calendar_marks_posted(runner, fake_automation):
-    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "My scheduled post", "type": "post"}])
+    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "My scheduled post", "type": "post", "source": "ai"}])
     result = runner.invoke(cli, ["calendar", "add", "--title", "Post", "--date", "2026-03-01", "--draft-id", "1"])
     assert result.exit_code == 0, result.output
     fake_automation.namespace["post"].publish_post.return_value = (True, "posted")
@@ -149,6 +149,32 @@ def test_automate_post_from_calendar_marks_posted(runner, fake_automation):
     assert "published" in result.output
     listing = runner.invoke(cli, ["calendar", "list"])
     assert "posted" in listing.output
+
+
+def test_automate_post_refuses_template_draft(runner, fake_automation):
+    """A template is not a draft; it must never go out under the user's name."""
+    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hi there", "type": "post", "source": "template"}])
+    result = runner.invoke(cli, ["automate", "post", "--draft-id", "1"], input="y\n")
+    assert result.exit_code == 1
+    assert "offline template" in result.output
+    fake_automation.namespace["post"].publish_post.assert_not_called()
+
+
+def test_automate_post_refuses_draft_of_unknown_provenance(runner, fake_automation):
+    """Rows saved before provenance was recorded include the templates from 150 unattended runs."""
+    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hi there", "type": "post"}])
+    result = runner.invoke(cli, ["automate", "post", "--draft-id", "1"], input="y\n")
+    assert result.exit_code == 1
+    assert "unknown provenance" in result.output
+    fake_automation.namespace["post"].publish_post.assert_not_called()
+
+
+def test_automate_message_refuses_template_draft(runner, fake_automation):
+    _add_contact(runner)
+    js.save_json(js.DRAFTS_FILE, [{"id": 1, "content": "Hi there", "type": "message", "source": "template"}])
+    result = runner.invoke(cli, ["automate", "message", "1", "--draft-id", "1"])
+    assert result.exit_code == 1
+    fake_automation.namespace["message"].send_message.assert_not_called()
 
 
 def test_automate_post_requires_content(runner, fake_automation):

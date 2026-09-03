@@ -259,7 +259,7 @@ class TestDrafts:
         assert result.exit_code == 0
         assert "not found" in result.output
 
-    @patch("linkedin.services.draft_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_drafts_connection_generates(self, mock_ai, runner, temp_data_dir):
         """drafts connection should generate AI draft."""
         mock_ai.return_value = "Hi! I'd love to connect and discuss AI engineering."
@@ -301,7 +301,7 @@ class TestResearch:
         assert "LinkedIn Engagement Strategies" in result.output
         assert "Post Formats" in result.output
 
-    @patch("linkedin.services.research_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_research_ideas(self, mock_ai, runner, temp_data_dir):
         """research ideas should generate post ideas."""
         mock_ai.return_value = "1. Post idea one\n2. Post idea two"
@@ -310,7 +310,7 @@ class TestResearch:
         assert result.exit_code == 0
         assert "Post idea" in result.output
 
-    @patch("linkedin.services.research_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_research_hashtags(self, mock_ai, runner, temp_data_dir):
         """research hashtags should generate hashtag suggestions."""
         mock_ai.return_value = "#MachineLearning\n#AI\n#DataScience"
@@ -470,10 +470,15 @@ class TestDashboard:
         assert entries[-1]["status"] == "success"
         assert "run_id" in entries[-1]
 
-    @patch("linkedin.services.draft_service.generate_with_ai")
-    def test_run_daily_generate_drafts_falls_back_when_ai_fails(self, mock_ai, runner, temp_data_dir):
-        """run-daily draft generation should recover with fallback text on AI failures."""
+    @patch("linkedin.ai.client.generate_with_ai")
+    def test_run_daily_does_not_pass_off_templates_as_drafts(self, mock_ai, runner, temp_data_dir):
+        """With AI down, run-daily must fail, not save templates as drafts.
+
+        It ran unattended for five months with an invalid key and logged green
+        every morning because the template counted as a generated draft.
+        """
         from linkedin.ai.client import AIClientError
+        from linkedin.data import json_store
 
         mock_ai.side_effect = AIClientError("API unavailable")
         runner.invoke(
@@ -493,10 +498,13 @@ class TestDashboard:
             cli,
             ["run-daily", "--json", "--generate-drafts", "--save-drafts"],
         )
-        assert result.exit_code == 0
+        assert result.exit_code != 0
         payload = json.loads(result.output)
-        assert payload["status"] == "success"
-        assert payload["drafts"]["generated"] >= 1
+        assert payload["status"] == "failed"
+        assert payload["drafts"]["generated"] == 0
+        assert payload["drafts"]["templates"] >= 1
+        assert "template" in payload["reason"]
+        assert json_store.load_json(json_store.DRAFTS_FILE) == []
 
     def test_run_daily_skips_when_lock_exists(self, runner, temp_data_dir):
         """run-daily should not execute when another lock is active."""
@@ -1142,7 +1150,7 @@ class TestEnhancedContacts:
         assert "Next Actions" in result.output
         assert "follow-up 1" in result.output
 
-    @patch("linkedin.services.draft_service.generate_with_ai", return_value="Auto follow-up draft")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Auto follow-up draft")
     def test_contacts_next_actions_generate_and_save_drafts(self, mock_ai, runner, temp_data_dir):
         """next-actions should auto-generate and save drafts when requested."""
         runner.invoke(
@@ -1261,7 +1269,7 @@ class TestCampaigns:
 class TestEnhancedDrafts:
     """Tests for enhanced drafts features."""
 
-    @patch("linkedin.services.draft_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_drafts_intro_request(self, mock_ai, runner, temp_data_dir):
         """drafts intro-request should generate intro request."""
         mock_ai.return_value = "Hi, could you introduce me to someone?"
@@ -1281,7 +1289,7 @@ class TestEnhancedDrafts:
         assert result.exit_code == 0
         assert "Introduction Request" in result.output
 
-    @patch("linkedin.services.draft_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_drafts_thank_you(self, mock_ai, runner, temp_data_dir):
         """drafts thank-you should generate thank you note."""
         mock_ai.return_value = "Thank you for your time!"
@@ -1299,7 +1307,7 @@ class TestEnhancedDrafts:
         assert result.exit_code == 0
         assert "Thank You" in result.output
 
-    @patch("linkedin.services.draft_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_drafts_follow_up(self, mock_ai, runner, temp_data_dir):
         """drafts follow-up should generate follow-up message."""
         mock_ai.return_value = "Just checking in..."
@@ -1333,7 +1341,7 @@ class TestDiscover:
         assert result.exit_code == 0
         assert "Specify --company or --role" in result.output
 
-    @patch("linkedin.services.discover_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_discover_contacts_with_company(self, mock_ai, runner, temp_data_dir):
         """discover contacts should generate suggestions for a company."""
         mock_ai.return_value = "1. Engineering Manager\n2. Developer Advocate"
@@ -1348,7 +1356,7 @@ class TestDiscover:
         assert result.exit_code == 0
         assert "Contact Discovery" in result.output
 
-    @patch("linkedin.services.discover_service.generate_with_ai")
+    @patch("linkedin.ai.client.generate_with_ai")
     def test_discover_companies(self, mock_ai, runner, temp_data_dir):
         """discover companies should generate company suggestions."""
         mock_ai.return_value = "1. Company A\n2. Company B"

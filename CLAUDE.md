@@ -40,7 +40,7 @@ uv run ruff format src/ tests/
 - `src/linkedin/services/run_state.py` — run log, lock file, idempotency keys, failure streaks, webhook notifications.
 - `src/linkedin/constants.py` — Enums (`ContactStatus`, `CompanyPriority`, etc.), emoji mappings.
 - `src/linkedin/types.py` — TypedDicts for all domain objects: `ContactDict`, `CompanyDict`, `ProfileDict`, `DraftDict`, `ResearchDict`, `ApplicationDict`, `ApplicationEventDict`, `InterviewPrepDict`, `ConversationDict`, `MessageDict`, `ContentPostDict`.
-- `src/linkedin/ai/client.py` — `generate_with_ai(prompt, max_tokens, timeout_seconds, retries, backoff_seconds)` wrapping Anthropic API. Raises `AIClientError(RuntimeError)` on failure (auth errors are not retried). Retry/backoff configurable via `LINKEDIN_AI_*` env vars.
+- `src/linkedin/ai/client.py` — the AI seam. `ai_call(prompt, *, max_tokens, fallback=None) -> AIResult(text, error, was_fallback)` is what services call; it never raises. `generate_with_ai(...)` underneath is the raw call that raises `AIClientError` (auth errors are not retried) and is what tests patch. Model from `LINKEDIN_AI_MODEL`; retry/backoff via `LINKEDIN_AI_*` env vars.
 
 **Data layer:**
 - `src/linkedin/data/repository.py` — Abstract base classes for all repos, including `ApplicationRepo`, `InterviewPrepRepo`, `ConversationRepo`, `CalendarRepo`.
@@ -75,8 +75,8 @@ uv run ruff format src/ tests/
 
 **Key patterns:**
 - Services are instantiated with their repos at module level in `cli.py` and reused across commands.
-- All AI calls use `generate_with_ai`; wrap in `try/except AIClientError` and return `(error_str, "")`.
-- Mock patches target the usage site: `linkedin.services.<module>.generate_with_ai`.
+- All AI calls go through `ai_call` and read the `AIResult`. No service catches `AIClientError` or lets it reach the CLI; the tuple-returning services hand back `(result.error, result.text)`.
+- Mock patches target the one seam: `linkedin.ai.client.generate_with_ai` (return a string, or `side_effect=AIClientError`).
 - Contact pipeline: `not_contacted → connection_sent → connected → messaged → responded → call_scheduled → hired/rejected`.
 - **Every active contact always carries a `follow_up_date`.** `contact_service.FOLLOW_UP_CADENCE_DAYS` seeds it on add and on every status change; `hired`/`rejected` (`TERMINAL_STATUSES`) clear it and generate no actions. An explicit `follow_up=` argument still wins. Adding a pipeline status means adding its cadence entry *and* its rule in `get_next_actions` — a status with neither is invisible to the planner forever, which is what `messaged` was.
 - **`get_next_actions` returns at most one action per contact**, highest priority first. A contact with no `created_at`/`last_contact` yields a `repair_contact` action rather than being skipped; `contacts repair` backfills it.
@@ -86,7 +86,7 @@ uv run ruff format src/ tests/
 - **`get_pending_sent_invitations` returns `None`, not `[]`, when it cannot read the list.** Every other page-object method fails soft to an empty result; this one must not. Acceptance is inferred from an invitation's *absence*, so a selector that stopped matching would otherwise read as "every outstanding invitation was accepted" and advance the whole pipeline at once. `[]` is returned only when LinkedIn's own empty state is on the page.
 - **The reply signal rests entirely on `THREAD_OWN_MESSAGE_PREFIX`.** LinkedIn prefixes a thread snippet with `You:` when the last message is the user's own; that prefix is the only thing separating a real reply from an echo of the message we sent. Lose it and every outbound message becomes a fake response.
 - **Applications have their own planner rules and their own plan section.** `APPLICATION_STATUS_RULES` mirrors `contact_service.STATUS_RULES`, with the same coverage check against `APPLICATION_STATUSES`. Kept out of `get_next_actions`: `_daily_run_status` classifies a run by whether the *contact* planner produced anything, and merging application rows in would let a due application mask a broken contact planner — the exact failure that guard exists to catch.
-- **An offline template is never passed off as a draft.** `generate_with_ai` failing falls back to a template, and that fallback used to return `(None, text)` — indistinguishable from a real draft. The templates now ignore `context` entirely (it is prompt input, not body text; splicing it in verbatim turned a `--context` of instructions into the message itself), and `DraftService.last_draft_was_fallback` makes the CLI say so. Note the API key commonly lives in `~/.linkedin-cli/cron.env`, which only cron sources, so scheduled runs and interactive ones can disagree about whether AI works at all.
+- **An offline template is never passed off as a draft.** Fallback-ness is a property of the value: `AIResult.was_fallback`, stamped onto the saved row as `source: "ai" | "template"`. A row with no `source` (saved before provenance was recorded) is unknown, and `automate post` / `automate message --draft-id` refuse both unknown and template rows. `run-daily` counts a template as a failed draft, saves nothing, and exits nonzero with status `failed` — that is how an invalid key in `cron.env` becomes visible instead of logging 150 green runs. The templates ignore `context` entirely (it is prompt input, not body text). Note the API key commonly lives in `~/.linkedin-cli/cron.env`, which only cron sources, so scheduled runs and interactive ones can disagree about whether AI works at all.
 - **AI feed comments are reviewed before they are published.** `automation_service.engage_feed` takes an `approve_comment` callback and the CLI passes `_review_feed_comment` unless `--yes`; `sanitize_comment` drops empty, overlong, and refusal-shaped model output. The post body is untrusted third-party text fenced inside the prompt — it reaches the model as data, and its output goes out publicly under the user's real name.
 
 ## Testing
@@ -98,6 +98,7 @@ uv run ruff format src/ tests/
 **Test files:**
 - `test_cli.py` — CLI integration tests via Click's `CliRunner` (88 tests, covers original commands).
 - `test_cli_applications.py` — CLI integration tests for `applications`, `interview`, `conversations`, `calendar` command groups. Has `patch_json_paths` autouse fixture patching all file constants.
+- `test_ai_client.py` — The AI seam: `ai_call` result contract, fallback on/off, model from env.
 - `test_services.py` — Service unit tests for original services.
 - `test_application_service.py`, `test_interview_service.py`, `test_conversation_service.py`, `test_calendar_service.py` — Service tests for new features including `AIClientError` paths.
 - `test_data_service.py` — Needs its own monkeypatching of the `data_service` module's constants (separate from `json_store`).

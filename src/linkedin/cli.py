@@ -25,7 +25,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 import linkedin.data.json_store as json_store
-from linkedin.ai.client import AIClientError
+from linkedin.ai.client import AIResult
 from linkedin.constants import (
     ACTIVITY_EMOJI,
     COMPANY_PRIORITIES,
@@ -192,7 +192,7 @@ APPLICATION_ACTION_COMMANDS = {
 }
 
 
-def _warn_if_fallback(used_context: bool = False) -> None:
+def _warn_if_fallback(result: AIResult, used_context: bool = False) -> None:
     """Say out loud when a draft came from the offline template.
 
     A template is not a draft: it knows nothing about the conversation and
@@ -201,11 +201,9 @@ def _warn_if_fallback(used_context: bool = False) -> None:
     ~/.linkedin-cli/cron.env, which only cron sources — so scheduled runs get
     real drafts while interactive ones quietly degrade.
     """
-    if not _draft_svc.last_draft_was_fallback:
+    if not result.was_fallback:
         return
-    console.print(
-        f"[yellow]⚠ AI unavailable ({_draft_svc.last_draft_error}) — this is an offline template, not a draft.[/yellow]"
-    )
+    console.print(f"[yellow]⚠ AI unavailable ({result.error}) — this is an offline template, not a draft.[/yellow]")
     if used_context:
         console.print("[yellow]  Your --context was NOT used. Edit before sending.[/yellow]")
     console.print(
@@ -459,28 +457,33 @@ def _render_daily_plan(data: dict) -> None:
 
 
 def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show_output: bool = True) -> dict:
+    """Draft for each planned action.
+
+    A template counts as a failure here, not a draft: this path runs
+    unattended, and nobody is at the keyboard to edit a template before it is
+    sent. Failing the run is what makes an invalid API key visible.
+    """
     generated = 0
     saved = 0
     failed = 0
+    templates = 0
     drafts: list[dict] = []
 
     for action in actions:
         contact_id = action["contact_id"]
-        error = None
-        draft_text = ""
         draft_type = "message"
 
         if action["action"] in {"follow_up_overdue", "follow_up_today", "stale_connection_sent"}:
-            error, draft_text = _draft_svc.generate_follow_up(contact_id, attempt=1)
+            result = _draft_svc.generate_follow_up(contact_id, attempt=1)
             draft_type = "follow_up_1"
         elif action["action"] == "send_first_message":
-            error, draft_text = _draft_svc.generate_message(
+            result = _draft_svc.generate_message(
                 contact_id,
                 context="We're connected, and I want to send a concise first message.",
             )
             draft_type = "message"
         elif action["action"] == "schedule_call":
-            error, draft_text = _draft_svc.generate_message(
+            result = _draft_svc.generate_message(
                 contact_id,
                 context="They responded recently; propose a short call as the next step.",
             )
@@ -488,11 +491,15 @@ def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show
         else:
             continue
 
-        if error:
+        if not result.ok:
             failed += 1
+            templates += int(result.was_fallback)
             if show_output:
-                console.print(f"[yellow]Could not generate draft for contact #{contact_id}: {error}[/yellow]")
+                why = result.error or "no text"
+                what = "only an offline template" if result.was_fallback else "no draft"
+                console.print(f"[yellow]Could not generate draft for contact #{contact_id}: {what} ({why})[/yellow]")
             continue
+        draft_text = result.text
 
         generated += 1
         draft_entry = {
@@ -509,7 +516,9 @@ def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show
             console.print(Panel(draft_text, border_style="cyan"))
 
         if save_drafts:
-            _draft_svc.save_draft(contact_id, draft_type, draft_text, generated_from=action["action"])
+            _draft_svc.save_draft(
+                contact_id, draft_type, draft_text, source=result.source, generated_from=action["action"]
+            )
             saved += 1
 
     if show_output:
@@ -519,7 +528,7 @@ def _generate_action_drafts(actions: list[dict], save_drafts: bool = False, show
             + (f", failed {failed}" if failed else "")
         )
 
-    return {"generated": generated, "saved": saved, "failed": failed, "drafts": drafts}
+    return {"generated": generated, "saved": saved, "failed": failed, "templates": templates, "drafts": drafts}
 
 
 def _render_generated_drafts(draft_summary: dict) -> None:
@@ -580,7 +589,7 @@ def _run_daily_cycle(
             show_output=show_draft_output,
         )
     else:
-        data["drafts"] = {"generated": 0, "saved": 0, "failed": 0, "drafts": []}
+        data["drafts"] = {"generated": 0, "saved": 0, "failed": 0, "templates": 0, "drafts": []}
 
     if save_recap:
         recap_path = _save_daily_plan_recap(
@@ -606,6 +615,11 @@ def _daily_run_status(data: dict) -> tuple[str, list[dict]]:
     broken. That is how this job logged 136 consecutive green runs while
     generating zero drafts.
     """
+    if data.get("drafts", {}).get("templates"):
+        # AI was asked for and answered with the offline template. Nobody is at
+        # the keyboard to fix a template, so the run has produced nothing usable
+        # — and an invalid key in cron.env is otherwise invisible for months.
+        return "failed", []
     if data.get("actions"):
         return "success", []
     stalled = _contact_svc.stalled_contacts()
@@ -717,6 +731,9 @@ def _run_daily_with_reliability(
             f"{len(stalled)} contact(s) are due or have no follow-up date, "
             "but the planner produced no actions."
         )
+    elif data["status"] == "failed" and data.get("drafts", {}).get("templates"):
+        n = data["drafts"]["templates"]
+        data["reason"] = f"AI unavailable: {n} draft(s) came back as offline templates and were not saved."
 
     log_entry = {
         "status": data["status"],
@@ -1700,17 +1717,18 @@ def drafts_connection(contact_id):
 
     console.print(f"\n[bold]Generating connection request for {contact['name']}...[/bold]\n")
 
-    error, draft = _draft_svc.generate_connection(contact_id)
-    if error:
-        console.print(f"[yellow]{error}[/yellow]")
+    result = _draft_svc.generate_connection(contact_id)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    draft = result.text
 
     console.print(Panel(draft, title="Connection Request Draft", border_style="green"))
-    _warn_if_fallback(used_context=False)
+    _warn_if_fallback(result, used_context=False)
     console.print(f"\n[dim]Characters: {len(draft)}/300[/dim]")
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "connection", draft)
+        _draft_svc.save_draft(contact_id, "connection", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1726,16 +1744,17 @@ def drafts_message(contact_id, context):
 
     console.print(f"\n[bold]Generating message for {contact['name']}...[/bold]\n")
 
-    error, draft = _draft_svc.generate_message(contact_id, context)
-    if error:
-        console.print(f"[yellow]{error}[/yellow]")
+    result = _draft_svc.generate_message(contact_id, context)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    draft = result.text
 
     console.print(Panel(draft, title="Message Draft", border_style="blue"))
-    _warn_if_fallback(used_context=True)
+    _warn_if_fallback(result, used_context=True)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "message", draft)
+        _draft_svc.save_draft(contact_id, "message", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1746,16 +1765,17 @@ def drafts_intro_request(contact_id, target_id):
     """Generate a message asking for an introduction to another contact."""
     console.print("\n[bold]Generating intro request...[/bold]\n")
 
-    error, draft = _draft_svc.generate_intro_request(contact_id, target_id)
-    if error:
-        console.print(f"[yellow]{error}[/yellow]")
+    result = _draft_svc.generate_intro_request(contact_id, target_id)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    draft = result.text
 
     console.print(Panel(draft, title="Introduction Request Draft", border_style="magenta"))
-    _warn_if_fallback(used_context=False)
+    _warn_if_fallback(result, used_context=False)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "intro_request", draft, target_contact_id=target_id)
+        _draft_svc.save_draft(contact_id, "intro_request", draft, source=result.source, target_contact_id=target_id)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1771,16 +1791,17 @@ def drafts_thank_you(contact_id, context):
 
     console.print(f"\n[bold]Generating thank you note for {contact['name']}...[/bold]\n")
 
-    error, draft = _draft_svc.generate_thank_you(contact_id, context)
-    if error:
-        console.print(f"[yellow]{error}[/yellow]")
+    result = _draft_svc.generate_thank_you(contact_id, context)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    draft = result.text
 
     console.print(Panel(draft, title="Thank You Note Draft", border_style="green"))
-    _warn_if_fallback(used_context=True)
+    _warn_if_fallback(result, used_context=True)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, "thank_you", draft)
+        _draft_svc.save_draft(contact_id, "thank_you", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1796,15 +1817,17 @@ def drafts_follow_up(contact_id, attempt):
 
     console.print(f"\n[bold]Generating follow-up #{attempt} for {contact['name']}...[/bold]\n")
 
-    error, draft = _draft_svc.generate_follow_up(contact_id, attempt)
-    if error:
-        console.print(f"[yellow]{error}[/yellow]")
+    result = _draft_svc.generate_follow_up(contact_id, attempt)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    draft = result.text
 
     console.print(Panel(draft, title=f"Follow-up #{attempt} Draft", border_style="yellow"))
+    _warn_if_fallback(result)
 
     if click.confirm("\nSave this draft?"):
-        _draft_svc.save_draft(contact_id, f"follow_up_{attempt}", draft)
+        _draft_svc.save_draft(contact_id, f"follow_up_{attempt}", draft, source=result.source)
         console.print("[green]✓ Draft saved![/green]")
 
 
@@ -1826,13 +1849,15 @@ def drafts_batch_connections(limit, save_all):
     console.print(f"\n[bold]Generating connection requests for {len(results)} contacts...[/bold]\n")
 
     generated = 0
-    for contact, draft in results:
+    for contact, result in results:
+        draft = result.text
         console.print(f"\n[cyan]{contact['name']}[/cyan] ({contact['title']} at {contact['company']}):")
         console.print(Panel(draft, border_style="green"))
+        _warn_if_fallback(result)
         console.print(f"[dim]Characters: {len(draft)}/300[/dim]\n")
 
         if save_all or click.confirm("Save this draft?"):
-            _draft_svc.save_draft(contact["id"], "connection", draft)
+            _draft_svc.save_draft(contact["id"], "connection", draft, source=result.source)
             generated += 1
 
     console.print(f"\n[green]✓ Generated and saved {generated} drafts![/green]")
@@ -1960,11 +1985,11 @@ def research_engagement():
 @click.option("--topic", "-t", default=None, help="Topic to generate ideas for")
 def research_ideas(topic):
     """Generate post ideas based on your profile."""
-    try:
-        focus, ideas = _research_svc.generate_ideas(topic)
-    except AIClientError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
+    focus, result = _research_svc.generate_ideas(topic)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    ideas = result.text
 
     console.print(f"\n[bold]Generating post ideas for: {focus}...[/bold]\n")
     console.print(Panel(ideas, title="Post Ideas", border_style="green"))
@@ -1981,11 +2006,11 @@ def research_draft_post(topic, style):
     """Generate a full post draft."""
     console.print(f"\n[bold]Generating {style} post about: {topic}...[/bold]\n")
 
-    try:
-        draft = _research_svc.generate_post_draft(topic, style)
-    except AIClientError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
+    result = _research_svc.generate_post_draft(topic, style)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    draft = result.text
     console.print(Panel(draft, title=f"Post Draft ({style})", border_style="green"))
 
     if click.confirm("\nSave this draft?"):
@@ -1999,11 +2024,11 @@ def research_hashtags(topic):
     """Get hashtag recommendations for a topic."""
     console.print(f"\n[bold]Finding hashtags for: {topic}...[/bold]\n")
 
-    try:
-        hashtags = _research_svc.generate_hashtags(topic)
-    except AIClientError as exc:
-        console.print(f"[yellow]{exc}[/yellow]")
+    result = _research_svc.generate_hashtags(topic)
+    if not result:
+        console.print(f"[yellow]{result.error}[/yellow]")
         return
+    hashtags = result.text
     console.print(Panel(hashtags, title="Hashtag Recommendations", border_style="cyan"))
 
 
@@ -4531,6 +4556,14 @@ def automate_message(contact_id, text, draft_id, dry_run, headless):
         if not draft:
             console.print(f"[red]Draft #{draft_id} not found.[/red]")
             raise SystemExit(1)
+        source = draft.get("source")
+        if source != "ai":
+            # A template, or a row saved before provenance was recorded. Either
+            # way nobody knows it is fit to publish under the user's name.
+            what = "an offline template" if source == "template" else "of unknown provenance"
+            console.print(f"[red]Refusing to use draft #{draft_id}: it is {what}, not an AI draft.[/red]")
+            console.print("[dim]  Regenerate it with AI available, or pass the text explicitly with --text.[/dim]")
+            raise SystemExit(1)
         text = draft.get("content", "")
     if not text.strip():
         console.print("[red]Nothing to send — pass --text or --draft-id.[/red]")
@@ -4581,6 +4614,14 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
         draft = _draft_repo.get(draft_id)
         if not draft:
             console.print(f"[red]Draft #{draft_id} not found.[/red]")
+            raise SystemExit(1)
+        source = draft.get("source")
+        if source != "ai":
+            # A template, or a row saved before provenance was recorded. Either
+            # way nobody knows it is fit to publish under the user's name.
+            what = "an offline template" if source == "template" else "of unknown provenance"
+            console.print(f"[red]Refusing to use draft #{draft_id}: it is {what}, not an AI draft.[/red]")
+            console.print("[dim]  Regenerate it with AI available, or pass the text explicitly with --text.[/dim]")
             raise SystemExit(1)
         text = draft.get("content", "")
     if not text.strip():

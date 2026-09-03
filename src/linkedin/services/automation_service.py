@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from linkedin.ai.client import AIClientError, generate_with_ai
+from linkedin.ai.client import ai_call
 from linkedin.automation.rate_limiter import RateLimiter
 from linkedin.automation.safety import SafetyLimits
 from linkedin.data.repository import ProfileRepo
@@ -195,7 +195,7 @@ Write a comment that:
 
 Just write the comment, no explanations."""
 
-        try:
-            return sanitize_comment(generate_with_ai(prompt, max_tokens=150))
-        except AIClientError:
+        result = ai_call(prompt, max_tokens=150)
+        if result.error:
             return ""
+        return sanitize_comment(result.text)

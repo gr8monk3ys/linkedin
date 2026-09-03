@@ -1,9 +1,8 @@
 """Draft generation and management service."""
 
-import os
 from datetime import datetime
 
-from linkedin.ai.client import AIClientError, generate_with_ai
+from linkedin.ai.client import AIResult, ai_call
 from linkedin.data.repository import ContactRepo, DraftRepo, ProfileRepo
 from linkedin.types import DraftDict, ProfileDict
 
@@ -19,12 +18,6 @@ class DraftService:
         self.drafts = draft_repo
         self.contacts = contact_repo
         self.profiles = profile_repo
-        #: Whether the last draft came from an offline template rather than the
-        #: model. Callers must say so — a template is not a draft, and silently
-        #: passing one off as one is how a --context of instructions reached a
-        #: real message body.
-        self.last_draft_was_fallback = False
-        self.last_draft_error: str | None = None
 
     def delete_draft(self, draft_id: int) -> bool:
         """Remove a saved draft. Returns False if it was not there."""
@@ -44,15 +37,16 @@ class DraftService:
     def get_draft(self, draft_id: int) -> DraftDict | None:
         return self.drafts.get(draft_id)
 
-    def generate_connection(self, contact_id: int) -> tuple[str | None, str]:
-        """Returns (error_message, draft_text). error_message is None on success."""
+    def generate_connection(self, contact_id: int) -> AIResult:
+        """An `AIResult`: `.error` set when nothing could be drafted, `.was_fallback`
+        when the text is an offline template rather than the model's."""
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return AIResult(error="Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return AIResult(error=f"Contact #{contact_id} not found")
 
         prompt = self._connection_prompt(profile, contact)
         return self._generate_with_fallback(
@@ -61,11 +55,11 @@ class DraftService:
             fallback_text=self._fallback_connection(profile, contact),
         )
 
-    def generate_message(self, contact_id: int, context: str = "") -> tuple[str | None, str]:
+    def generate_message(self, contact_id: int, context: str = "") -> AIResult:
         profile = self.profiles.get()
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return AIResult(error=f"Contact #{contact_id} not found")
 
         prompt = self._message_prompt(profile, contact, context)
         return self._generate_with_fallback(
@@ -74,18 +68,18 @@ class DraftService:
             fallback_text=self._fallback_message(profile, contact, context),
         )
 
-    def generate_intro_request(self, contact_id: int, target_id: int) -> tuple[str | None, str]:
+    def generate_intro_request(self, contact_id: int, target_id: int) -> AIResult:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return AIResult(error="Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return AIResult(error=f"Contact #{contact_id} not found")
 
         target = self.contacts.get(target_id)
         if not target:
-            return f"Target contact #{target_id} not found", ""
+            return AIResult(error=f"Target contact #{target_id} not found")
 
         prompt = self._intro_request_prompt(profile, contact, target)
         return self._generate_with_fallback(
@@ -94,14 +88,14 @@ class DraftService:
             fallback_text=self._fallback_intro_request(profile, contact, target),
         )
 
-    def generate_thank_you(self, contact_id: int, context: str = "") -> tuple[str | None, str]:
+    def generate_thank_you(self, contact_id: int, context: str = "") -> AIResult:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return AIResult(error="Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return AIResult(error=f"Contact #{contact_id} not found")
 
         prompt = self._thank_you_prompt(profile, contact, context)
         return self._generate_with_fallback(
@@ -110,14 +104,14 @@ class DraftService:
             fallback_text=self._fallback_thank_you(profile, contact, context),
         )
 
-    def generate_follow_up(self, contact_id: int, attempt: int = 1) -> tuple[str | None, str]:
+    def generate_follow_up(self, contact_id: int, attempt: int = 1) -> AIResult:
         profile = self.profiles.get()
         if not profile:
-            return "Set up your profile first: linkedin profile setup", ""
+            return AIResult(error="Set up your profile first: linkedin profile setup")
 
         contact = self.contacts.get(contact_id)
         if not contact:
-            return f"Contact #{contact_id} not found", ""
+            return AIResult(error=f"Contact #{contact_id} not found")
 
         prompt = self._follow_up_prompt(profile, contact, attempt)
         return self._generate_with_fallback(
@@ -139,52 +133,39 @@ class DraftService:
         results = []
         for contact in not_contacted[:limit]:
             prompt = self._connection_prompt(profile, contact)
-            error, draft = self._generate_with_fallback(
+            result = self._generate_with_fallback(
                 prompt=prompt,
                 max_tokens=200,
                 fallback_text=self._fallback_connection(profile, contact),
             )
-            if error:
-                return error, []
-            results.append((contact, draft))
+            if result.error and not result:
+                return result.error, []
+            results.append((contact, result))
 
         return None, results
 
-    def save_draft(self, contact_id: int | None, draft_type: str, content: str, **extra) -> DraftDict:
+    def save_draft(self, contact_id: int | None, draft_type: str, content: str, *, source: str, **extra) -> DraftDict:
+        """Persist a draft with its provenance. `source` is `"ai"` or `"template"`;
+        a row that lacks it is unknown and is treated like a template."""
         draft: DraftDict = {
             "id": self.drafts.next_id(),
             "contact_id": contact_id,
             "type": draft_type,
             "content": content,
+            "source": source,
             "created_at": datetime.now().isoformat(),
         }
         draft.update(extra)
         return self.drafts.add(draft)
 
-    def _generate_with_fallback(self, prompt: str, max_tokens: int, fallback_text: str) -> tuple[str | None, str]:
+    def _generate_with_fallback(self, prompt: str, max_tokens: int, fallback_text: str) -> AIResult:
         """Generate a draft, falling back to an offline template.
 
-        The fallback records itself. Handing a template back as `(None, text)`
-        made it indistinguishable from a real draft, and the two are not
-        interchangeable: the template cannot use `context` and does not know
-        anything about the conversation. The API key lives in cron.env, so
-        scheduled runs get real drafts while interactive ones quietly degraded.
+        The template cannot use `context` and knows nothing about the
+        conversation, so the result says which one it is. Persist `.source`
+        with the draft; nothing downstream can tell them apart otherwise.
         """
-        self.last_draft_was_fallback = False
-        self.last_draft_error = None
-        try:
-            draft = generate_with_ai(prompt, max_tokens=max_tokens)
-            return None, draft
-        except AIClientError as exc:
-            if not self._fallback_enabled():
-                return str(exc), ""
-            self.last_draft_was_fallback = True
-            self.last_draft_error = str(exc)
-            return None, fallback_text
-
-    def _fallback_enabled(self) -> bool:
-        value = os.environ.get("LINKEDIN_AI_FALLBACK_ENABLED", "1").strip().lower()
-        return value not in {"0", "false", "no", "off"}
+        return ai_call(prompt, max_tokens=max_tokens, fallback=fallback_text)
 
     def _first_name(self, contact: dict) -> str:
         return str(contact.get("name", "")).strip().split(" ")[0] or "there"

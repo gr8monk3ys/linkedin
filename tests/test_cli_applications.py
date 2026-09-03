@@ -111,7 +111,7 @@ def test_interview_prep_not_found(runner):
 
 def test_interview_prep_and_view(runner, monkeypatch):
     monkeypatch.setattr(
-        "linkedin.services.interview_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=800: "Q1: Tell me about yourself.",
     )
     runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
@@ -178,7 +178,7 @@ def test_applications_tailor_resume_no_profile(runner):
 def test_applications_tailor_resume_with_ai(runner, monkeypatch):
     """tailor-resume with profile resume_text and mocked AI should succeed."""
     monkeypatch.setattr(
-        "linkedin.services.application_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=800: "• Led ML pipeline optimization",
     )
     _setup_profile_with_resume(runner)
@@ -207,7 +207,7 @@ def test_applications_cover_letter_no_profile(runner):
 def test_applications_cover_letter_with_ai(runner, monkeypatch):
     """cover-letter with profile and mocked AI should succeed."""
     monkeypatch.setattr(
-        "linkedin.services.application_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=800: "Dear Hiring Manager, I am thrilled to apply.",
     )
     _setup_profile_no_resume(runner)
@@ -227,7 +227,7 @@ def test_applications_skills_gap_no_jd(runner):
 def test_applications_skills_gap_with_ai(runner, monkeypatch):
     """skills-gap with JD and mocked AI should succeed."""
     monkeypatch.setattr(
-        "linkedin.services.application_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=600: "## Skills You Have\n- Python",
     )
     runner.invoke(
@@ -255,7 +255,7 @@ def test_applications_advance_invalid_status(runner):
 def test_interview_research_with_ai(runner, monkeypatch):
     """interview research with mocked AI should succeed."""
     monkeypatch.setattr(
-        "linkedin.services.interview_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=800: "## Company Overview\nAcme builds ML tools.",
     )
     runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
@@ -266,7 +266,7 @@ def test_interview_research_with_ai(runner, monkeypatch):
 def test_interview_star_with_ai(runner, monkeypatch):
     """interview star with mocked AI should succeed."""
     monkeypatch.setattr(
-        "linkedin.services.interview_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=1000: "**Question:** Tell me about a challenge\n**Situation:** [FILL IN]",
     )
     runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])
@@ -277,7 +277,7 @@ def test_interview_star_with_ai(runner, monkeypatch):
 def test_interview_questions_with_ai(runner, monkeypatch):
     """interview questions with mocked AI should succeed."""
     monkeypatch.setattr(
-        "linkedin.services.interview_service.generate_with_ai",
+        "linkedin.ai.client.generate_with_ai",
         lambda prompt, max_tokens=400: "1. What does success look like in 90 days?",
     )
     runner.invoke(cli, ["applications", "add", "--company", "Acme", "--title", "ML Engineer"])

@@ -1,6 +1,6 @@
 """AI-powered networking discovery service."""
 
-from linkedin.ai.client import AIClientError, generate_with_ai
+from linkedin.ai.client import ai_call
 from linkedin.data.repository import CompanyRepo, ContactRepo, ProfileRepo
 from linkedin.types import ProfileDict
 
@@ -29,11 +29,8 @@ class DiscoverService:
         else:
             prompt = self._contact_by_role_prompt(profile, role, companies_list)
 
-        try:
-            suggestions = generate_with_ai(prompt, max_tokens=800)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, suggestions
+        result = ai_call(prompt, max_tokens=800)
+        return result.error, result.text
 
     def discover_companies(self) -> tuple[str | None, str]:
         profile = self.profiles.get()
@@ -44,11 +41,8 @@ class DiscoverService:
         existing_companies = [c["name"] for c in companies_list]
 
         prompt = self._company_discovery_prompt(profile, existing_companies)
-        try:
-            suggestions = generate_with_ai(prompt, max_tokens=1000)
-        except AIClientError as exc:
-            return str(exc), ""
-        return None, suggestions
+        result = ai_call(prompt, max_tokens=1000)
+        return result.error, result.text
 
     def _contact_by_company_prompt(self, profile: ProfileDict, company: str, companies_list: list, existing_titles: list) -> str:
         tracked_company = next((c for c in companies_list if company.lower() in c["name"].lower()), None)

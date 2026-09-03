@@ -14,7 +14,7 @@ class TestMarketService:
         error, result = svc.analyze_market()
         assert error is not None
 
-    @patch("linkedin.services.market_service.generate_with_ai", return_value="Market analysis result")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Market analysis result")
     def test_analyze_with_role(self, mock_ai, json_repos):
         _, _, profile_repo, *_ = json_repos
         svc = MarketService(profile_repo)
@@ -24,7 +24,7 @@ class TestMarketService:
         assert error is None
         assert "Market analysis" in result
 
-    @patch("linkedin.services.market_service.generate_with_ai", return_value="$120k - $180k")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="$120k - $180k")
     def test_salary_estimate(self, mock_ai, json_repos):
         _, _, profile_repo, *_ = json_repos
         svc = MarketService(profile_repo)
@@ -40,7 +40,7 @@ class TestMarketService:
         error, result = svc.estimate_salary()
         assert error is not None
 
-    @patch("linkedin.services.market_service.generate_with_ai", return_value="Trending: AI/ML roles")
+    @patch("linkedin.ai.client.generate_with_ai", return_value="Trending: AI/ML roles")
     def test_trends(self, mock_ai, json_repos):
         _, _, profile_repo, *_ = json_repos
         svc = MarketService(profile_repo)

@@ -197,6 +197,10 @@ linkedin-cli automate login                 # Log in (headful; handles 2FA) and 
 linkedin-cli contacts rank                  # Who the connection budget should go to (★ = pinned, exempt)
 linkedin-cli contacts pin 12                # Keep following #12 whatever the rank says
 linkedin-cli automate engage --pinned       # Like recent posts of every pinned contact
+linkedin-cli posts facts                    # What the public fleet did this week (the drafter's only input)
+linkedin-cli posts draft-week               # Sunday batch 1/3: AI candidates from those facts
+linkedin-cli posts review                   # Sunday batch 2/3: approve (schedules Tuesday) or reject
+linkedin-cli posts publish-due --headless   # Sunday batch 3/3: publish the due post unless the skip rule fires
 linkedin-cli metrics collect --headless     # Followers, connections, profile views, impressions, search appearances (read-only)
 linkedin-cli metrics show --days 7          # Latest row with deltas; per-post impressions
 linkedin-cli automation doctor --probe-ai   # Prove the API key works, not just that it is set

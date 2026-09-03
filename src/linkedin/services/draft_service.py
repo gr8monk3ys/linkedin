@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from linkedin.ai.client import AIResult, ai_call
+from linkedin.ai.style import STYLE_RULES
 from linkedin.data.json_store import JsonContactRepo, JsonDraftRepo, JsonProfileRepo
 from linkedin.services.planner import draft_spec_for
 from linkedin.types import DraftDict, ProfileDict
@@ -179,7 +180,7 @@ class DraftService:
         conversation, so the result says which one it is. Persist `.source`
         with the draft; nothing downstream can tell them apart otherwise.
         """
-        return ai_call(prompt, max_tokens=max_tokens, fallback=fallback_text)
+        return ai_call(prompt + STYLE_RULES, max_tokens=max_tokens, fallback=fallback_text)
 
     def _first_name(self, contact: dict) -> str:
         return str(contact.get("name", "")).strip().split(" ")[0] or "there"

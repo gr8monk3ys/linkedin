@@ -417,10 +417,23 @@ class TestSearchResults:
         page.register_css(sel.SEARCH_RESULT_CARD, [FakeCard(None, {})])
         assert LinkedInPage(page).get_search_results() == []
 
-    def test_no_cards_records_a_miss(self, page):
+    def test_no_cards_and_no_script_rows_records_a_miss(self, page):
+        page.evaluate_result = []
         lp = LinkedInPage(page)
         assert lp.get_search_results() == []
         assert "search_result_card" in lp.selector_misses
+
+    def test_rebuilt_page_is_read_by_the_dom_shape_script(self, page):
+        """Verified 2026-09-02: no CSS card matches; the script reads name/degree/headline lines."""
+        page.evaluate_result = [
+            {"name": "Neha Tammana", "headline": "Senior Solutions Engineer - AI Specialist", "location": "SF Bay Area", "degree": "2nd", "linkedin_url": "https://www.linkedin.com/in/neha"},
+            {"name": "", "headline": "nameless", "linkedin_url": ""},
+        ]
+        lp = LinkedInPage(page)
+        rows = lp.get_search_results()
+        assert rows == [{"name": "Neha Tammana", "headline": "Senior Solutions Engineer - AI Specialist", "linkedin_url": "https://www.linkedin.com/in/neha", "location": "SF Bay Area", "degree": "2nd"}]
+        assert lp.selector_misses == []
+        assert page.evaluated == [sel.SEARCH_RESULTS_SCRIPT]
 
     def test_broken_name_selector_is_recorded(self, page):
         page.register_css(sel.SEARCH_RESULT_CARD, [FakeCard(None, {})])

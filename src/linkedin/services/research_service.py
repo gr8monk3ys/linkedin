@@ -3,6 +3,7 @@
 from datetime import datetime
 
 from linkedin.ai.client import AIResult, ai_call
+from linkedin.ai.style import STYLE_RULES
 from linkedin.data.json_store import JsonDraftRepo, JsonProfileRepo, JsonResearchRepo
 
 ENGAGEMENT_CONTENT = """
@@ -137,15 +138,13 @@ Author background:
 Requirements:
 - Start with a compelling hook (first 2 lines are crucial)
 - Use short paragraphs and line breaks
-- Include 1-2 relevant emojis (not too many)
 - End with a question or call to action
 - Keep it 150-250 words
 - Sound authentic, not like ChatGPT
-- Add 3-5 relevant hashtags at the end
 
 Write the post now:"""
 
-        return ai_call(prompt, max_tokens=500)
+        return ai_call(prompt + STYLE_RULES, max_tokens=500)
 
     def save_post_draft(self, topic: str, style: str, content: str) -> None:
         draft = {

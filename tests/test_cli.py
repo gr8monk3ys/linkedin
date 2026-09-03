@@ -699,6 +699,18 @@ class TestDashboard:
         assert checks["schedule_time"]["status"] == "ok"
         assert checks["anthropic_api_key"]["status"] == "warn"
 
+    @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
+    def test_doctor_probe_ai_says_invalid_not_configured(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
+        """The cron.env key was present and dead for five months while every check said ok."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-shell")
+        with patch("linkedin.ai.client.probe_api_key", return_value=(False, "AuthenticationError: 401 invalid x-api-key")):
+            result = runner.invoke(cli, ["automation", "doctor", "--json", "--probe-ai"])
+        payload = json.loads(result.output)
+        checks = {c["name"]: c for c in payload["checks"]}
+        assert checks["ai_probe_shell"]["status"] == "fail" and "401" in checks["ai_probe_shell"]["detail"]
+        assert checks["ai_probe_cron"]["status"] == "warn"  # no key in the temp cron env
+        assert payload["overall_status"] == "fail"
+
     def test_health_command_is_gone(self, runner):
         """There is one check list now; a second command over it drifted once and would again."""
         assert runner.invoke(cli, ["health", "--json"]).exit_code != 0

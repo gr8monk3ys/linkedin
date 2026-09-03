@@ -28,7 +28,7 @@ def test_plan_sections_are_ordered_and_render_both_ways():
         "templates": [],
     }
     plan = build_plan(data)
-    assert [s.key for s in plan.sections] == ["actions", "inbound", "applications", "postings", "templates"]
+    assert [s.key for s in plan.sections] == ["actions", "inbound", "applications", "postings", "metrics", "templates"]
     md = plan.to_markdown()
     assert md.startswith("# Daily Plan")
     assert "## Priority Actions" in md and "Follow up (today)" in md and "drafts follow-up 1" in md
@@ -38,7 +38,7 @@ def test_plan_sections_are_ordered_and_render_both_ways():
 
 def test_optional_sections_are_marked_so_the_terminal_can_skip_them():
     plan = build_plan({"actions": [], "application_actions": [], "inbox_proposals": [], "postings": [], "templates": []})
-    assert {s.key for s in plan.sections if s.optional} == {"inbound", "applications"}
+    assert {s.key for s in plan.sections if s.optional} == {"inbound", "applications", "metrics"}
 
 
 # -- classification --------------------------------------------------------------
@@ -125,3 +125,25 @@ def test_no_actions_is_reported_with_the_stalled_ids(tmp_path):
     with patch.object(DailyRun, "cycle", return_value={"actions": [], "drafts": {}, "postings": [], "templates": []}):
         result = run.execute("manual", datetime.now())
     assert result["status"] == "no_actions" and result["stalled_contact_ids"] == [7]
+
+
+# -- metrics collection ---------------------------------------------------------
+
+
+def test_collect_metrics_runs_before_the_plan_and_never_fails_the_run(tmp_path):
+    app = App(DataDir(tmp_path))
+    calls = []
+    run = DailyRun(app, RunConfig(collect_metrics=True), sleep=lambda s: None, metrics_collector=lambda: calls.append(1) or {"recorded": "2026-09-02"})
+    data = run.cycle()
+    assert calls == [1] and data["metrics_collected"] == {"recorded": "2026-09-02"}
+
+    boom = DailyRun(app, RunConfig(collect_metrics=True), sleep=lambda s: None, metrics_collector=lambda: (_ for _ in ()).throw(RuntimeError("no browser")))
+    data = boom.cycle()
+    assert "no browser" in data["metrics_collected"]["error"]
+    assert "actions" in data  # the plan still ran
+
+
+def test_metrics_are_not_collected_unless_asked(tmp_path):
+    app = App(DataDir(tmp_path))
+    run = DailyRun(app, RunConfig(), sleep=lambda s: None, metrics_collector=lambda: {"recorded": "x"})
+    assert "metrics_collected" not in run.cycle()

@@ -77,6 +77,7 @@ def build_scheduled_run_daily_tokens(
     failure_streak_threshold: int,
     notify_on_recovery: bool,
     notify_webhook: str,
+    collect_metrics: bool = False,
 ) -> list[str]:
     command = [
         *runner_tokens,
@@ -95,6 +96,8 @@ def build_scheduled_run_daily_tokens(
         command.append("--generate-drafts")
     if save_drafts:
         command.append("--save-drafts")
+    if collect_metrics:
+        command.append("--collect-metrics")
     if notify_webhook.strip():
         command.extend(["--notify-webhook", notify_webhook.strip()])
     if not notify_on_recovery:

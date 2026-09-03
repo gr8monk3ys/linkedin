@@ -166,12 +166,22 @@ def _daily_run(config: RunConfig, *, show_drafts: bool = True, as_json: bool = F
     def on_retry(attempt: int, max_attempts: int, backoff: float) -> None:
         console.print(f"[yellow]Run failed (attempt {attempt}/{max_attempts}); retrying in {backoff:.1f}s...[/yellow]")
 
+    def collect_metrics() -> dict:
+        urns = [p["urn"] for p in _app.metrics_svc.post_rows()]
+        with _open_session(headless=True) as session:
+            result = session.metrics(post_urns=urns)
+        if not result:
+            return {"error": f"{result.status}: {result.reason}"}
+        entry = _app.metrics_svc.record(result.data)
+        return {"recorded": entry["date"], "missing": [k for k, v in entry.items() if k != "date" and v is None]}
+
     return DailyRun(
         _app.get(),
         config,
         on_draft=on_draft if show_drafts else None,
         on_draft_failure=on_draft_failure if show_drafts else None,
         on_retry=None if as_json else on_retry,
+        metrics_collector=collect_metrics,
     )
 
 
@@ -377,6 +387,8 @@ def profile_show():
             table.add_row(key.replace("_", " ").title(), str(value))
 
     console.print(table)
+    if data.get("copy_source"):
+        console.print(f"[dim]Headline and About come from the {data['copy_source']} (docs/linkedin-copy.md); the local copy is a fallback.[/dim]")
 
 
 # =============================================================================
@@ -1697,6 +1709,7 @@ def daily_plan(actions_limit, postings_limit, min_posting_score, save_recap, rec
 @click.option("--recap-dir", default="", help="Optional output directory for recap files")
 @click.option("--generate-drafts", is_flag=True, help="Generate drafts from prioritized actions on each run")
 @click.option("--save-drafts", is_flag=True, help="Save generated drafts on each run")
+@click.option("--collect-metrics", is_flag=True, help="Read the account's metrics (headless browser) before each run; the 14-day baseline")
 @click.option("--watch", is_flag=True, help="Run continuously once per day at --time")
 @click.option("--time", "schedule_time", default="09:00", help="Daily run time in HH:MM (24-hour local)")
 @click.option("--run-now", is_flag=True, help="When --watch is set, run immediately before waiting for schedule")
@@ -1720,6 +1733,7 @@ def run_daily(
     recap_dir,
     generate_drafts,
     save_drafts,
+    collect_metrics,
     watch,
     schedule_time,
     run_now,
@@ -1767,7 +1781,7 @@ def run_daily(
         schedule_time=schedule_time, idempotency_key=idempotency_key, allow_duplicate=allow_duplicate,
         notify_webhook=notify_target, notify_on_success=notify_on_success,
         failure_streak_threshold=failure_streak_threshold, notify_on_recovery=notify_on_recovery,
-        retry_attempts=retry_attempts, retry_backoff_seconds=retry_backoff_seconds,
+        retry_attempts=retry_attempts, retry_backoff_seconds=retry_backoff_seconds, collect_metrics=collect_metrics,
     )
     run = _daily_run(config, show_drafts=False, as_json=as_json)
 
@@ -2059,15 +2073,16 @@ def automation_env_set_anthropic_key(env_file, key, as_json):
 @click.option("--webhook", "webhook_url", default="", help="Optional webhook URL to validate")
 @click.option("--fix", is_flag=True, help="Apply safe automatic fixes")
 @click.option("--run-smoke", is_flag=True, help="Run a one-shot smoke execution after checks")
+@click.option("--probe-ai", is_flag=True, help="Make one tiny API call to prove the key works (presence is not validity)")
 @click.option("--json", "as_json", is_flag=True, help="Output doctor report as JSON")
-def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smoke, as_json):
+def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smoke, probe_ai, as_json):
     """Diagnose daily-run health and optionally apply fixes. The one check list; `health` was a second copy."""
     fixes: list[str] = []
     errors: list[str] = []
     cron_lines, cron_error = read_user_crontab_lines()
     checks, facts = diagnostics(
         _app.get(), cron_lines=cron_lines, cron_error=cron_error,
-        schedule_time=schedule_time, lock_ttl_minutes=lock_ttl_minutes, webhook_url=webhook_url,
+        schedule_time=schedule_time, lock_ttl_minutes=lock_ttl_minutes, webhook_url=webhook_url, probe_ai=probe_ai,
     )
     by_name = {c["name"]: c for c in checks}
     if by_name["schedule_time"]["status"] == "fail":
@@ -2095,7 +2110,7 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
 
         if not facts["cron_error"] and not facts["managed_job"]:
             run_tokens = build_scheduled_run_daily_tokens(
-                default_scheduler_runner_tokens(), save_recap=True, generate_drafts=True, save_drafts=True,
+                default_scheduler_runner_tokens(), save_recap=True, generate_drafts=True, save_drafts=True, collect_metrics=True,
                 retry_attempts=2, retry_backoff_seconds=10.0, failure_streak_threshold=3, notify_on_recovery=True, notify_webhook="",
             )
             cron_command = build_cron_shell_command(Path.cwd().resolve(), run_tokens, env_file=env_file)
@@ -2161,6 +2176,7 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
 @click.option("--save-recap/--no-save-recap", default=True, help="Persist markdown recap for each scheduled run")
 @click.option("--generate-drafts/--no-generate-drafts", default=True, help="Generate drafts during scheduled runs")
 @click.option("--save-drafts/--no-save-drafts", default=True, help="Persist generated drafts during scheduled runs")
+@click.option("--collect-metrics/--no-collect-metrics", default=True, help="Read account metrics (headless browser) on each scheduled run")
 @click.option("--adopt-existing/--no-adopt-existing", default=True, help="Replace unmanaged run-daily cron entries")
 @click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file sourced by cron before run-daily")
 @click.option("--sync-env/--no-sync-env", default=True, help="Sync shell ANTHROPIC_API_KEY into env file when present")
@@ -2179,6 +2195,7 @@ def automation_schedule(
     save_recap,
     generate_drafts,
     save_drafts,
+    collect_metrics,
     adopt_existing,
     env_file,
     sync_env,
@@ -2248,6 +2265,7 @@ def automation_schedule(
         save_recap=save_recap,
         generate_drafts=generate_drafts,
         save_drafts=save_drafts,
+        collect_metrics=collect_metrics,
         retry_attempts=retry_attempts,
         retry_backoff_seconds=retry_backoff_seconds,
         failure_streak_threshold=failure_streak_threshold,
@@ -3658,12 +3676,13 @@ def automate_engage(contact_ids, pinned, feed, likes, comments, dry_run, yes, he
 
 @automate.command("sync-profile")
 @click.option("--headline", default="", help="New headline text")
-@click.option("--headline-from-profile", is_flag=True, help="Use the headline saved in your local profile")
+@click.option("--headline-from-profile", is_flag=True, help="Use the headline from your profile (the resume repo's copy when it is on this machine)")
+@click.option("--about-from-profile", is_flag=True, help="Use the About text from your profile (resume repo copy)")
 @click.option("--about", default="", help="New About section text")
 @click.option("--about-file", type=click.Path(exists=True), default=None, help="Read About text from a file")
 @click.option("--dry-run", is_flag=True, help="Show what would change without editing")
 @click.option("--headless", is_flag=True, help="Run without a visible browser window")
-def automate_sync_profile(headline, headline_from_profile, about, about_file, dry_run, headless):
+def automate_sync_profile(headline, headline_from_profile, about, about_from_profile, about_file, dry_run, headless):
     """Push your headline/About to LinkedIn (pairs with `optimizer` output)."""
     if headline_from_profile:
         profile = _app.profile_repo.get()
@@ -3671,10 +3690,19 @@ def automate_sync_profile(headline, headline_from_profile, about, about_file, dr
             console.print("[red]No local profile headline found. Run: linkedin-cli profile setup[/red]")
             raise SystemExit(1)
         headline = profile["headline"]
+    if about_from_profile:
+        profile = _app.profile_repo.get() and _app.profile_svc.get_profile()
+        if not profile or not profile.get("about"):
+            console.print("[red]No About text in your profile. Put the resume repo on this machine (LINKEDIN_RESUME_REPO) or pass --about-file.[/red]")
+            raise SystemExit(1)
+        about = profile["about"]
     if about_file:
         about = Path(about_file).read_text()
+    if headline_from_profile or about_from_profile:
+        source = (_app.profile_svc.get_profile() or {}).get("copy_source", "local profile file")
+        console.print(f"[dim]Copy source: {source}[/dim]")
     if not headline and not about:
-        console.print("[red]Nothing to sync — pass --headline/--headline-from-profile and/or --about/--about-file.[/red]")
+        console.print("[red]Nothing to sync — pass --headline/--headline-from-profile and/or --about/--about-from-profile/--about-file.[/red]")
         raise SystemExit(1)
 
     if headline:
@@ -3797,6 +3825,65 @@ def automate_jobs(query, location, limit, headless, dry_run):
 
     added, skipped = _app.market_svc.import_job_results(results)
     console.print(f"[green]Imported {len(added)} posting(s)[/green]" + (f", skipped {skipped} duplicate(s)" if skipped else ""))
+
+
+@cli.group("metrics")
+def metrics():
+    """The account's own numbers over time — the measurement the growth goal is judged by."""
+
+
+@metrics.command("collect")
+@click.option("--posts/--no-posts", default=True, help="Also read impressions for each recorded post")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+def metrics_collect(posts, headless):
+    """Read followers, connections, profile views, impressions, search appearances, SSI. Read-only."""
+    urns = [p["urn"] for p in _app.metrics_svc.post_rows()] if posts else []
+    with _open_session(headless=headless) as session:
+        result = session.metrics(post_urns=urns)
+    if not result:
+        console.print(f"[red]Metrics not read ({result.status}: {result.reason}).[/red]")
+        raise SystemExit(1)
+    entry = _app.metrics_svc.record(result.data)
+    unread = [k for k, v in entry.items() if k != "date" and v is None]
+    console.print(f"[green]Recorded metrics for {entry['date']}.[/green]")
+    _render_metrics(_app.metrics_svc.summary())
+    if unread:
+        console.print(f"[yellow]Could not read: {', '.join(unread)} — recorded as missing, not zero.[/yellow]")
+
+
+@metrics.command("show")
+@click.option("--days", default=7, help="Delta window in days")
+def metrics_show(days):
+    """Latest metrics and their change over the window."""
+    summary = _app.metrics_svc.summary(days=days)
+    if not summary:
+        console.print("[dim]No metrics yet. Run: linkedin-cli metrics collect[/dim]")
+        return
+    console.print(f"[dim]Latest: {_app.metrics_svc.latest()['date']}[/dim]")
+    _render_metrics(summary, days=days)
+    posts = [p for p in _app.metrics_svc.post_rows() if p.get("impressions") is not None]
+    if posts:
+        table = Table(title="Post impressions")
+        table.add_column("#", justify="right")
+        table.add_column("Posted", style="dim")
+        table.add_column("Impressions", justify="right")
+        table.add_column("Text")
+        for p in posts:
+            text = p.get("text", "")
+            table.add_row(str(p["id"]), p.get("posted_at", "")[:10], str(p["impressions"]), text if len(text) <= 50 else text[:47] + "...")
+        console.print(table)
+
+
+def _render_metrics(summary: list[dict], days: int = 7) -> None:
+    table = Table()
+    table.add_column("Metric")
+    table.add_column("Value", justify="right")
+    table.add_column(f"Δ{days}d", justify="right")
+    for m in summary:
+        value = "[red]—[/red]" if m["value"] is None else str(m["value"])
+        delta = "—" if m["delta"] is None else f"{m['delta']:+d}"
+        table.add_row(m["metric"], value, delta)
+    console.print(table)
 
 
 @cli.group("inbox")

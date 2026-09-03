@@ -170,6 +170,32 @@ POST_SUCCESS_LINK = "a[href*='/feed/update/urn:li:']"
 FILE_INPUT = "input[type='file']"
 FORM_ERROR = ".artdeco-inline-feedback--error"
 
+# Account metrics. Read from page *text* by label, not by class: the numbers
+# sit next to stable English labels on the dashboard, the profile, and the SSI
+# page, and every class name around them is obfuscated. A metric whose label is
+# not on the page is None, never 0 — a zero in a time series is a data point,
+# and a selector that stopped matching must not manufacture one.
+DASHBOARD_URL = "https://www.linkedin.com/dashboard/"
+MY_NETWORK_URL = "https://www.linkedin.com/mynetwork/"
+SSI_URL = "https://www.linkedin.com/sales/ssi"
+POST_ANALYTICS_URL = "https://www.linkedin.com/analytics/post-summary/{urn}/"
+#: Verified against the live pages 2026-09-02. The dashboard prints the number
+#: on the line *before* its label ("2,498 / Total followers"); the profile prints
+#: "500+ connections" (capped) while /mynetwork/ prints the exact count on the
+#: line after "Connections"; and the SSI page for this account says access has
+#: been discontinued, so the only digit near the label was a notification count.
+METRIC_LABELS = {
+    "profile_views": re.compile(r"([\d,]+)\s+profile views?", re.I),
+    "post_impressions": re.compile(r"([\d,]+)\s+post impressions?", re.I),
+    "search_appearances": re.compile(r"([\d,]+)\s+search appearances?", re.I),
+    "followers": re.compile(r"([\d,]+)\s+total followers", re.I),
+    "followers_on_profile": re.compile(r"([\d,]+)\s+followers?", re.I),
+    "connections": re.compile(r"\bconnections\s*\n\s*([\d,]+)", re.I),
+    "ssi": re.compile(r"\b(\d{1,3})\s*(?:/|out of)\s*100\b", re.I),
+    "impressions": re.compile(r"([\d,]+)\s+impressions?", re.I),
+}
+SSI_UNAVAILABLE = re.compile(r"do not have access to SSI|has been discontinued", re.I)
+
 #: Selectors whose absence cannot be told apart from an empty page — the first
 #: suspects when a run reports zero results. Names match the `selector_misses`
 #: entries. Mostly CSS keyed on LinkedIn class names, plus the accessible-name
@@ -210,4 +236,9 @@ FRAGILE_SELECTORS = {
     "headline_field": HEADLINE_FIELD_LABEL.pattern,
     "save_button": SAVE_BUTTON.pattern,
     "edit_about_button": EDIT_ABOUT_BUTTON.pattern,
+    # -- metrics: a label that stopped appearing reads as None, and is named here
+    "dashboard_metrics": "text: profile views / post impressions / search appearances",
+    "network_counts": "text: Connections / N on /mynetwork/",
+    "ssi_score": "text: Social Selling Index NN",
+    "post_impressions": "text: N impressions",
 }

@@ -281,3 +281,11 @@ class TestCrontabIO:
         proc = MagicMock(returncode=0, stdout="", stderr="")
         with patch("linkedin.scheduling.crontab.subprocess.run", return_value=proc):
             assert write_user_crontab_lines(["0 9 * * * job"]) is None
+
+
+def test_scheduled_tokens_carry_collect_metrics():
+    from linkedin.scheduling.schedule import build_scheduled_run_daily_tokens
+
+    base = dict(save_recap=True, generate_drafts=True, save_drafts=True, retry_attempts=1, retry_backoff_seconds=1.0, failure_streak_threshold=3, notify_on_recovery=True, notify_webhook="")
+    assert "--collect-metrics" in build_scheduled_run_daily_tokens(["linkedin-cli"], collect_metrics=True, **base)
+    assert "--collect-metrics" not in build_scheduled_run_daily_tokens(["linkedin-cli"], **base)

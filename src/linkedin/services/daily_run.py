@@ -59,6 +59,8 @@ class RunConfig:
     notify_on_recovery: bool = True
     retry_attempts: int = 1
     retry_backoff_seconds: float = 5.0
+    #: Read the account's metrics (headless browser) before the plan. Never fails the run.
+    collect_metrics: bool = False
 
 
 @dataclass
@@ -149,6 +151,17 @@ def build_plan(data: dict) -> DailyPlan:
             "No postings above threshold.",
         ),
         Section(
+            "metrics",
+            "Account Metrics (vs 7 days ago)",
+            ["Metric", "Value", "Δ7d"],
+            [
+                [m["metric"], "—" if m["value"] is None else str(m["value"]), "—" if m["delta"] is None else f"{m['delta']:+d}"]
+                for m in data.get("metrics") or []
+            ],
+            "No metrics yet. Run: linkedin-cli metrics collect",
+            optional=True,
+        ),
+        Section(
             "templates",
             "Best Templates",
             ["Type", "Template", "Variant", "Rate", "Uses"],
@@ -174,6 +187,7 @@ class DailyRun:
         on_draft: Callable[[dict], None] | None = None,
         on_draft_failure: Callable[[int, str], None] | None = None,
         on_retry: Callable[[int, int, float], None] | None = None,
+        metrics_collector: Callable[[], dict] | None = None,
     ):
         self.app = app
         self.config = config
@@ -181,6 +195,7 @@ class DailyRun:
         self.on_draft = on_draft
         self.on_draft_failure = on_draft_failure
         self.on_retry = on_retry
+        self.metrics_collector = metrics_collector
 
     # -- the plan ---------------------------------------------------------------
 
@@ -200,6 +215,7 @@ class DailyRun:
             "inbox_proposals": load_json(app.data_dir.inbox_proposals, []),
             "postings": app.market_svc.list_postings(limit=cfg.postings_limit, min_score=cfg.min_posting_score),
             "templates": recommendations,
+            "metrics": app.metrics_svc.summary(days=7),
         }
 
     def draft_for_actions(self, actions: list[dict], *, save: bool) -> dict:
@@ -242,7 +258,18 @@ class DailyRun:
     def cycle(self) -> dict:
         """One plan, with drafts and recap as configured. No lifecycle."""
         cfg = self.config
+        if cfg.collect_metrics and self.metrics_collector is not None:
+            # Before the plan, so today's row is what the plan's metrics section shows.
+            # A collection failure is recorded, not raised: the plan must still run.
+            try:
+                data_metrics = self.metrics_collector()
+            except Exception as exc:
+                data_metrics = {"error": f"{type(exc).__name__}: {exc}"}
+        else:
+            data_metrics = None
         data = self.plan_data()
+        if data_metrics is not None:
+            data["metrics_collected"] = data_metrics
         if cfg.generate_drafts or cfg.save_drafts:
             data["drafts"] = self.draft_for_actions(data["actions"], save=cfg.save_drafts)
         else:

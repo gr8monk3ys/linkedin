@@ -88,6 +88,10 @@ class DataDir:
     def thread_index(self) -> Path:
         return self.root / "thread_index.json"
 
+    @property
+    def metrics(self) -> Path:
+        return self.root / "metrics.json"
+
     # -- run-daily
     @property
     def run_daily_state(self) -> Path:

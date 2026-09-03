@@ -208,3 +208,17 @@ class TestAutomateJobs:
     def test_no_results_says_so(self, runner, fake_session):
         result = _run(runner, ["automate", "jobs", "-q", "Nothing"], fake_session, jobs=[])
         assert "No job results" in result.output
+
+
+class TestRunDailyCollectsMetrics:
+    def test_run_daily_collect_metrics_records_a_row(self, runner, fake_session):
+        from linkedin.cli import _app
+
+        fake_session.results["metrics"] = ActionResult("ok", data={"followers": 2498, "connections": 2506, "profile_views": 46, "post_impressions": 0, "search_appearances": 70, "ssi": None, "posts": {}})
+        result = runner.invoke(cli, ["run-daily", "--json", "--collect-metrics"])
+        assert result.exit_code == 0, result.output
+        payload = __import__("json").loads(result.output)
+        assert payload["metrics_collected"]["missing"] == ["ssi"]
+        assert fake_session.opened_with["headless"] is True
+        assert _app.metrics_svc.latest()["followers"] == 2498
+        assert [m["metric"] for m in payload["metrics"]][0] == "followers"

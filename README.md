@@ -197,6 +197,9 @@ linkedin-cli automate login                 # Log in (headful; handles 2FA) and 
 linkedin-cli contacts rank                  # Who the connection budget should go to (★ = pinned, exempt)
 linkedin-cli contacts pin 12                # Keep following #12 whatever the rank says
 linkedin-cli automate engage --pinned       # Like recent posts of every pinned contact
+linkedin-cli metrics collect --headless     # Followers, connections, profile views, impressions, search appearances (read-only)
+linkedin-cli metrics show --days 7          # Latest row with deltas; per-post impressions
+linkedin-cli automation doctor --probe-ai   # Prove the API key works, not just that it is set
 linkedin-cli automate limits                # Today's usage vs daily budget
 linkedin-cli automate limits set post 2     # Raise a daily cap (writes limits.json)
 
@@ -409,6 +412,7 @@ Everything is stored locally in `~/.linkedin-cli/`:
 ├── limits.json       # Daily automation caps (seeded with the ramp defaults)
 ├── posts.json        # Posts published through the tool, with their URNs
 ├── thread_index.json # Who wrote in LinkedIn messaging (no bodies); feeds `inbox strangers`
+├── metrics.json      # Account metrics, one row per day (None = could not be read)
 ├── automation_usage.json # Today's browser-automation counters
 ├── li_session.json   # Saved LinkedIn browser session (cookies)
 ├── run_daily_state.json # Completed idempotency keys

@@ -839,6 +839,61 @@ class LinkedInPage:
             # tells those apart.
             pass
 
+    # -------------------------------------------------------------------------
+    # Account metrics (read-only). Each returns None for a label not on the page.
+    # -------------------------------------------------------------------------
+
+    def _body_text(self) -> str:
+        try:
+            return self.page.locator("body").inner_text()
+        except Exception:
+            return ""
+
+    def read_dashboard_metrics(self) -> dict[str, int | None]:
+        """followers, profile_views, post_impressions, search_appearances from /dashboard/."""
+        self.page.goto(sel.DASHBOARD_URL)
+        self.page.wait_for_timeout(1500)
+        text = self._body_text()
+        out = {k: _metric_from_text(text, k) for k in ("followers", "profile_views", "post_impressions", "search_appearances")}
+        if all(v is None for v in out.values()):
+            self._record_miss("dashboard_metrics")
+        return out
+
+    def read_network_counts(self) -> dict[str, int | None]:
+        """connections from /mynetwork/ (the profile caps it at "500+"); followers as a fallback from the profile."""
+        self.page.goto(sel.MY_NETWORK_URL)
+        self.page.wait_for_timeout(1500)
+        out: dict[str, int | None] = {"connections": _metric_from_text(self._body_text(), "connections")}
+        if out["connections"] is None:
+            self._record_miss("network_counts")
+        self.goto_own_profile()
+        self.page.wait_for_timeout(1500)
+        out["followers_on_profile"] = _metric_from_text(self._body_text(), "followers_on_profile")
+        return out
+
+    def read_ssi(self) -> int | None:
+        """Social Selling Index, 0–100. None when LinkedIn says the account has no SSI access
+        (a product decision, not a selector miss) or when no score is on the page."""
+        self.page.goto(sel.SSI_URL)
+        self.page.wait_for_timeout(1500)
+        text = self._body_text()
+        if sel.SSI_UNAVAILABLE.search(text):
+            return None
+        value = _metric_from_text(text, "ssi")
+        if value is None or not 0 <= value <= 100:
+            self._record_miss("ssi_score")
+            return None
+        return value
+
+    def read_post_impressions(self, urn: str) -> int | None:
+        """Impressions for one published post from its analytics page."""
+        self.page.goto(sel.POST_ANALYTICS_URL.format(urn=urn))
+        self.page.wait_for_timeout(1500)
+        value = _metric_from_text(self._body_text(), "impressions")
+        if value is None:
+            self._record_miss("post_impressions")
+        return value
+
     def _visible(self, selector: str):
         """The first *visible* match, which is not always the first match.
 
@@ -900,3 +955,13 @@ def _activity_urn(href: str) -> str:
     """The `urn:li:activity:NNN` (or share/ugcPost) inside a LinkedIn post URL, or ''."""
     m = re.search(r"(urn:li:(?:activity|share|ugcPost):\d+)", href)
     return m.group(1) if m else ""
+
+
+def _metric_from_text(text: str, name: str) -> int | None:
+    match = sel.METRIC_LABELS[name].search(text or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1).replace(",", ""))
+    except ValueError:
+        return None

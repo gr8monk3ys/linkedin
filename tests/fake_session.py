@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 from linkedin.automation.budget import Budget
 from linkedin.automation.session import ActionResult
 
-VERBS = ("connect", "message", "post", "like_post", "comment", "react", "sync_profile", "easy_apply", "search", "jobs", "scrape", "inbox")
+VERBS = ("connect", "message", "post", "like_post", "comment", "react", "sync_profile", "easy_apply", "search", "jobs", "scrape", "inbox", "metrics")
 
 
 class FakeSession:

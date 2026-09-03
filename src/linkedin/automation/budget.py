@@ -31,6 +31,7 @@ DEFAULT_CAPS: dict[str, int] = {
     "easy_apply": 15,
     "search": 30,
     "profile_view": 50,
+    "metrics": 3,
 }
 KINDS = tuple(DEFAULT_CAPS)
 

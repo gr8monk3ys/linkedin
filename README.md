@@ -194,6 +194,9 @@ linkedin-cli calendar stats
 # One-time setup
 linkedin-cli automate setup                 # Store credentials in the system keyring
 linkedin-cli automate login                 # Log in (headful; handles 2FA) and save the session
+linkedin-cli contacts rank                  # Who the connection budget should go to (★ = pinned, exempt)
+linkedin-cli contacts pin 12                # Keep following #12 whatever the rank says
+linkedin-cli automate engage --pinned       # Like recent posts of every pinned contact
 linkedin-cli automate limits                # Today's usage vs daily budget
 linkedin-cli automate limits set post 2     # Raise a daily cap (writes limits.json)
 

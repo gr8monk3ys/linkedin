@@ -1003,6 +1003,42 @@ class TestFollowUpCadence:
         assert draft_spec_for("repair_contact") is None
 
 
+class TestRankedConnections:
+    def _svc(self, json_repos):
+        from linkedin.services.contact_service import ContactService
+
+        contact_repo, company_repo, *_ = json_repos
+        return ContactService(contact_repo, company_repo)
+
+    def test_rank_decides_who_gets_the_invitation(self, json_repos):
+        """Two not_contacted contacts of the same age: the higher-ranked one is first."""
+        svc = self._svc(json_repos)
+        contact_repo = json_repos[0]
+        # A follow-up in the future keeps the date rules quiet, so only the status rule fires.
+        today = datetime.now().isoformat()
+        contact_repo.add(sample_contact(id=1, name="Low", status="not_contacted", follow_up_date="2099-01-01", created_at=today))
+        contact_repo.add(sample_contact(id=2, name="High", status="not_contacted", follow_up_date="2099-01-01", created_at=today))
+        actions = svc.get_next_actions(limit=5, scores={1: 10, 2: 90})
+        assert [a["name"] for a in actions] == ["High", "Low"]
+        assert "(rank 90)" in actions[0]["reason"]
+        assert actions[0]["priority"] - actions[1]["priority"] == 20
+
+    def test_without_scores_nothing_changes(self, json_repos):
+        svc = self._svc(json_repos)
+        json_repos[0].add(sample_contact(id=1, status="not_contacted", follow_up_date="2099-01-01", created_at=datetime.now().isoformat()))
+        (action,) = svc.get_next_actions(limit=5)
+        assert "rank" not in action["reason"]
+
+    def test_pin_and_unpin(self, json_repos):
+        svc = self._svc(json_repos)
+        json_repos[0].add(sample_contact(id=1))
+        assert svc.set_pinned(1, True)["pinned"] is True
+        assert [c["id"] for c in svc.pinned_contacts()] == [1]
+        assert svc.set_pinned(1, False)["pinned"] is False
+        assert svc.pinned_contacts() == []
+        assert svc.set_pinned(99, True) is None
+
+
 class TestRepairContacts:
     def _svc(self, json_repos):
         from linkedin.services.contact_service import ContactService

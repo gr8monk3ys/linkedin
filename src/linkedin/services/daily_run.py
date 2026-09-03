@@ -195,7 +195,7 @@ class DailyRun:
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "profile": app.profile_svc.get_profile(),
-            "actions": app.contact_svc.get_next_actions(limit=cfg.actions_limit),
+            "actions": app.contact_svc.get_next_actions(limit=cfg.actions_limit, scores=app.ranking_svc.scores()),
             "application_actions": app.application_svc.get_application_actions(limit=cfg.actions_limit),
             "inbox_proposals": load_json(app.data_dir.inbox_proposals, []),
             "postings": app.market_svc.list_postings(limit=cfg.postings_limit, min_score=cfg.min_posting_score),

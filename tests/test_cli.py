@@ -24,6 +24,23 @@ def temp_data_dir(isolated_data_dir):
     return isolated_data_dir.root
 
 
+class TestContactRanking:
+    def test_rank_lists_and_pin_exempts(self, runner, temp_data_dir):
+        runner.invoke(cli, ["profile", "setup"], input="Me\nEng\nSolutions Engineer\nPython\nExp\nUnique\nAI/ML\nSF\nn\n")
+        runner.invoke(cli, ["contacts", "add"], input="Ann Analyst\nCredit Analyst\nBank\nu1\n\n")
+        runner.invoke(cli, ["contacts", "add"], input="Hal Hiring\nEngineering Manager\nAcme\nu2\n\n")
+        result = runner.invoke(cli, ["contacts", "rank"])
+        assert result.exit_code == 0, result.output
+        assert result.output.index("Hal Hiring") < result.output.index("Ann Analyst")
+        assert runner.invoke(cli, ["contacts", "pin", "1"]).exit_code == 0
+        top = runner.invoke(cli, ["contacts", "rank", "--json"])
+        rows = json.loads(top.output)
+        assert rows[0]["name"] == "Ann Analyst" and rows[0]["pinned"] and rows[0]["score"] == 100
+        low = json.loads(runner.invoke(cli, ["contacts", "rank", "--bottom", "--json"]).output)
+        assert [r["name"] for r in low] == ["Hal Hiring"]
+        assert runner.invoke(cli, ["contacts", "pin", "99"]).exit_code == 1
+
+
 class TestDataStorage:
     """Tests for data storage functions."""
 

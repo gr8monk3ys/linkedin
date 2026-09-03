@@ -405,6 +405,7 @@ Everything is stored locally in `~/.linkedin-cli/`:
 ├── interview_prep.json # Saved interview prep
 ├── limits.json       # Daily automation caps (seeded with the ramp defaults)
 ├── posts.json        # Posts published through the tool, with their URNs
+├── thread_index.json # Who wrote in LinkedIn messaging (no bodies); feeds `inbox strangers`
 ├── automation_usage.json # Today's browser-automation counters
 ├── li_session.json   # Saved LinkedIn browser session (cookies)
 ├── run_daily_state.json # Completed idempotency keys

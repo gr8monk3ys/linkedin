@@ -10,9 +10,12 @@ import pytest
 
 from linkedin.services.inbox_service import (
     InboxService,
+    inbound_from_strangers,
     normalize_name,
     parse_thread_timestamp,
+    review_proposals,
     strip_url_query,
+    update_thread_index,
 )
 
 
@@ -280,3 +283,113 @@ def test_reply_with_a_linkedin_timestamp_produces_a_proposal():
     assert len(proposals) == 1
     assert proposals[0]["to_status"] == "responded"
     assert proposals[0]["confidence"] == "low"  # no URL on a thread card
+
+
+# -- review: which proposals may be applied ----------------------------------------
+
+
+def proposal(**overrides):
+    base = {"contact_id": 1, "name": "Ryan Barner", "from_status": "messaged", "to_status": "responded", "confidence": "high"}
+    base.update(overrides)
+    return base
+
+
+def test_review_applies_a_high_confidence_proposal_when_confirmed():
+    review = review_proposals([proposal()], [contact()], confirm=lambda p, low: True)
+    assert [p["contact_id"] for p in review.apply] == [1]
+    assert review.kept == [] and review.dropped == []
+
+
+def test_review_keeps_a_declined_proposal_for_later():
+    review = review_proposals([proposal()], [contact()], confirm=lambda p, low: False)
+    assert review.apply == [] and review.kept == [proposal()]
+
+
+def test_review_drops_a_proposal_whose_contact_moved_on():
+    """A status changed by hand since the sync wins over the proposal."""
+    review = review_proposals([proposal()], [contact(status="call_scheduled")], confirm=lambda p, low: True)
+    assert review.apply == [] and review.kept == []
+    (dropped, why), = review.dropped
+    assert "call_scheduled" in why
+
+
+def test_review_drops_a_proposal_whose_contact_is_gone():
+    review = review_proposals([proposal(contact_id=99)], [contact()], confirm=lambda p, low: True)
+    assert review.dropped[0][1] == "contact no longer exists"
+
+
+def test_yes_applies_high_confidence_without_asking():
+    asked = []
+    review = review_proposals([proposal()], [contact()], confirm=lambda p, low: asked.append(p) or False, yes=True)
+    assert asked == [] and len(review.apply) == 1
+
+
+def test_yes_still_asks_about_a_low_confidence_proposal():
+    """A name is a guess; --yes must not silently apply it."""
+    asked = []
+
+    def confirm(p, low):
+        asked.append(low)
+        return False
+
+    review = review_proposals([proposal(confidence="low")], [contact()], confirm=confirm, yes=True)
+    assert asked == [True]
+    assert review.apply == [] and len(review.kept) == 1
+
+
+# -- thread index: who wrote, without what they wrote ------------------------------
+
+IDX_TODAY = _dt.date(2026, 9, 2)
+IDX_NOW = _dt.datetime(2026, 9, 2, 9, 0, 0)
+
+
+def test_index_records_identity_and_timing_but_no_body():
+    rows = update_thread_index([], [thread(snippet="Secret details")], [contact()], today=IDX_TODAY, now=IDX_NOW)
+    (row,) = rows
+    assert row["name"] == "Ryan Barner"
+    assert row["url"] == "https://www.linkedin.com/in/ryanbarner"
+    assert row["last_message_at"] == "2026-08-29"
+    assert row["last_from_them"] is True
+    assert row["is_contact"] is True
+    assert row["first_seen"] == row["last_seen"] == "2026-09-02T09:00:00"
+    assert "Secret details" not in str(row)
+
+
+def test_index_merges_by_identity_and_keeps_first_seen():
+    first = update_thread_index([], [thread()], [contact()], today=IDX_TODAY, now=IDX_NOW)
+    later = _dt.datetime(2026, 9, 5, 9, 0, 0)
+    rows = update_thread_index(first, [thread(timestamp="2026-09-04", url="https://www.linkedin.com/in/ryanbarner?trk=x")], [contact()], today=later.date(), now=later)
+    (row,) = rows
+    assert row["first_seen"] == "2026-09-02T09:00:00"
+    assert row["last_seen"] == "2026-09-05T09:00:00"
+    assert row["last_message_at"] == "2026-09-04"
+
+
+def test_index_falls_back_to_the_name_when_there_is_no_url():
+    rows = update_thread_index([], [thread(url=None, name="Sam Stranger")], [contact()], today=IDX_TODAY, now=IDX_NOW)
+    assert rows[0]["key"] == "name:sam stranger"
+    assert rows[0]["is_contact"] is False
+
+
+def test_index_uses_linkedin_timestamps():
+    rows = update_thread_index([], [thread(timestamp="Yesterday")], [], today=IDX_TODAY, now=IDX_NOW)
+    assert rows[0]["last_message_at"] == "2026-09-01"
+
+
+def test_strangers_are_non_contacts_who_had_the_last_word_in_the_window():
+    threads = [
+        thread(name="Sam Stranger", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30"),
+        thread(name="Echo Stranger", url="https://www.linkedin.com/in/echo", timestamp="2026-08-30", last_from_them=False),
+        thread(name="Old Stranger", url="https://www.linkedin.com/in/old", timestamp="2026-06-01"),
+        thread(),  # a contact
+    ]
+    index = update_thread_index([], threads, [contact()], today=IDX_TODAY, now=IDX_NOW)
+    rows = inbound_from_strangers(index, IDX_TODAY - _dt.timedelta(days=30))
+    assert [r["name"] for r in rows] == ["Sam Stranger"]
+
+
+def test_a_stranger_who_becomes_a_contact_stops_counting():
+    index = update_thread_index([], [thread(name="Sam", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30")], [], today=IDX_TODAY, now=IDX_NOW)
+    assert len(inbound_from_strangers(index, IDX_TODAY - _dt.timedelta(days=30))) == 1
+    index = update_thread_index(index, [thread(name="Sam", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30")], [contact(id=2, name="Sam", linkedin_url="https://www.linkedin.com/in/sam")], today=IDX_TODAY, now=IDX_NOW)
+    assert inbound_from_strangers(index, IDX_TODAY - _dt.timedelta(days=30)) == []

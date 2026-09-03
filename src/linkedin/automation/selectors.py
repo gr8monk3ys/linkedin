@@ -65,7 +65,35 @@ FEED_AUTHOR = ".update-components-actor__name span[aria-hidden='true']"
 FEED_AUTHOR_HEADLINE = ".update-components-actor__description span[aria-hidden='true']"
 FEED_CONTENT = ".feed-shared-update-v2__description, .update-components-text"
 
+#: The people-search card. LinkedIn rebuilt this page with obfuscated component
+#: divs (verified 2026-09-02: `.reusable-search__result-container` matched
+#: nothing; every card is a `div[componentkey]` with a generated key). When the
+#: CSS path finds no cards, `SEARCH_RESULTS_SCRIPT` reads them from the DOM by
+#: shape: the smallest ancestor of a profile link whose first text line is a
+#: name followed by a "• 1st/2nd/3rd" degree line. The *first* profile link in a
+#: card is often the mutual connection ("Susana Zuno is a mutual connection"),
+#: so the person's own link is the one whose text equals the name line.
 SEARCH_RESULT_CARD = ".reusable-search__result-container"
+SEARCH_RESULTS_SCRIPT = """() => {
+  const out = []; const seen = new Set();
+  const degree = /^•\\s*(1st|2nd|3rd|3rd\\+)$/;
+  for (const a of document.querySelectorAll("main a[href*='/in/']")) {
+    let el = a, card = null;
+    for (let k = 0; k < 8 && el; k++) {
+      el = el.parentElement; if (!el) break;
+      const lines = el.innerText.split('\\n').map(x => x.trim()).filter(Boolean);
+      if (lines.length >= 3 && degree.test(lines[1]) && el.querySelectorAll("a[href*='/in/']").length <= 3) { card = el; break; }
+    }
+    if (!card || seen.has(card)) continue;
+    seen.add(card);
+    const lines = card.innerText.split('\\n').map(x => x.trim()).filter(Boolean);
+    const name = lines[0];
+    let own = [...card.querySelectorAll("a[href*='/in/']")].find(l => l.innerText.trim() === name) || null;
+    const url = own ? own.href.split('?')[0] : '';
+    out.push({ name, headline: lines[2] || '', location: lines[3] || '', degree: lines[1].replace('•', '').trim(), linkedin_url: url });
+  }
+  return out;
+}"""
 SEARCH_RESULT_NAME = "a.app-aware-link span[aria-hidden='true']"
 SEARCH_RESULT_HEADLINE = ".entity-result__primary-subtitle"
 SEARCH_RESULT_LINK = "a.app-aware-link"

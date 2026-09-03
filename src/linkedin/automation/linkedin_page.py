@@ -264,32 +264,40 @@ class LinkedInPage:
     # -------------------------------------------------------------------------
 
     def get_search_results(self) -> list[dict[str, str]]:
-        """Get search result entries from current search page."""
-        results = []
+        """People-search rows: {name, headline, linkedin_url} (+ location, degree from the script path).
+
+        Two readers. The CSS card path is the original; when it matches nothing
+        the DOM-shape script reads the rebuilt page. A miss is recorded only when
+        both come back empty — that is a page we do not recognise, not a search
+        with no results.
+        """
+        results: list[dict[str, str]] = []
         try:
             cards = self.page.locator(sel.SEARCH_RESULT_CARD)
             card_count = cards.count()
-            if card_count == 0:
-                self._record_miss("search_result_card")
             for i in range(card_count):
                 card = cards.nth(i)
-                entry = {}
+                entry: dict[str, str] = {}
                 name_link = card.locator(sel.SEARCH_RESULT_NAME).first
                 if name_link.count() > 0:
                     entry["name"] = name_link.text_content().strip()
                 else:
                     self._record_miss("search_result_name")
-
                 headline = card.locator(sel.SEARCH_RESULT_HEADLINE).first
                 if headline.count() > 0:
                     entry["headline"] = headline.text_content().strip()
-
                 link = card.locator(sel.SEARCH_RESULT_LINK).first
                 if link.count() > 0:
                     entry["linkedin_url"] = (link.get_attribute("href") or "").split("?")[0]
-
                 if entry.get("name"):
                     results.append(entry)
+            if card_count == 0:
+                scripted = self.page.evaluate(sel.SEARCH_RESULTS_SCRIPT)
+                for row in scripted if isinstance(scripted, list) else []:
+                    if isinstance(row, dict) and row.get("name"):
+                        results.append({k: str(row.get(k, "")) for k in ("name", "headline", "linkedin_url", "location", "degree")})
+                if not results:
+                    self._record_miss("search_result_card")
         except Exception:
             pass
         return results

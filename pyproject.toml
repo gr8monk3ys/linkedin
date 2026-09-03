@@ -1,6 +1,6 @@
 [project]
 name = "linkedin"
-version = "2.0.0"
+version = "0.1.0"
 description = "LinkedIn Job Hunt Assistant - CLI + Automation tools"
 readme = "README.md"
 requires-python = ">=3.10"

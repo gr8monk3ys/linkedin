@@ -26,6 +26,7 @@ from linkedin.services.inbox_service import InboxService
 from linkedin.services.interview_service import InterviewService
 from linkedin.services.market_service import MarketService
 from linkedin.services.optimizer_service import OptimizerService
+from linkedin.services.post_service import PostService
 from linkedin.services.profile_service import ProfileService
 from linkedin.services.research_service import ResearchService
 from linkedin.services.template_service import TemplateService
@@ -55,6 +56,7 @@ class App:
         self.interview_svc = InterviewService(r.applications, r.interview_prep, r.profile)
         self.conversation_svc = ConversationService(r.conversations, r.contacts)
         self.calendar_svc = ContentCalendarService(r.calendar)
+        self.post_svc = PostService(r.posts)
         self.automation_svc = AutomationService(r.profile)
         self.inbox_svc = InboxService()
 
@@ -97,3 +99,7 @@ class App:
     @property
     def interview_prep_repo(self):
         return self.repos.interview_prep
+
+    @property
+    def post_repo(self):
+        return self.repos.posts

@@ -4400,10 +4400,43 @@ def automate_post(text, draft_id, calendar_id, dry_run, headless):
     with _open_session(headless=headless, dry_run=dry_run) as session:
         result = session.post(text)
     _exit_unless_ok(result, dry_run_message="post not published.", failure_prefix="Post failed")
-    console.print("[green]Post published.[/green]")
+    urn = result.data or ""
+    record = _app.post_svc.record_published(text, urn, draft_id=draft_id, calendar_id=calendar_id)
+    if urn:
+        console.print(f"[green]Post published.[/green] {urn} (post #{record['id']})")
+    else:
+        console.print(f"[yellow]Post published, but its ID could not be read back ({result.reason}).[/yellow]")
+        console.print("[dim]  It is live on LinkedIn and recorded as post "
+                      f"#{record['id']}, but nothing can join it to its metrics.[/dim]")
     if calendar_entry is not None:
         _app.calendar_svc.mark_posted(calendar_id)
         console.print(f"Calendar entry #{calendar_id} marked posted.")
+
+
+@cli.group("posts")
+def posts():
+    """Posts that went out through this tool, with the IDs that join them to metrics."""
+
+
+@posts.command("list")
+def posts_list():
+    """List published posts, newest first."""
+    rows = _app.post_svc.list_posts()
+    if not rows:
+        console.print("[dim]No posts published through this tool yet.[/dim]")
+        return
+    table = Table(title="Published posts")
+    table.add_column("#", justify="right")
+    table.add_column("Posted", style="dim")
+    table.add_column("URN")
+    table.add_column("Text")
+    for p in rows:
+        text = p.get("text", "")
+        table.add_row(str(p["id"]), p.get("posted_at", "")[:16], p.get("urn") or "[red]unreadable[/red]", text if len(text) <= 60 else text[:57] + "...")
+    console.print(table)
+    missing = _app.post_svc.unmeasurable()
+    if missing:
+        console.print(f"[yellow]{len(missing)} post(s) have no URN and cannot be joined to metrics.[/yellow]")
 
 
 def _review_feed_comment(post: dict, comment_text: str) -> bool:

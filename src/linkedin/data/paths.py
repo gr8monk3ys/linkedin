@@ -80,6 +80,10 @@ class DataDir:
     def inbox_proposals(self) -> Path:
         return self.root / "inbox_proposals.json"
 
+    @property
+    def posts(self) -> Path:
+        return self.root / "posts.json"
+
     # -- run-daily
     @property
     def run_daily_state(self) -> Path:

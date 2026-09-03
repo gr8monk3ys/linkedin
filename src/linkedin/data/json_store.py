@@ -13,6 +13,7 @@ from linkedin.types import (
     ConversationDict,
     DraftDict,
     InterviewPrepDict,
+    PostDict,
     ProfileDict,
     ResearchDict,
 )
@@ -280,3 +281,25 @@ class JsonInterviewPrepRepo(_JsonRepo):
                 return
         all_prep.append(prep)
         save_json(self.path, all_prep)
+
+
+class JsonPostRepo(_JsonRepo):
+    def list_all(self) -> list[PostDict]:
+        return load_json(self.path)
+
+    def get(self, post_id: int) -> PostDict | None:
+        return next((p for p in self.list_all() if p["id"] == post_id), None)
+
+    def add(self, post: PostDict) -> PostDict:
+        posts = self.list_all()
+        posts.append(post)
+        save_json(self.path, posts)
+        return post
+
+    def update(self, post: PostDict) -> PostDict:
+        posts = [post if p["id"] == post["id"] else p for p in self.list_all()]
+        save_json(self.path, posts)
+        return post
+
+    def next_id(self) -> int:
+        return _next_id(self.list_all())

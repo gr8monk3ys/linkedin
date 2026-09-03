@@ -17,6 +17,7 @@ from linkedin.data.json_store import (
     JsonConversationRepo,
     JsonDraftRepo,
     JsonInterviewPrepRepo,
+    JsonPostRepo,
     JsonProfileRepo,
     JsonResearchRepo,
 )
@@ -34,6 +35,7 @@ class Repos:
     conversations: JsonConversationRepo
     calendar: JsonCalendarRepo
     interview_prep: JsonInterviewPrepRepo
+    posts: JsonPostRepo
 
     def as_tuple(self) -> tuple:
         return (
@@ -60,4 +62,5 @@ def create_repos(data_dir: DataDir) -> Repos:
         conversations=JsonConversationRepo(data_dir.conversations),
         calendar=JsonCalendarRepo(data_dir.calendar),
         interview_prep=JsonInterviewPrepRepo(data_dir.interview_prep),
+        posts=JsonPostRepo(data_dir.posts),
     )

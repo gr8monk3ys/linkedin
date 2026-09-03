@@ -11,7 +11,8 @@ class TestFactory:
         assert isinstance(repos, Repos)
         assert repos.contacts.path == tmp_path / "contacts.json"
         assert repos.interview_prep.path == tmp_path / "interview_prep.json"
-        assert len(repos.as_tuple()) == 9
+        assert len(repos.as_tuple()) == 9  # the CRM set; posts hang off repos.posts
+        assert repos.posts.path == tmp_path / "posts.json"
 
     def test_two_data_dirs_do_not_share_state(self, tmp_path):
         a = create_repos(DataDir(tmp_path / "a")).contacts

@@ -140,6 +140,18 @@ class ContentPostDict(TypedDict, total=False):
     created_at: str
 
 
+class PostDict(TypedDict, total=False):
+    """A post that went out. The URN is the join key for its metrics; it can be
+    missing when LinkedIn's success link could not be read back."""
+
+    id: int
+    urn: str
+    text: str
+    posted_at: str
+    draft_id: int | None
+    calendar_id: int | None
+
+
 class InterviewPrepDict(TypedDict, total=False):
     application_id: int
     questions: list[str]

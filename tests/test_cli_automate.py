@@ -130,6 +130,34 @@ def test_automate_post_from_calendar_marks_posted(runner, fake_session):
     assert "posted" in listing.output
 
 
+def test_automate_post_records_the_urn(runner, fake_session):
+    fake_session.results["post"] = ActionResult("ok", data="urn:li:activity:42")
+    result = runner.invoke(cli, ["automate", "post", "--text", "Shipped"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "urn:li:activity:42" in result.output
+    assert cli_mod._app.post_svc.list_posts()[0]["urn"] == "urn:li:activity:42"
+    listing = runner.invoke(cli, ["posts", "list"])
+    assert "urn:li:activity:42" in listing.output
+
+
+def test_automate_post_degraded_says_the_id_is_missing(runner, fake_session):
+    """The post is live; the CLI must say it cannot be joined to metrics, not 'published'."""
+    fake_session.results["post"] = ActionResult("ok", "posted, but the post's URN could not be read back")
+    result = runner.invoke(cli, ["automate", "post", "--text", "Shipped"], input="y\n")
+    assert result.exit_code == 0, result.output
+    assert "could not be read back" in result.output
+    assert cli_mod._app.post_svc.unmeasurable()
+    listing = runner.invoke(cli, ["posts", "list"])
+    assert "unreadable" in listing.output and "cannot be joined" in listing.output
+
+
+def test_automate_post_failed_records_nothing(runner, fake_session):
+    fake_session.results["post"] = ActionResult("failed", "post_editor not found")
+    result = runner.invoke(cli, ["automate", "post", "--text", "Shipped"], input="y\n")
+    assert result.exit_code == 1
+    assert cli_mod._app.post_svc.list_posts() == []
+
+
 def test_automate_post_refuses_template_draft(runner, fake_session):
     """A template is not a draft; it must never go out under the user's name."""
     save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hi there", "type": "post", "source": "template"}])

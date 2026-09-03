@@ -507,6 +507,16 @@ class TestRebuiltProfile:
         assert d["location"] == "London, UK" and d["about"] == "First paragraph.\n\nSecond paragraph."
         assert lp.selector_misses == []
 
+    def test_the_footer_about_line_is_not_an_about_section(self, page):
+        # A stranger's profile with no About loaded: the only "About" is the footer's link list.
+        page.register_css("main", FakeElement("Satya Nadella\n· 3rd\nChairman and CEO at Microsoft\nRedmond, Washington\nMessage\nAbout\nAccessibility\nTalent Solutions\nCareers"))
+        d = LinkedInPage(page).scrape_profile()
+        assert d["headline"] == "Chairman and CEO at Microsoft" and "about" not in d
+
+    def test_body_is_read_when_the_page_has_no_main(self, page):
+        page.register_css("body", FakeElement("Ada Lovelace\nShe/Her\nML Engineer\nLondon\nAbout\nHello.\nActivity"))
+        assert LinkedInPage(page).scrape_profile()["about"] == "Hello."
+
     def test_degree_marker_is_skipped_like_pronouns(self, page):
         page.register_css("main", FakeElement("Bob Builder\n• 2nd\nCTO at Acme\nDenver"))
         assert LinkedInPage(page).scrape_profile()["headline"] == "CTO at Acme"

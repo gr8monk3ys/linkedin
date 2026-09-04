@@ -19,8 +19,16 @@ PINNED_FIELD = "pinned"
 #: Titles on the hiring side of the target role. Weighted by how directly the
 #: person can turn a conversation into an interview.
 _HIRING_TITLES = (
-    (re.compile(r"\b(hiring manager|head of|director|vp|vice president|cto|chief)\b", re.I), 30, "decision-maker title"),
-    (re.compile(r"\b(engineering manager|manager, engineering|eng manager|team lead|staff|principal)\b", re.I), 25, "hiring-side engineering title"),
+    (
+        re.compile(r"\b(hiring manager|head of|director|vp|vice president|cto|chief)\b", re.I),
+        30,
+        "decision-maker title",
+    ),
+    (
+        re.compile(r"\b(engineering manager|manager, engineering|eng manager|team lead|staff|principal)\b", re.I),
+        25,
+        "hiring-side engineering title",
+    ),
     (re.compile(r"\b(recruit|talent|sourcer|people ops)\w*", re.I), 25, "recruiter"),
 )
 _ENGINEER = re.compile(r"\b(engineer|developer|architect|scientist|sre|devops)\b", re.I)
@@ -113,16 +121,18 @@ def rank_contacts(contacts: list[dict], profile: dict | None, companies: list[di
     rows = []
     for contact in contacts:
         score, reasons = score_contact(contact, profile, companies)
-        rows.append({
-            "contact_id": contact.get("id"),
-            "name": contact.get("name", ""),
-            "title": contact.get("title", ""),
-            "company": contact.get("company", ""),
-            "status": contact.get("status", ""),
-            "pinned": bool(contact.get(PINNED_FIELD)),
-            "score": score,
-            "reasons": reasons,
-        })
+        rows.append(
+            {
+                "contact_id": contact.get("id"),
+                "name": contact.get("name", ""),
+                "title": contact.get("title", ""),
+                "company": contact.get("company", ""),
+                "status": contact.get("status", ""),
+                "pinned": bool(contact.get(PINNED_FIELD)),
+                "score": score,
+                "reasons": reasons,
+            }
+        )
     rows.sort(key=lambda r: (not r["pinned"], -r["score"], r["name"].lower()))
     return rows
 

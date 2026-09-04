@@ -207,7 +207,9 @@ class TestCreatePost:
             page.register_css(sel.POST_EDITOR_FALLBACK, FakeElement())
         page.register_role("button", sel.POST_SUBMIT_BUTTON, FakeElement())
         if success_link:
-            page.register_css(sel.POST_SUCCESS_LINK, FakeElement(href=f"https://www.linkedin.com/feed/update/{self.URN}/"))
+            page.register_css(
+                sel.POST_SUCCESS_LINK, FakeElement(href=f"https://www.linkedin.com/feed/update/{self.URN}/")
+            )
         return page
 
     def test_publishes_and_reads_back_the_urn(self, page):
@@ -346,13 +348,29 @@ class TestRebuiltFeed:
 
     def test_script_rows_become_posts_and_tagged_cards_take_likes(self, page):
         # The fake cannot run the script, so the cards it would have tagged are registered up front.
-        other = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: Like"})]})
-        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: no reaction"})]})
+        other = FakeCard(
+            None,
+            {
+                canonical("role", "button", sel.LIKE_BUTTON): [
+                    FakeElement(attributes={"aria-label": "Reaction button state: Like"})
+                ]
+            },
+        )
+        card = FakeCard(
+            None,
+            {
+                canonical("role", "button", sel.LIKE_BUTTON): [
+                    FakeElement(attributes={"aria-label": "Reaction button state: no reaction"})
+                ]
+            },
+        )
         _with_feed(page, [])
         page.register_css(f"[{sel.FEED_CARD_TAG}]", [other, card])
         page.register_css(f'[{sel.FEED_CARD_TAG}="1"]', [card])
         other._page = card._page = page
-        page.evaluate_result = [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
+        page.evaluate_result = [
+            {"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}
+        ]
         lp = LinkedInPage(page)
         posts = lp.get_feed_posts(max_posts=3)
         assert posts == [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
@@ -360,7 +378,12 @@ class TestRebuiltFeed:
         assert page.evaluated == [sel.FEED_POSTS_SCRIPT]
         # the button patterns reach the script from the catalogue, not a JS copy
         (arg,) = page.evaluate_args[0]
-        assert arg == {"maxPosts": 3, "tag": sel.FEED_CARD_TAG, "likePattern": sel.LIKE_BUTTON.pattern, "commentPattern": sel.COMMENT_BUTTON.pattern}
+        assert arg == {
+            "maxPosts": 3,
+            "tag": sel.FEED_CARD_TAG,
+            "likePattern": sel.LIKE_BUTTON.pattern,
+            "commentPattern": sel.COMMENT_BUTTON.pattern,
+        }
         # like_post finds the card by its exact tag value, not by position
         assert lp.like_post(1).outcome == "ok"
         assert lp.like_post(7).outcome == "not_applicable"
@@ -372,7 +395,14 @@ class TestRebuiltFeed:
         assert lp.selector_misses == ["feed_card"]
 
     def test_a_reaction_state_other_than_none_is_already_liked(self, page):
-        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: Like"})]})
+        card = FakeCard(
+            None,
+            {
+                canonical("role", "button", sel.LIKE_BUTTON): [
+                    FakeElement(attributes={"aria-label": "Reaction button state: Like"})
+                ]
+            },
+        )
         _with_feed(page, [card])
         assert LinkedInPage(page).like_post(0).outcome == "not_applicable"
 
@@ -468,12 +498,26 @@ class TestSearchResults:
     def test_rebuilt_page_is_read_by_the_dom_shape_script(self, page):
         """Verified 2026-09-02: no CSS card matches; the script reads name/degree/headline lines."""
         page.evaluate_result = [
-            {"name": "Neha Tammana", "headline": "Senior Solutions Engineer - AI Specialist", "location": "SF Bay Area", "degree": "2nd", "linkedin_url": "https://www.linkedin.com/in/neha"},
+            {
+                "name": "Neha Tammana",
+                "headline": "Senior Solutions Engineer - AI Specialist",
+                "location": "SF Bay Area",
+                "degree": "2nd",
+                "linkedin_url": "https://www.linkedin.com/in/neha",
+            },
             {"name": "", "headline": "nameless", "linkedin_url": ""},
         ]
         lp = LinkedInPage(page)
         rows = lp.get_search_results()
-        assert rows == [{"name": "Neha Tammana", "headline": "Senior Solutions Engineer - AI Specialist", "linkedin_url": "https://www.linkedin.com/in/neha", "location": "SF Bay Area", "degree": "2nd"}]
+        assert rows == [
+            {
+                "name": "Neha Tammana",
+                "headline": "Senior Solutions Engineer - AI Specialist",
+                "linkedin_url": "https://www.linkedin.com/in/neha",
+                "location": "SF Bay Area",
+                "degree": "2nd",
+            }
+        ]
         assert lp.selector_misses == []
         assert page.evaluated == [sel.SEARCH_RESULTS_SCRIPT]
 
@@ -506,7 +550,6 @@ class TestScrapeProfile:
         assert set(lp.selector_misses) == {"profile_name", "profile_headline", "profile_about"}
 
 
-
 class TestRebuiltProfile:
     """Verified 2026-09-03: no h1, no class hooks; the page text has a fixed shape."""
 
@@ -522,7 +565,12 @@ class TestRebuiltProfile:
 
     def test_the_footer_about_line_is_not_an_about_section(self, page):
         # A stranger's profile with no About loaded: the only "About" is the footer's link list.
-        page.register_css("main", FakeElement("Satya Nadella\n· 3rd\nChairman and CEO at Microsoft\nRedmond, Washington\nMessage\nAbout\nAccessibility\nTalent Solutions\nCareers"))
+        page.register_css(
+            "main",
+            FakeElement(
+                "Satya Nadella\n· 3rd\nChairman and CEO at Microsoft\nRedmond, Washington\nMessage\nAbout\nAccessibility\nTalent Solutions\nCareers"
+            ),
+        )
         d = LinkedInPage(page).scrape_profile()
         assert d["headline"] == "Chairman and CEO at Microsoft" and "about" not in d
 
@@ -538,7 +586,9 @@ class TestRebuiltProfile:
     def test_scrape_scrolls_before_reading(self, page):
         page.register_css("main", FakeElement("Ada Lovelace\nEngineer\nLondon"))
         LinkedInPage(page).scrape_profile()
-        assert page.evaluated[: len(sel.PROFILE_SCROLL_STOPS)] == [sel.PROFILE_SCROLL_SCRIPT] * len(sel.PROFILE_SCROLL_STOPS)
+        assert page.evaluated[: len(sel.PROFILE_SCROLL_STOPS)] == [sel.PROFILE_SCROLL_SCRIPT] * len(
+            sel.PROFILE_SCROLL_STOPS
+        )
         assert [a for (a,) in page.evaluate_args[: len(sel.PROFILE_SCROLL_STOPS)]] == list(sel.PROFILE_SCROLL_STOPS)
 
     def test_degree_marker_is_skipped_like_pronouns(self, page):
@@ -766,11 +816,14 @@ class TestPendingInvitations:
     @staticmethod
     def _link(name, href):
         """One invitation anchor: no text of its own, name on an ancestor."""
-        card = FakeCard(None, {
-            canonical("css", sel.INVITATION_NAME_ANCESTOR): [
-                FakeElement(f"{name}\nProduct Manager\nSent 3 days ago") if name else FakeElement("")
-            ],
-        })
+        card = FakeCard(
+            None,
+            {
+                canonical("css", sel.INVITATION_NAME_ANCESTOR): [
+                    FakeElement(f"{name}\nProduct Manager\nSent 3 days ago") if name else FakeElement("")
+                ],
+            },
+        )
         card._elements = [FakeElement(href=href)]
         return card
 
@@ -783,10 +836,12 @@ class TestPendingInvitations:
         return page
 
     def test_reads_pending_invitations(self):
-        page = self._page_with([
-            self._link("Andy Matsuzaki", "/in/andy"),
-            self._link("Michele Chung", "/in/michele"),
-        ])
+        page = self._page_with(
+            [
+                self._link("Andy Matsuzaki", "/in/andy"),
+                self._link("Michele Chung", "/in/michele"),
+            ]
+        )
         pending = LinkedInPage(page).get_pending_sent_invitations()
 
         assert pending == [
@@ -796,10 +851,13 @@ class TestPendingInvitations:
 
     def test_the_same_profile_linked_twice_is_one_invitation(self):
         """A card links the profile from both the avatar and the name."""
-        page = self._page_with([
-            self._link("", "/in/andy"),
-            self._link("Andy Matsuzaki", "/in/andy"),
-        ], main_text="People (1)")
+        page = self._page_with(
+            [
+                self._link("", "/in/andy"),
+                self._link("Andy Matsuzaki", "/in/andy"),
+            ],
+            main_text="People (1)",
+        )
         pending = LinkedInPage(page).get_pending_sent_invitations()
 
         assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
@@ -815,8 +873,11 @@ class TestPendingInvitations:
         growing = [
             [self._link("Sashank Gondala", "/in/sashank")],
             [self._link("Sashank Gondala", "/in/sashank"), self._link("Andy", "/in/andy")],
-            [self._link("Sashank Gondala", "/in/sashank"), self._link("Andy", "/in/andy"),
-             self._link("Michele", "/in/michele")],
+            [
+                self._link("Sashank Gondala", "/in/sashank"),
+                self._link("Andy", "/in/andy"),
+                self._link("Michele", "/in/michele"),
+            ],
         ]
 
         def next_batch(_selector):
@@ -833,18 +894,24 @@ class TestPendingInvitations:
 
     def test_a_list_that_stops_changing_is_trusted(self):
         """Two identical reads mean the page finished rendering."""
-        page = self._page_with([
-            self._link("Andy Matsuzaki", "/in/andy"),
-        ], main_text="People (0)")  # count renders stale; stability is the test
+        page = self._page_with(
+            [
+                self._link("Andy Matsuzaki", "/in/andy"),
+            ],
+            main_text="People (0)",
+        )  # count renders stale; stability is the test
 
         pending = LinkedInPage(page).get_pending_sent_invitations()
         assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
 
     def test_a_complete_list_matching_the_stated_count_is_accepted(self):
-        page = self._page_with([
-            self._link("Andy Matsuzaki", "/in/andy"),
-            self._link("Michele Chung", "/in/michele"),
-        ], main_text="People (2)")
+        page = self._page_with(
+            [
+                self._link("Andy Matsuzaki", "/in/andy"),
+                self._link("Michele Chung", "/in/michele"),
+            ],
+            main_text="People (2)",
+        )
         assert len(LinkedInPage(page).get_pending_sent_invitations()) == 2
 
     def test_unreadable_list_returns_none_not_empty(self):
@@ -978,7 +1045,7 @@ class TestJobResultScrolling:
         page = FakePage()
         batches = [
             [self._card("A"), self._card("B")],
-            [self._card("C")],          # A and B recycled out
+            [self._card("C")],  # A and B recycled out
             [self._card("D")],
         ]
 

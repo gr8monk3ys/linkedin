@@ -35,11 +35,13 @@ def load_run_state(data_dir: DataDir) -> dict:
             continue
         key = item.get("key")
         if isinstance(key, str) and key:
-            completed.append({
-                "key": key,
-                "completed_at": str(item.get("completed_at", "")),
-                "run_id": str(item.get("run_id", "")),
-            })
+            completed.append(
+                {
+                    "key": key,
+                    "completed_at": str(item.get("completed_at", "")),
+                    "run_id": str(item.get("run_id", "")),
+                }
+            )
 
     alerts_raw = raw.get("alerts", {})
     if not isinstance(alerts_raw, dict):
@@ -116,11 +118,13 @@ def record_idempotency_key(data_dir: DataDir, key: str, run_id: str) -> None:
     completed = state.get("completed_idempotency_keys", [])
     if not isinstance(completed, list):
         completed = []
-    completed.append({
-        "key": key,
-        "completed_at": datetime.now().isoformat(timespec="seconds"),
-        "run_id": run_id,
-    })
+    completed.append(
+        {
+            "key": key,
+            "completed_at": datetime.now().isoformat(timespec="seconds"),
+            "run_id": run_id,
+        }
+    )
     state["completed_idempotency_keys"] = completed[-1000:]
     save_run_state(data_dir, state)
 
@@ -249,10 +253,14 @@ def acquire_run_lock(data_dir: DataDir, lock_ttl_minutes: int = 180) -> tuple[bo
         return False, "Another run is already in progress."
 
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({
-            "pid": os.getpid(),
-            "created_at": now.isoformat(timespec="seconds"),
-        }))
+        fh.write(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "created_at": now.isoformat(timespec="seconds"),
+                }
+            )
+        )
     return True, ""
 
 

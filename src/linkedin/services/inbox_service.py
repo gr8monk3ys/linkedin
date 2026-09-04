@@ -311,7 +311,9 @@ def review_proposals(
             review.dropped.append((proposal, "contact no longer exists"))
             continue
         if contact.get("status") != proposal.get("from_status"):
-            review.dropped.append((proposal, f"contact is now '{contact.get('status')}', not '{proposal.get('from_status')}'"))
+            review.dropped.append(
+                (proposal, f"contact is now '{contact.get('status')}', not '{proposal.get('from_status')}'")
+            )
             continue
         low = proposal.get("confidence") == "low"
         if (yes and not low) or confirm(proposal, low):
@@ -364,14 +366,16 @@ def update_thread_index(
         url = strip_url_query(thread.get("url", "") or "")
         is_contact = (url in contact_urls) if url else (normalize_name(name) in contact_names)
         row = rows.get(key) or {"key": key, "first_seen": stamp}
-        row.update({
-            "name": name,
-            "url": url,
-            "last_message_at": last_at.isoformat() if last_at else row.get("last_message_at", ""),
-            "last_from_them": bool(thread.get("last_from_them")),
-            "is_contact": is_contact,
-            "last_seen": stamp,
-        })
+        row.update(
+            {
+                "name": name,
+                "url": url,
+                "last_message_at": last_at.isoformat() if last_at else row.get("last_message_at", ""),
+                "last_from_them": bool(thread.get("last_from_them")),
+                "is_contact": is_contact,
+                "last_seen": stamp,
+            }
+        )
         rows[key] = row
     return sorted(rows.values(), key=lambda r: r.get("last_message_at", ""), reverse=True)
 

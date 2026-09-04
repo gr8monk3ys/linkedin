@@ -123,8 +123,7 @@ class FakeLocator:
             raise AssertionError("operated on an empty locator")
         if len(self._elements) > 1:
             raise StrictModeViolation(
-                f"locator resolved to {len(self._elements)} elements; "
-                "use .first or .nth(i) to pick one"
+                f"locator resolved to {len(self._elements)} elements; use .first or .nth(i) to pick one"
             )
         return self._elements[0]
 

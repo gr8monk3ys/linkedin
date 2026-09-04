@@ -18,7 +18,11 @@ def _raise_ai_error(*args, **kwargs):
 
 @pytest.fixture
 def app_repos(tmp_path, monkeypatch):
-    return JsonApplicationRepo(tmp_path / "applications.json"), JsonProfileRepo(tmp_path / "profile.json"), JsonContactRepo(tmp_path / "contacts.json")
+    return (
+        JsonApplicationRepo(tmp_path / "applications.json"),
+        JsonProfileRepo(tmp_path / "profile.json"),
+        JsonContactRepo(tmp_path / "contacts.json"),
+    )
 
 
 @pytest.fixture

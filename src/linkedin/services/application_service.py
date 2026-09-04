@@ -62,9 +62,7 @@ class ApplicationService:
     def get_application(self, application_id: int) -> ApplicationDict | None:
         return self.applications.get(application_id)
 
-    def list_applications(
-        self, status: str = "all", company: str = ""
-    ) -> list[ApplicationDict]:
+    def list_applications(self, status: str = "all", company: str = "") -> list[ApplicationDict]:
         apps = self.applications.list_all()
         if status != "all":
             apps = [a for a in apps if a.get("status") == status]
@@ -123,17 +121,25 @@ class ApplicationService:
             if age_days is None:
                 # No usable timestamp at all. Surface it rather than skipping,
                 # the way a contact with no dates yields `repair_contact`.
-                actions.append(self._application_action(
-                    app, 50, REPAIR_APPLICATION,
-                    "No applied_date/created_at; re-import or set a date",
-                ))
+                actions.append(
+                    self._application_action(
+                        app,
+                        50,
+                        REPAIR_APPLICATION,
+                        "No applied_date/created_at; re-import or set a date",
+                    )
+                )
                 continue
 
             if age_days >= rule["after_days"]:
-                actions.append(self._application_action(
-                    app, rule["priority"] + min(age_days, 30), rule["action"],
-                    rule["reason"].format(age=age_days),
-                ))
+                actions.append(
+                    self._application_action(
+                        app,
+                        rule["priority"] + min(age_days, 30),
+                        rule["action"],
+                        rule["reason"].format(age=age_days),
+                    )
+                )
 
         actions.sort(key=lambda a: a["priority"], reverse=True)
         return actions[:limit]
@@ -199,9 +205,7 @@ class ApplicationService:
             by_status[s] = by_status.get(s, 0) + 1
         return {"total": len(apps), "by_status": by_status}
 
-    def tailor_resume(
-        self, application_id: int, resume_override: str = ""
-    ) -> tuple[str | None, str]:
+    def tailor_resume(self, application_id: int, resume_override: str = "") -> tuple[str | None, str]:
         """AI-tailor resume bullets to a job description."""
         app = self.applications.get(application_id)
         if not app:
@@ -219,9 +223,9 @@ class ApplicationService:
         jd = app.get("jd_text", "")
         prompt = f"""You are a professional resume writer. Rewrite the candidate's resume bullet points to better match this job description.
 
-JOB: {app.get('title')} at {app.get('company')}
+JOB: {app.get("title")} at {app.get("company")}
 JOB DESCRIPTION:
-{jd or 'Not provided.'}
+{jd or "Not provided."}
 
 CANDIDATE RESUME:
 {resume_text}
@@ -249,16 +253,16 @@ Instructions:
 
         prompt = f"""Write a concise, compelling cover letter for this job application.
 
-APPLICANT: {profile.get('name')}
-HEADLINE: {profile.get('headline', '')}
-SKILLS: {profile.get('skills', '')}
-EXPERIENCE: {profile.get('experience_summary', '')}
-UNIQUE VALUE: {profile.get('unique_value', '')}
-RESUME: {profile.get('resume_text', 'Not provided')}
+APPLICANT: {profile.get("name")}
+HEADLINE: {profile.get("headline", "")}
+SKILLS: {profile.get("skills", "")}
+EXPERIENCE: {profile.get("experience_summary", "")}
+UNIQUE VALUE: {profile.get("unique_value", "")}
+RESUME: {profile.get("resume_text", "Not provided")}
 
-JOB: {app.get('title')} at {app.get('company')}
+JOB: {app.get("title")} at {app.get("company")}
 JOB DESCRIPTION:
-{app.get('jd_text') or 'Not provided.'}
+{app.get("jd_text") or "Not provided."}
 
 Requirements:
 - 3 paragraphs: hook/why-them, why-me/evidence, call to action
@@ -289,12 +293,12 @@ Output only the letter text."""
 
         prompt = f"""Analyze the skills gap between this candidate and job description.
 
-CANDIDATE SKILLS: {my_skills or 'Not listed'}
-CANDIDATE RESUME SUMMARY: {resume[:500] if resume else 'Not provided'}
+CANDIDATE SKILLS: {my_skills or "Not listed"}
+CANDIDATE RESUME SUMMARY: {resume[:500] if resume else "Not provided"}
 
-JOB: {app.get('title')} at {app.get('company')}
+JOB: {app.get("title")} at {app.get("company")}
 JOB DESCRIPTION:
-{app.get('jd_text')}
+{app.get("jd_text")}
 
 Output a structured analysis:
 

@@ -3,15 +3,21 @@
 import pytest
 
 from linkedin.data.json_store import JsonProfileRepo
-from linkedin.services.market_service import MarketService
+from linkedin.services.postings_service import PostingService
 
 
 @pytest.fixture
 def market(tmp_path):
-    return MarketService(JsonProfileRepo(tmp_path / "profile.json"), tmp_path / "job_postings.json")
+    return PostingService(JsonProfileRepo(tmp_path / "profile.json"), tmp_path / "job_postings.json")
 
 
-JOB = {"title": "ML Engineer", "company": "Netflix", "location": "Los Angeles", "url": "https://www.linkedin.com/jobs/view/1", "easy_apply": True}
+JOB = {
+    "title": "ML Engineer",
+    "company": "Netflix",
+    "location": "Los Angeles",
+    "url": "https://www.linkedin.com/jobs/view/1",
+    "easy_apply": True,
+}
 
 
 def test_import_job_results_scores_against_the_profile(market):
@@ -28,7 +34,9 @@ def test_import_job_results_scores_against_the_profile(market):
 def test_import_job_results_dedupes_on_url(market):
     results = [{"title": "ML Engineer", "company": "Netflix", "url": "https://x/jobs/view/1?trk=abc"}]
     market.import_job_results(results)
-    added, skipped = market.import_job_results([{"title": "ML Engineer", "company": "Netflix", "url": "https://x/jobs/view/1"}])
+    added, skipped = market.import_job_results(
+        [{"title": "ML Engineer", "company": "Netflix", "url": "https://x/jobs/view/1"}]
+    )
     assert added == [] and skipped == 1
     assert len(market.list_postings()) == 1
 

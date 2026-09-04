@@ -19,35 +19,6 @@ from linkedin.types import ContactDict
 
 __all__ = ["STATUS_RULES", "TERMINAL_STATUSES", "_check_status_coverage", "ContactService", "parse_iso_date"]
 
-CAMPAIGN_LIBRARY: dict[str, list[dict]] = {
-    "networking_21d": [
-        {
-            "index": 0,
-            "label": "Send connection request",
-            "day_offset": 0,
-            "suggested_command": "linkedin-cli drafts connection {id}",
-        },
-        {
-            "index": 1,
-            "label": "Follow up #1",
-            "day_offset": 7,
-            "suggested_command": "linkedin-cli drafts follow-up {id} --attempt 1",
-        },
-        {
-            "index": 2,
-            "label": "Follow up #2",
-            "day_offset": 14,
-            "suggested_command": "linkedin-cli drafts follow-up {id} --attempt 2",
-        },
-        {
-            "index": 3,
-            "label": "Ask for a short call",
-            "day_offset": 21,
-            "suggested_command": "linkedin-cli drafts message {id} --context \"Ask for a short call\"",
-        },
-    ],
-}
-
 
 def parse_iso_date(value) -> dt.date | None:
     """Parse a stored ISO timestamp or date, returning None for anything unusable."""
@@ -134,7 +105,6 @@ class ContactService:
             "source": source,
             "referral_contact_id": referral_id,
             "activities": [],
-            "campaign": {},
         }
 
         return self.contacts.add(contact)
@@ -159,18 +129,22 @@ class ContactService:
             contact["status"] = status
             contact["last_contact"] = datetime.now().isoformat()
             contact["follow_up_date"] = cadence_follow_up_date(status)
-            contact["activities"].append({
-                "date": datetime.now().isoformat(),
-                "type": status,
-                "note": f"Status changed from {old_status.replace('_', ' ')}",
-            })
+            contact["activities"].append(
+                {
+                    "date": datetime.now().isoformat(),
+                    "type": status,
+                    "note": f"Status changed from {old_status.replace('_', ' ')}",
+                }
+            )
         if notes:
             contact["notes"] = (contact.get("notes", "") + f"\n[{datetime.now().strftime('%Y-%m-%d')}] {notes}").strip()
-            contact["activities"].append({
-                "date": datetime.now().isoformat(),
-                "type": "note_added",
-                "note": notes,
-            })
+            contact["activities"].append(
+                {
+                    "date": datetime.now().isoformat(),
+                    "type": "note_added",
+                    "note": notes,
+                }
+            )
         if follow_up:
             contact["follow_up_date"] = follow_up
         if email:
@@ -325,10 +299,14 @@ class ContactService:
         actions: list[dict] = []
 
         for contact, _, days_overdue in due_data["overdue"]:
-            actions.append(self._action(
-                contact, 100 + min(days_overdue, 30), FOLLOW_UP_OVERDUE,
-                f"Follow-up overdue by {days_overdue} day(s)",
-            ))
+            actions.append(
+                self._action(
+                    contact,
+                    100 + min(days_overdue, 30),
+                    FOLLOW_UP_OVERDUE,
+                    f"Follow-up overdue by {days_overdue} day(s)",
+                )
+            )
 
         for contact, _, _ in due_data["due_today"]:
             actions.append(self._action(contact, 95, FOLLOW_UP_TODAY, "Follow-up due today"))
@@ -344,10 +322,14 @@ class ContactService:
             if age_days is None:
                 # No timestamps at all — the contact is stranded rather than fresh.
                 # Surface it so `contacts repair` gets run instead of it sitting invisible.
-                actions.append(self._action(
-                    contact, 50, REPAIR_CONTACT,
-                    "No created_at/last_contact; run `linkedin-cli contacts repair`",
-                ))
+                actions.append(
+                    self._action(
+                        contact,
+                        50,
+                        REPAIR_CONTACT,
+                        "No created_at/last_contact; run `linkedin-cli contacts repair`",
+                    )
+                )
                 continue
 
             rule = STATUS_RULES.get(status)
@@ -437,13 +419,15 @@ class ContactService:
             if not fixes:
                 continue
 
-            repaired.append({
-                "contact_id": contact["id"],
-                "name": contact.get("name", ""),
-                "status": status,
-                "fixes": fixes,
-                "follow_up_date": contact.get("follow_up_date"),
-            })
+            repaired.append(
+                {
+                    "contact_id": contact["id"],
+                    "name": contact.get("name", ""),
+                    "status": status,
+                    "fixes": fixes,
+                    "follow_up_date": contact.get("follow_up_date"),
+                }
+            )
 
         # One write for the whole set — `update()` rewrites the entire file per
         # call, and every write now fsyncs.
@@ -467,7 +451,7 @@ class ContactService:
         contacts = self.contacts.list_all()
         candidates: list[dict] = []
         for i, left in enumerate(contacts):
-            for right in contacts[i + 1:]:
+            for right in contacts[i + 1 :]:
                 score, signals = self._duplicate_score(left, right)
                 if score < min_score:
                     continue
@@ -476,17 +460,19 @@ class ContactService:
                 primary = left if left.get("id") == primary_id else right
                 duplicate = right if right.get("id") == duplicate_id else left
                 confidence = "high" if score >= 0.85 else "medium" if score >= 0.70 else "low"
-                candidates.append({
-                    "primary_id": primary_id,
-                    "duplicate_id": duplicate_id,
-                    "primary_name": primary.get("name", ""),
-                    "duplicate_name": duplicate.get("name", ""),
-                    "primary_company": primary.get("company", ""),
-                    "duplicate_company": duplicate.get("company", ""),
-                    "score": round(score, 2),
-                    "confidence": confidence,
-                    "signals": signals,
-                })
+                candidates.append(
+                    {
+                        "primary_id": primary_id,
+                        "duplicate_id": duplicate_id,
+                        "primary_name": primary.get("name", ""),
+                        "duplicate_name": duplicate.get("name", ""),
+                        "primary_company": primary.get("company", ""),
+                        "duplicate_company": duplicate.get("company", ""),
+                        "score": round(score, 2),
+                        "confidence": confidence,
+                        "signals": signals,
+                    }
+                )
 
         candidates.sort(key=lambda c: c["score"], reverse=True)
         return candidates[:limit]
@@ -522,7 +508,9 @@ class ContactService:
                 merged[field] = duplicate.get(field)
 
         merged["notes"] = self._merge_notes(primary.get("notes", ""), duplicate.get("notes", ""))
-        merged["status"] = self._best_status(primary.get("status", "not_contacted"), duplicate.get("status", "not_contacted"))
+        merged["status"] = self._best_status(
+            primary.get("status", "not_contacted"), duplicate.get("status", "not_contacted")
+        )
         merged["created_at"] = self._earliest_iso(primary.get("created_at"), duplicate.get("created_at"))
         merged["last_contact"] = self._latest_iso(primary.get("last_contact"), duplicate.get("last_contact"))
         merged["activities"] = self._merge_activities(primary.get("activities", []), duplicate.get("activities", []))
@@ -540,164 +528,6 @@ class ContactService:
                 self.contacts.update(contact)
 
         return merged
-
-    def enroll_campaign(
-        self,
-        contact_id: int,
-        campaign_name: str = "networking_21d",
-        start_date: str | None = None,
-    ) -> ContactDict | str | None:
-        contact = self.contacts.get(contact_id)
-        if not contact:
-            return None
-
-        campaign_name = campaign_name.strip().lower() or "networking_21d"
-        steps = CAMPAIGN_LIBRARY.get(campaign_name)
-        if not steps:
-            return f"Unknown campaign '{campaign_name}'."
-
-        enrolled_at = start_date
-        if enrolled_at:
-            try:
-                # Validate YYYY-MM-DD format.
-                datetime.fromisoformat(enrolled_at)
-            except ValueError:
-                return "start_date must use YYYY-MM-DD format."
-        else:
-            enrolled_at = datetime.now().strftime("%Y-%m-%d")
-
-        contact["campaign"] = {
-            "name": campaign_name,
-            "active": True,
-            "step_index": 0,
-            "enrolled_at": enrolled_at,
-            "completed_at": None,
-            "last_advanced_at": None,
-        }
-        self.contacts.update(contact)
-        return contact
-
-    def campaign_status(self, contact_id: int) -> dict | None:
-        contact = self.contacts.get(contact_id)
-        if not contact:
-            return None
-
-        campaign = contact.get("campaign")
-        if not isinstance(campaign, dict) or not campaign.get("name"):
-            return {}
-
-        steps = self._campaign_steps(str(campaign.get("name", "")))
-        step_index = int(campaign.get("step_index", 0))
-        active = bool(campaign.get("active", False))
-        total_steps = len(steps)
-        current_step = steps[step_index] if active and 0 <= step_index < total_steps else None
-        due_date = self._campaign_step_due_date(campaign, current_step) if current_step else None
-
-        return {
-            "contact_id": contact.get("id"),
-            "contact_name": contact.get("name", ""),
-            "campaign_name": campaign.get("name", ""),
-            "active": active,
-            "step_index": step_index,
-            "total_steps": total_steps,
-            "current_step": current_step,
-            "due_date": due_date.isoformat() if due_date else None,
-            "completed_at": campaign.get("completed_at"),
-            "enrolled_at": campaign.get("enrolled_at"),
-        }
-
-    def list_campaign_contacts(self, active_only: bool = False, campaign_name: str = "") -> list[dict]:
-        result = []
-        expected_name = campaign_name.strip().lower()
-        for contact in self.contacts.list_all():
-            status = self.campaign_status(int(contact.get("id", 0)))
-            if not status:
-                continue
-            if expected_name and status.get("campaign_name") != expected_name:
-                continue
-            if active_only and not status.get("active", False):
-                continue
-            result.append(status)
-        return result
-
-    def get_due_campaign_steps(self, limit: int = 10, as_of: dt.date | None = None) -> list[dict]:
-        today = as_of or datetime.now().date()
-        due: list[dict] = []
-
-        for contact in self.contacts.list_all():
-            campaign = contact.get("campaign")
-            if not isinstance(campaign, dict):
-                continue
-            if not campaign.get("active"):
-                continue
-
-            steps = self._campaign_steps(str(campaign.get("name", "")))
-            if not steps:
-                continue
-
-            step_index = int(campaign.get("step_index", 0))
-            if step_index < 0 or step_index >= len(steps):
-                continue
-            step = steps[step_index]
-            due_date = self._campaign_step_due_date(campaign, step)
-            if due_date is None:
-                continue
-            if due_date > today:
-                continue
-
-            days_overdue = (today - due_date).days
-            due.append({
-                "contact_id": contact.get("id"),
-                "contact_name": contact.get("name", ""),
-                "company": contact.get("company", ""),
-                "campaign_name": campaign.get("name", ""),
-                "step_index": step_index,
-                "step_label": step.get("label", ""),
-                "due_date": due_date.isoformat(),
-                "days_overdue": days_overdue,
-                "suggested_command": str(step.get("suggested_command", "linkedin-cli contacts view {id}")).format(id=contact.get("id")),
-                "priority": 100 + min(days_overdue, 30),
-            })
-
-        due.sort(key=lambda row: (row["priority"], row["contact_id"]), reverse=True)
-        return due[:limit]
-
-    def advance_campaign(self, contact_id: int, complete: bool = False) -> ContactDict | str | None:
-        contact = self.contacts.get(contact_id)
-        if not contact:
-            return None
-
-        campaign = contact.get("campaign")
-        if not isinstance(campaign, dict) or not campaign.get("name"):
-            return "Contact is not enrolled in a campaign."
-
-        steps = self._campaign_steps(str(campaign.get("name", "")))
-        if not steps:
-            return "Campaign definition not found."
-
-        if complete:
-            campaign["step_index"] = len(steps)
-            campaign["active"] = False
-            campaign["completed_at"] = datetime.now().isoformat()
-            campaign["last_advanced_at"] = datetime.now().isoformat()
-            contact["campaign"] = campaign
-            self.contacts.update(contact)
-            return contact
-
-        step_index = int(campaign.get("step_index", 0))
-        next_index = step_index + 1
-        campaign["step_index"] = next_index
-        campaign["last_advanced_at"] = datetime.now().isoformat()
-        if next_index >= len(steps):
-            campaign["active"] = False
-            campaign["completed_at"] = datetime.now().isoformat()
-        else:
-            campaign["active"] = True
-            campaign["completed_at"] = None
-
-        contact["campaign"] = campaign
-        self.contacts.update(contact)
-        return contact
 
     def _duplicate_score(self, left: ContactDict, right: ContactDict) -> tuple[float, list[str]]:
         score = 0.0
@@ -832,25 +662,6 @@ class ContactService:
 
     def _norm(self, value: str) -> str:
         return re.sub(r"\s+", " ", str(value).strip().lower())
-
-    def _campaign_steps(self, campaign_name: str) -> list[dict]:
-        return CAMPAIGN_LIBRARY.get(campaign_name.strip().lower(), [])
-
-    def _campaign_step_due_date(self, campaign: dict, step: dict | None) -> dt.date | None:
-        if not step:
-            return None
-        enrolled_at = str(campaign.get("enrolled_at", "")).strip()
-        if not enrolled_at:
-            return None
-        try:
-            base_date = datetime.fromisoformat(enrolled_at.replace("Z", "+00:00")).date()
-        except ValueError:
-            return None
-        try:
-            offset = int(step.get("day_offset", 0))
-        except (TypeError, ValueError):
-            offset = 0
-        return base_date + dt.timedelta(days=max(0, offset))
 
 
 # -- importing what the browser read ------------------------------------------

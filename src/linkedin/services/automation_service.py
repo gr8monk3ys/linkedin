@@ -121,14 +121,16 @@ class AutomationService:
                         comment_text = ""
 
             content = str(post.get("content", ""))
-            results.append({
-                "author": post.get("author", ""),
-                "content_preview": content if len(content) <= 50 else content[:47] + "...",
-                "liked": liked,
-                "commented": commented,
-                "comment_text": comment_text,
-                "skipped_reason": skipped_reason,
-            })
+            results.append(
+                {
+                    "author": post.get("author", ""),
+                    "content_preview": content if len(content) <= 50 else content[:47] + "...",
+                    "liked": liked,
+                    "commented": commented,
+                    "comment_text": comment_text,
+                    "skipped_reason": skipped_reason,
+                }
+            )
 
         return results
 

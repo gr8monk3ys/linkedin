@@ -26,16 +26,48 @@ def gh(args: list[str]) -> str:
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True, timeout=60).stdout
 
 
-def collect_fleet_facts(days: int = 7, *, owner: str = OWNER, run: Callable[[list[str]], str] = gh, today: date | None = None) -> dict:
+def collect_fleet_facts(
+    days: int = 7, *, owner: str = OWNER, run: Callable[[list[str]], str] = gh, today: date | None = None
+) -> dict:
     """A week of public activity, shaped for a prompt and for a human to check."""
     today = today or date.today()
     since = (today - timedelta(days=days)).isoformat()
 
-    repos = json.loads(run(["repo", "list", owner, "--visibility", "public", "--no-archived", "--limit", "200", "--json", "name,pushedAt,stargazerCount,description"]))
-    merged = json.loads(run([
-        "search", "prs", "--owner", owner, "--visibility", "public", "--merged", "--merged-at", f">={since}",
-        "--limit", "200", "--json", "repository,title,author,url,number",
-    ]))
+    repos = json.loads(
+        run(
+            [
+                "repo",
+                "list",
+                owner,
+                "--visibility",
+                "public",
+                "--no-archived",
+                "--limit",
+                "200",
+                "--json",
+                "name,pushedAt,stargazerCount,description",
+            ]
+        )
+    )
+    merged = json.loads(
+        run(
+            [
+                "search",
+                "prs",
+                "--owner",
+                owner,
+                "--visibility",
+                "public",
+                "--merged",
+                "--merged-at",
+                f">={since}",
+                "--limit",
+                "200",
+                "--json",
+                "repository,title,author,url,number",
+            ]
+        )
+    )
 
     public_names = {r["name"] for r in repos}
     merged = [p for p in merged if (p.get("repository") or {}).get("name") in public_names]
@@ -55,8 +87,18 @@ def collect_fleet_facts(days: int = 7, *, owner: str = OWNER, run: Callable[[lis
         "merged_by_bots": len(bots),
         "repos_touched": len(by_repo),
         "top_repos": [{"name": name, "merged": n} for name, n in by_repo.most_common(5)],
-        "recently_pushed": [{"name": r["name"], "pushed_at": r.get("pushedAt", "")[:10], "stars": r.get("stargazerCount", 0), "description": (r.get("description") or "")[:120]} for r in active],
-        "sample_titles": [{"repo": p["repository"]["name"], "title": p["title"][:100], "url": p.get("url", "")} for p in human[:8]],
+        "recently_pushed": [
+            {
+                "name": r["name"],
+                "pushed_at": r.get("pushedAt", "")[:10],
+                "stars": r.get("stargazerCount", 0),
+                "description": (r.get("description") or "")[:120],
+            }
+            for r in active
+        ],
+        "sample_titles": [
+            {"repo": p["repository"]["name"], "title": p["title"][:100], "url": p.get("url", "")} for p in human[:8]
+        ],
     }
 
 

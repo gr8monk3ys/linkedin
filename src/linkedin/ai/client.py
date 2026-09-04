@@ -147,13 +147,12 @@ def generate_with_ai(
             last_error = exc
             if attempt >= attempts - 1 or not _is_retryable(exc):
                 break
-            sleep_for = backoff * (2 ** attempt)
+            sleep_for = backoff * (2**attempt)
             if sleep_for > 0:
                 time.sleep(sleep_for)
 
     raise AIClientError(
-        f"AI generation failed after {attempts} attempt(s): {last_error}. "
-        "Make sure ANTHROPIC_API_KEY is set."
+        f"AI generation failed after {attempts} attempt(s): {last_error}. Make sure ANTHROPIC_API_KEY is set."
     ) from last_error
 
 

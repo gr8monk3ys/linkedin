@@ -49,14 +49,6 @@ class DataDir:
         return self.root / "drafts.json"
 
     @property
-    def research(self) -> Path:
-        return self.root / "research.json"
-
-    @property
-    def templates(self) -> Path:
-        return self.root / "templates.json"
-
-    @property
     def job_postings(self) -> Path:
         return self.root / "job_postings.json"
 
@@ -65,16 +57,8 @@ class DataDir:
         return self.root / "applications.json"
 
     @property
-    def conversations(self) -> Path:
-        return self.root / "conversations.json"
-
-    @property
     def calendar(self) -> Path:
         return self.root / "content_calendar.json"
-
-    @property
-    def interview_prep(self) -> Path:
-        return self.root / "interview_prep.json"
 
     @property
     def inbox_proposals(self) -> Path:

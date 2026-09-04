@@ -82,7 +82,9 @@ class TestEngageFeed:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0), _post(1)]
-        results = svc.engage_feed(session_over(page, {"reaction": 0}), limit=2, comment_count=0, approve_comment=publish_unreviewed)
+        results = svc.engage_feed(
+            session_over(page, {"reaction": 0}), limit=2, comment_count=0, approve_comment=publish_unreviewed
+        )
         assert results == []
         page.like_post.assert_not_called()
 
@@ -118,7 +120,17 @@ class TestEngageCliCommentsFlag:
         import linkedin.cli as cli_mod
         from linkedin.cli import cli
 
-        engage = MagicMock(return_value=[{"author": "Alice", "content_preview": "post", "liked": True, "commented": True, "comment_text": "Nice!"}])
+        engage = MagicMock(
+            return_value=[
+                {
+                    "author": "Alice",
+                    "content_preview": "post",
+                    "liked": True,
+                    "commented": True,
+                    "comment_text": "Nice!",
+                }
+            ]
+        )
         monkeypatch.setattr(cli_mod._app.automation_svc, "engage_feed", engage)
 
         result = CliRunner().invoke(cli, ["automate", "engage", "--feed", "--likes", "1", "--comments", "1"])

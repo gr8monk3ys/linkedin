@@ -152,6 +152,7 @@ class TestContactService:
     def test_get_next_actions_includes_overdue_followup(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        svc.update_contact(1, status="messaged")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         svc.set_reminder(1, date=yesterday)
 
@@ -159,6 +160,18 @@ class TestContactService:
         assert len(actions) >= 1
         assert actions[0]["action"] == "follow_up_overdue"
         assert actions[0]["contact_id"] == 1
+
+    def test_a_contact_never_written_to_is_never_a_follow_up(self, json_repos):
+        """The follow-up date is seeded on add, so without this rule a new contact
+        read as "follow-up overdue" and outranked the invitation it actually needs."""
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        svc.set_reminder(1, date=yesterday)
+
+        actions = svc.get_next_actions(scores={1: 90})
+        assert [a["action"] for a in actions] == ["send_connection"]
+        assert "rank 90" in actions[0]["reason"]
 
     def test_get_next_actions_includes_connected_message_prompt(self, json_repos):
         svc = self._svc(json_repos)
@@ -248,37 +261,6 @@ class TestContactService:
         assert "coffee chat" in merged["notes"]
         referred = svc.get_contact(3)
         assert referred["referral_contact_id"] == 1
-
-    def test_campaign_enroll_and_due(self, json_repos):
-        svc = self._svc(json_repos)
-        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
-        enrolled = svc.enroll_campaign(1, campaign_name="networking_21d", start_date=datetime.now().strftime("%Y-%m-%d"))
-        assert isinstance(enrolled, dict)
-
-        due = svc.get_due_campaign_steps(limit=5)
-        assert len(due) == 1
-        assert due[0]["contact_id"] == 1
-        assert due[0]["step_label"] == "Send connection request"
-
-    def test_campaign_advance_to_completion(self, json_repos):
-        svc = self._svc(json_repos)
-        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
-        svc.enroll_campaign(1, campaign_name="networking_21d")
-
-        for _ in range(4):
-            result = svc.advance_campaign(1)
-            assert isinstance(result, dict)
-
-        status = svc.campaign_status(1)
-        assert status is not None
-        assert status["active"] is False
-        assert status["completed_at"] is not None
-
-    def test_campaign_enroll_unknown_campaign(self, json_repos):
-        svc = self._svc(json_repos)
-        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
-        result = svc.enroll_campaign(1, campaign_name="unknown_campaign")
-        assert isinstance(result, str)
 
 
 class TestCompanyService:
@@ -380,7 +362,7 @@ class TestDraftService:
     def _svc(self, json_repos):
         from linkedin.services.draft_service import DraftService
 
-        contact_repo, _, profile_repo, draft_repo, *_= json_repos
+        contact_repo, _, profile_repo, draft_repo, *_ = json_repos
         return DraftService(draft_repo, contact_repo, profile_repo)
 
     @patch("linkedin.ai.client.generate_with_ai", return_value="Hi Alice!")
@@ -644,123 +626,11 @@ class TestDraftService:
         assert svc.get_draft(saved["id"])["source"] == "template"
 
 
-class TestDiscoverService:
-    @patch("linkedin.ai.client.generate_with_ai", return_value="Suggestion 1\nSuggestion 2")
-    def test_discover_contacts_by_role(self, mock_ai, json_repos):
-        from linkedin.services.discover_service import DiscoverService
-
-        contact_repo, company_repo, profile_repo, *_ = json_repos
-        svc = DiscoverService(profile_repo, company_repo, contact_repo)
-        profile_repo.save(sample_profile())
-
-        error, result = svc.discover_contacts(role="Engineer")
-        assert error is None
-        assert "Suggestion" in result
-
-    @patch("linkedin.ai.client.generate_with_ai", return_value="People at Google")
-    def test_discover_contacts_by_company(self, mock_ai, json_repos):
-        from linkedin.services.discover_service import DiscoverService
-
-        contact_repo, company_repo, profile_repo, *_ = json_repos
-        svc = DiscoverService(profile_repo, company_repo, contact_repo)
-        profile_repo.save(sample_profile())
-
-        error, result = svc.discover_contacts(company="Google")
-        assert error is None
-
-    def test_discover_contacts_no_profile(self, json_repos):
-        from linkedin.services.discover_service import DiscoverService
-
-        contact_repo, company_repo, profile_repo, *_ = json_repos
-        svc = DiscoverService(profile_repo, company_repo, contact_repo)
-        error, _ = svc.discover_contacts(role="Engineer")
-        assert error is not None
-
-    def test_discover_contacts_no_args(self, json_repos):
-        from linkedin.services.discover_service import DiscoverService
-
-        contact_repo, company_repo, profile_repo, *_ = json_repos
-        svc = DiscoverService(profile_repo, company_repo, contact_repo)
-        profile_repo.save(sample_profile())
-        error, _ = svc.discover_contacts()
-        assert error is not None
-
-    @patch("linkedin.ai.client.generate_with_ai", return_value="Company suggestions")
-    def test_discover_companies(self, mock_ai, json_repos):
-        from linkedin.services.discover_service import DiscoverService
-
-        contact_repo, company_repo, profile_repo, *_ = json_repos
-        svc = DiscoverService(profile_repo, company_repo, contact_repo)
-        profile_repo.save(sample_profile())
-
-        error, result = svc.discover_companies()
-        assert error is None
-
-
-class TestResearchService:
-    def _svc(self, json_repos):
-        from linkedin.services.research_service import ResearchService
-
-        _, _, profile_repo, draft_repo, research_repo, *_ = json_repos
-        return ResearchService(profile_repo, research_repo, draft_repo)
-
-    def test_engagement_strategies(self, json_repos):
-        svc = self._svc(json_repos)
-        content = svc.get_engagement_strategies()
-        assert len(content) > 0
-
-    @patch("linkedin.ai.client.generate_with_ai", return_value="Post idea 1")
-    def test_generate_ideas(self, mock_ai, json_repos):
-        svc = self._svc(json_repos)
-        _, _, profile_repo, *_ = json_repos
-        profile_repo.save(sample_profile())
-
-        topic, ideas = svc.generate_ideas()
-        assert "idea" in ideas.text.lower()
-
-    @patch("linkedin.ai.client.generate_with_ai", return_value="Ideas about AI")
-    def test_generate_ideas_with_topic(self, mock_ai, json_repos):
-        svc = self._svc(json_repos)
-        topic, ideas = svc.generate_ideas(topic="AI")
-        assert topic == "AI"
-
-    @patch("linkedin.ai.client.generate_with_ai", return_value="A great post about tech")
-    def test_generate_post_draft(self, mock_ai, json_repos):
-        svc = self._svc(json_repos)
-        content = svc.generate_post_draft("AI trends", style="story")
-        assert content.ok
-        assert len(content.text) > 0
-
-    def test_save_ideas(self, json_repos):
-        svc = self._svc(json_repos)
-        svc.save_ideas("AI", "Some ideas about AI")
-        _, _, _, _, research_repo, *_ = json_repos
-        data = research_repo.get()
-        assert len(data["ideas"]) == 1
-        assert data["ideas"][0]["topic"] == "AI"
-
-    @patch("linkedin.ai.client.generate_with_ai", return_value="A great post")
-    def test_save_post_draft(self, mock_ai, json_repos):
-        svc = self._svc(json_repos)
-        svc.save_post_draft("AI", "story", "A great post")
-        _, _, _, draft_repo, *_= json_repos
-        drafts = draft_repo.list_all()
-        assert len(drafts) == 1
-        assert drafts[0]["type"] == "post_story"
-        assert drafts[0]["source"] == "ai"
-
-    @patch("linkedin.ai.client.generate_with_ai", return_value="#AI #ML #Tech")
-    def test_generate_hashtags(self, mock_ai, json_repos):
-        svc = self._svc(json_repos)
-        result = svc.generate_hashtags("artificial intelligence")
-        assert "#" in result.text
-
-
 class TestDashboardService:
     def _svc(self, json_repos):
         from linkedin.services.dashboard_service import DashboardService
 
-        contact_repo, company_repo, profile_repo, draft_repo, *_= json_repos
+        contact_repo, company_repo, profile_repo, draft_repo, *_ = json_repos
         return DashboardService(profile_repo, contact_repo, company_repo, draft_repo)
 
     def test_empty_dashboard(self, json_repos):
@@ -788,10 +658,14 @@ class TestDashboardService:
         contact_repo = json_repos[0]
 
         yesterday = (datetime.now() - timedelta(days=2)).isoformat()
-        contact_repo.add(sample_contact(
-            name="Alice", id=1, status="connected",
-            follow_up_date=yesterday,
-        ))
+        contact_repo.add(
+            sample_contact(
+                name="Alice",
+                id=1,
+                status="connected",
+                follow_up_date=yesterday,
+            )
+        )
 
         data = svc.get_dashboard_data()
         assert len(data["overdue"]) == 1
@@ -801,10 +675,14 @@ class TestDashboardService:
         contact_repo = json_repos[0]
 
         old_date = (datetime.now() - timedelta(days=15)).isoformat()
-        contact_repo.add(sample_contact(
-            name="Alice", id=1, status="connection_sent",
-            last_contact=old_date,
-        ))
+        contact_repo.add(
+            sample_contact(
+                name="Alice",
+                id=1,
+                status="connection_sent",
+                last_contact=old_date,
+            )
+        )
 
         data = svc.get_dashboard_data()
         assert len(data["stale_connections"]) == 1
@@ -1016,8 +894,12 @@ class TestRankedConnections:
         contact_repo = json_repos[0]
         # A follow-up in the future keeps the date rules quiet, so only the status rule fires.
         today = datetime.now().isoformat()
-        contact_repo.add(sample_contact(id=1, name="Low", status="not_contacted", follow_up_date="2099-01-01", created_at=today))
-        contact_repo.add(sample_contact(id=2, name="High", status="not_contacted", follow_up_date="2099-01-01", created_at=today))
+        contact_repo.add(
+            sample_contact(id=1, name="Low", status="not_contacted", follow_up_date="2099-01-01", created_at=today)
+        )
+        contact_repo.add(
+            sample_contact(id=2, name="High", status="not_contacted", follow_up_date="2099-01-01", created_at=today)
+        )
         actions = svc.get_next_actions(limit=5, scores={1: 10, 2: 90})
         assert [a["name"] for a in actions] == ["High", "Low"]
         assert "(rank 90)" in actions[0]["reason"]
@@ -1025,7 +907,11 @@ class TestRankedConnections:
 
     def test_without_scores_nothing_changes(self, json_repos):
         svc = self._svc(json_repos)
-        json_repos[0].add(sample_contact(id=1, status="not_contacted", follow_up_date="2099-01-01", created_at=datetime.now().isoformat()))
+        json_repos[0].add(
+            sample_contact(
+                id=1, status="not_contacted", follow_up_date="2099-01-01", created_at=datetime.now().isoformat()
+            )
+        )
         (action,) = svc.get_next_actions(limit=5)
         assert "rank" not in action["reason"]
 
@@ -1049,14 +935,18 @@ class TestRepairContacts:
     def test_timestampless_contact_is_surfaced_not_skipped(self, json_repos):
         """Two of the user's real contacts had no dates and were invisible forever."""
         contact_repo, _company_repo, *_ = json_repos
-        contact_repo.add(sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None))
+        contact_repo.add(
+            sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None)
+        )
 
         actions = self._svc(json_repos).get_next_actions()
         assert [a["action"] for a in actions] == ["repair_contact"]
 
     def test_repair_backfills_and_makes_actionable(self, json_repos):
         contact_repo, _company_repo, *_ = json_repos
-        contact_repo.add(sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None))
+        contact_repo.add(
+            sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None)
+        )
         svc = self._svc(json_repos)
 
         result = svc.repair_contacts()
@@ -1069,7 +959,9 @@ class TestRepairContacts:
 
     def test_repair_dry_run_writes_nothing(self, json_repos):
         contact_repo, _company_repo, *_ = json_repos
-        contact_repo.add(sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None))
+        contact_repo.add(
+            sample_contact(id=1, status="connected", created_at=None, last_contact=None, follow_up_date=None)
+        )
         svc = self._svc(json_repos)
 
         assert svc.repair_contacts(dry_run=True)["total"] == 1
@@ -1211,12 +1103,14 @@ class TestDashboardMatchesThePlanner:
         from linkedin.services.contact_service import STATUS_RULES
 
         stale_after = STATUS_RULES["connection_sent"]["after_days"]
-        json_repos[0].add({
-            "id": 1,
-            "name": "Alice",
-            "status": "connection_sent",
-            "last_contact": (datetime.now() - timedelta(days=stale_after)).isoformat(),
-        })
+        json_repos[0].add(
+            {
+                "id": 1,
+                "name": "Alice",
+                "status": "connection_sent",
+                "last_contact": (datetime.now() - timedelta(days=stale_after)).isoformat(),
+            }
+        )
         data = self._svc(json_repos).get_dashboard_data()
         assert [c["id"] for c, _ in data["stale_connections"]] == [1]
 

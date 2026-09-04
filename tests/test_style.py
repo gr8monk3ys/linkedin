@@ -23,9 +23,20 @@ def test_message_prompts_carry_the_rules(tmp_path):
 
 
 def test_post_prompts_carry_the_rules(tmp_path):
-    assert STYLE_RULES.strip() in build_prompt({}, {"since": "a", "until": "b", "window_days": 7, "public_repos": 1, "merged_total": 0, "merged_by_human": 0, "merged_by_bots": 0, "repos_touched": 0, "top_repos": [], "recently_pushed": [], "sample_titles": []}, "story")
-    app = App(DataDir(tmp_path))
-    app.profile_repo.save(sample_profile())
-    with patch("linkedin.ai.client.generate_with_ai", return_value="ok") as gen:
-        app.research_svc.generate_post_draft("topic")
-    assert "No emojis" in gen.call_args.args[0] and "emojis (not too many)" not in gen.call_args.args[0]
+    assert STYLE_RULES.strip() in build_prompt(
+        {},
+        {
+            "since": "a",
+            "until": "b",
+            "window_days": 7,
+            "public_repos": 1,
+            "merged_total": 0,
+            "merged_by_human": 0,
+            "merged_by_bots": 0,
+            "repos_touched": 0,
+            "top_repos": [],
+            "recently_pushed": [],
+            "sample_titles": [],
+        },
+        "story",
+    )

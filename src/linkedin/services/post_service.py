@@ -10,7 +10,9 @@ class PostService:
     def __init__(self, post_repo: JsonPostRepo):
         self.posts = post_repo
 
-    def record_published(self, text: str, urn: str = "", *, draft_id: int | None = None, calendar_id: int | None = None) -> PostDict:
+    def record_published(
+        self, text: str, urn: str = "", *, draft_id: int | None = None, calendar_id: int | None = None
+    ) -> PostDict:
         """Record a post that LinkedIn accepted. An empty `urn` is a post whose
         success link could not be read; it exists but cannot be measured."""
         post: PostDict = {

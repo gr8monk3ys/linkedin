@@ -1,7 +1,7 @@
 """The daily run: one interface over the plan, the drafts, and the run lifecycle.
 
 `DailyRun(app, config).execute(trigger, run_at)` is the whole thing — lock
-handling excepted, which is the caller's because it brackets watch mode too.
+handling excepted, which is the caller's because it brackets the lock too.
 Inside: idempotency, retry with backoff, the failure-streak escalation and its
 recovery, the run log, and the classification that decides whether a run was
 `success`, `no_actions`, or `failed`. That policy used to be a thousand lines
@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from linkedin.data.json_store import load_json
-from linkedin.services.planner import command_for, label_for
+from linkedin.services.planner import SEND_CONNECTION, command_for, label_for
 from linkedin.services.run_state import (
     append_run_log,
     effective_idempotency_key,
@@ -61,6 +61,8 @@ class RunConfig:
     retry_backoff_seconds: float = 5.0
     #: Read the account's metrics (headless browser) before the plan. Never fails the run.
     collect_metrics: bool = False
+    #: Send the plan's `send_connection` actions (headless browser) after it, up to the daily budget. Never fails the run.
+    send_connections: bool = False
 
 
 @dataclass
@@ -112,17 +114,46 @@ def build_plan(data: dict) -> DailyPlan:
             "Priority Actions",
             ["Priority", "Contact", "Action", "Command"],
             [
-                [str(a["priority"]), f"{a.get('name', 'Unknown')} ({a.get('company', '')})".strip(), label_for(a["action"]), command_for(a["action"], a["contact_id"])]
+                [
+                    str(a["priority"]),
+                    f"{a.get('name', 'Unknown')} ({a.get('company', '')})".strip(),
+                    label_for(a["action"]),
+                    command_for(a["action"], a["contact_id"]),
+                ]
                 for a in data.get("actions") or []
             ],
             "No urgent contact actions today.",
+        ),
+        Section(
+            "invitations",
+            "Invitations Sent",
+            ["Contact", "Outcome"],
+            [
+                *[[s.get("name", ""), "sent"] for s in (data.get("connections") or {}).get("sent", [])],
+                *[
+                    [s.get("name", ""), f"skipped: {s.get('reason', '')}"]
+                    for s in (data.get("connections") or {}).get("skipped", [])
+                ],
+                *[
+                    [s.get("name", ""), f"failed: {s.get('reason', '')}"]
+                    for s in (data.get("connections") or {}).get("failed", [])
+                ],
+            ],
+            "No invitations sent this run.",
+            hint=(data.get("connections") or {}).get("stopped", ""),
+            optional=True,
         ),
         Section(
             "inbound",
             "Inbound (needs your confirmation)",
             ["Contact", "Transition", "Evidence"],
             [
-                [p.get("name", "Unknown"), f"{p.get('from_status', '')} -> {p.get('to_status', '')}" + (" [low confidence]" if p.get("confidence") == "low" else ""), p.get("evidence", "")]
+                [
+                    p.get("name", "Unknown"),
+                    f"{p.get('from_status', '')} -> {p.get('to_status', '')}"
+                    + (" [low confidence]" if p.get("confidence") == "low" else ""),
+                    p.get("evidence", ""),
+                ]
                 for p in data.get("inbox_proposals") or []
             ],
             "Nothing new. Run `linkedin-cli inbox sync` to check.",
@@ -134,7 +165,12 @@ def build_plan(data: dict) -> DailyPlan:
             "Applications",
             ["Priority", "Role", "Action", "Command"],
             [
-                [str(a["priority"]), f"{a.get('title', 'Unknown')} @ {a.get('company', '')}", label_for(a["action"]), command_for(a["action"], a["application_id"])]
+                [
+                    str(a["priority"]),
+                    f"{a.get('title', 'Unknown')} @ {a.get('company', '')}",
+                    label_for(a["action"]),
+                    command_for(a["action"], a["application_id"]),
+                ]
                 for a in data.get("application_actions") or []
             ],
             "No applications need attention today.",
@@ -145,7 +181,12 @@ def build_plan(data: dict) -> DailyPlan:
             "Best-Match Opportunities",
             ["Score", "Role", "Company", "Why"],
             [
-                [str(p.get("match_score", 0)), p.get("title", "Unknown"), p.get("company", "Unknown"), (p.get("match_reasons") or ["-"])[0]]
+                [
+                    str(p.get("match_score", 0)),
+                    p.get("title", "Unknown"),
+                    p.get("company", "Unknown"),
+                    (p.get("match_reasons") or ["-"])[0],
+                ]
                 for p in data.get("postings") or []
             ],
             "No postings above threshold.",
@@ -155,21 +196,15 @@ def build_plan(data: dict) -> DailyPlan:
             "Account Metrics (vs 7 days ago)",
             ["Metric", "Value", "Δ7d"],
             [
-                [m["metric"], "—" if m["value"] is None else str(m["value"]), "—" if m["delta"] is None else f"{m['delta']:+d}"]
+                [
+                    m["metric"],
+                    "—" if m["value"] is None else str(m["value"]),
+                    "—" if m["delta"] is None else f"{m['delta']:+d}",
+                ]
                 for m in data.get("metrics") or []
             ],
             "No metrics yet. Run: linkedin-cli metrics collect",
             optional=True,
-        ),
-        Section(
-            "templates",
-            "Best Templates",
-            ["Type", "Template", "Variant", "Rate", "Uses"],
-            [
-                [t["type"], f"#{t.get('id')} {t.get('name', '')}", t.get("variant", "A"), t.get("response_rate", "0%"), str(t.get("usage_count", 0))]
-                for t in data.get("templates") or []
-            ],
-            "No template performance data yet.",
         ),
     ]
     return DailyPlan(generated_at=data.get("generated_at", ""), focus=focus, sections=sections)
@@ -188,6 +223,7 @@ class DailyRun:
         on_draft_failure: Callable[[int, str], None] | None = None,
         on_retry: Callable[[int, int, float], None] | None = None,
         metrics_collector: Callable[[], dict] | None = None,
+        connection_sender: Callable[[list[dict]], dict] | None = None,
     ):
         self.app = app
         self.config = config
@@ -196,25 +232,25 @@ class DailyRun:
         self.on_draft_failure = on_draft_failure
         self.on_retry = on_retry
         self.metrics_collector = metrics_collector
+        self.connection_sender = connection_sender
 
     # -- the plan ---------------------------------------------------------------
+
+    def invitation_queue(self) -> list[dict]:
+        """Every `send_connection` action, best-ranked first. The budget decides how many go out."""
+        actions = self.app.contact_svc.get_next_actions(limit=1000, scores=self.app.ranking_svc.scores())
+        return [a for a in actions if a["action"] == SEND_CONNECTION]
 
     def plan_data(self) -> dict:
         """The plan as data: what `--json` prints and what the sections are built from."""
         app, cfg = self.app, self.config
-        recommendations: list[dict] = []
-        for template_type in ("connection", "message", "follow_up"):
-            best = app.template_svc.suggest_best(template_type)
-            if best:
-                recommendations.append({"type": template_type, **best})
         return {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "profile": app.profile_svc.get_profile(),
             "actions": app.contact_svc.get_next_actions(limit=cfg.actions_limit, scores=app.ranking_svc.scores()),
             "application_actions": app.application_svc.get_application_actions(limit=cfg.actions_limit),
             "inbox_proposals": load_json(app.data_dir.inbox_proposals, []),
-            "postings": app.market_svc.list_postings(limit=cfg.postings_limit, min_score=cfg.min_posting_score),
-            "templates": recommendations,
+            "postings": app.posting_svc.list_postings(limit=cfg.postings_limit, min_score=cfg.min_posting_score),
             "metrics": app.metrics_svc.summary(days=7),
         }
 
@@ -251,7 +287,9 @@ class DailyRun:
             if self.on_draft:
                 self.on_draft(entry)
             if save:
-                self.app.draft_svc.save_draft(action["contact_id"], draft_type, result.text, source=result.source, generated_from=action["action"])
+                self.app.draft_svc.save_draft(
+                    action["contact_id"], draft_type, result.text, source=result.source, generated_from=action["action"]
+                )
                 saved += 1
         return {"generated": generated, "saved": saved, "failed": failed, "templates": templates, "drafts": drafts}
 
@@ -273,6 +311,20 @@ class DailyRun:
         data = self.plan_data()
         if data_metrics is not None:
             data["metrics_collected"] = data_metrics
+        if cfg.send_connections and self.connection_sender is not None:
+            # The whole ranked invitation queue, not the plan's top slice: on a
+            # day with eight overdue follow-ups the slice holds no invitations
+            # at all, and the budget would go unspent. A browser failure is
+            # recorded, not raised: the run still reports.
+            try:
+                data["connections"] = self.connection_sender(self.invitation_queue())
+            except Exception as exc:
+                data["connections"] = {
+                    "sent": [],
+                    "skipped": [],
+                    "failed": [],
+                    "stopped": f"{type(exc).__name__}: {exc}",
+                }
         if drafting:
             data["drafts"] = self.draft_for_actions(data["actions"], save=cfg.save_drafts)
         else:
@@ -308,14 +360,14 @@ class DailyRun:
 
     # -- lifecycle --------------------------------------------------------------
 
-    def execute(self, trigger: str, run_at: datetime, *, watch_mode: bool = False) -> dict:
+    def execute(self, trigger: str, run_at: datetime, *, scheduled: bool = False) -> dict:
         """Run with retries. The result carries `attempts` and, on recovery, `recovered_after_retries`."""
         cfg = self.config
         max_attempts = max(1, cfg.retry_attempts + 1)
         result: dict = {}
         for attempt in range(max_attempts):
             last = attempt == max_attempts - 1
-            result = self._attempt(trigger, run_at, watch_mode=watch_mode, notify_on_failure=last)
+            result = self._attempt(trigger, run_at, scheduled=scheduled, notify_on_failure=last)
             result["attempts"] = attempt + 1
             if result.get("status") != "failed":
                 if attempt > 0:
@@ -330,18 +382,22 @@ class DailyRun:
                 self.sleep(backoff)
         return result
 
-    def _attempt(self, trigger: str, run_at: datetime, *, watch_mode: bool, notify_on_failure: bool) -> dict:
+    def _attempt(self, trigger: str, run_at: datetime, *, scheduled: bool, notify_on_failure: bool) -> dict:
         """One attempt: idempotency, the cycle, classification, log, streak, notify."""
         cfg, data_dir = self.config, self.app.data_dir
         run_id = uuid.uuid4().hex
         started_at = datetime.now()
-        key = effective_idempotency_key(cfg.idempotency_key, watch_mode, cfg.schedule_time, run_at)
+        key = effective_idempotency_key(cfg.idempotency_key, scheduled, cfg.schedule_time, run_at)
         stamp = lambda: datetime.now().isoformat(timespec="seconds")  # noqa: E731
 
         if key and not cfg.allow_duplicate and idempotency_key_seen(data_dir, key):
             result = {
-                "status": "skipped_duplicate", "run_id": run_id, "trigger": trigger, "idempotency_key": key,
-                "started_at": started_at.isoformat(timespec="seconds"), "finished_at": stamp(),
+                "status": "skipped_duplicate",
+                "run_id": run_id,
+                "trigger": trigger,
+                "idempotency_key": key,
+                "started_at": started_at.isoformat(timespec="seconds"),
+                "finished_at": stamp(),
                 "reason": "Idempotency key already completed.",
             }
             append_run_log(data_dir, result)
@@ -355,23 +411,33 @@ class DailyRun:
 
         prior_streak = failure_streak(load_run_history_entries(data_dir))
         data["status"], stalled = self.classify(data)
-        data.update({
-            "run_id": run_id, "trigger": trigger, "idempotency_key": key,
-            "started_at": started_at.isoformat(timespec="seconds"), "finished_at": stamp(),
-        })
+        data.update(
+            {
+                "run_id": run_id,
+                "trigger": trigger,
+                "idempotency_key": key,
+                "started_at": started_at.isoformat(timespec="seconds"),
+                "finished_at": stamp(),
+            }
+        )
         if data["status"] == "no_actions":
             data["stalled_contact_ids"] = [c["id"] for c in stalled]
-            data["reason"] = f"{len(stalled)} contact(s) are due or have no follow-up date, but the planner produced no actions."
+            data["reason"] = (
+                f"{len(stalled)} contact(s) are due or have no follow-up date, but the planner produced no actions."
+            )
         elif data["status"] == "failed":
             n = data["drafts"]["templates"]
             data["reason"] = f"AI unavailable: {n} draft(s) came back as offline templates and were not saved."
 
         log_entry = {
-            "status": data["status"], "run_id": run_id, "trigger": trigger, "idempotency_key": key,
-            "started_at": data["started_at"], "finished_at": data["finished_at"],
+            "status": data["status"],
+            "run_id": run_id,
+            "trigger": trigger,
+            "idempotency_key": key,
+            "started_at": data["started_at"],
+            "finished_at": data["finished_at"],
             "actions_count": len(data.get("actions", [])),
             "postings_count": len(data.get("postings", [])),
-            "templates_count": len(data.get("templates", [])),
             "drafts_generated": int(data["drafts"].get("generated", 0)),
             "drafts_saved": int(data["drafts"].get("saved", 0)),
             "recap_path": data.get("recap_path", ""),
@@ -385,7 +451,12 @@ class DailyRun:
 
         error = None
         if cfg.notify_webhook and threshold > 1 and prior_streak >= threshold and cfg.notify_on_recovery:
-            payload = {**log_entry, "status": "recovered_after_failure_streak", "prior_failure_streak": prior_streak, "failure_streak_threshold": threshold}
+            payload = {
+                **log_entry,
+                "status": "recovered_after_failure_streak",
+                "prior_failure_streak": prior_streak,
+                "failure_streak_threshold": threshold,
+            }
             error = send_run_notification(cfg.notify_webhook, payload)
         elif cfg.notify_webhook and cfg.notify_on_success:
             error = send_run_notification(cfg.notify_webhook, log_entry)
@@ -396,9 +467,13 @@ class DailyRun:
     def _record_failure(self, run_id, trigger, key, started_at, error, threshold, notify_on_failure) -> dict:
         cfg, data_dir = self.config, self.app.data_dir
         failed = {
-            "status": "failed", "run_id": run_id, "trigger": trigger, "idempotency_key": key,
+            "status": "failed",
+            "run_id": run_id,
+            "trigger": trigger,
+            "idempotency_key": key,
             "started_at": started_at.isoformat(timespec="seconds"),
-            "finished_at": datetime.now().isoformat(timespec="seconds"), "error": error,
+            "finished_at": datetime.now().isoformat(timespec="seconds"),
+            "error": error,
         }
         append_run_log(data_dir, failed)
         streak = failure_streak(load_run_history_entries(data_dir))

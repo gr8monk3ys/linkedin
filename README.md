@@ -1,450 +1,130 @@
 # LinkedIn Job Hunt Assistant
 
-A local CRM + AI-powered tool to accelerate your job search on LinkedIn.
+A local command-line CRM for a LinkedIn job search, with a daily plan, a
+review-gated content pipeline, an inbox reader that proposes pipeline moves
+instead of making them, and a browser layer that does the sending.
 
-## What It Does
+Storage is JSON files under `~/.linkedin-cli`. Nothing leaves the machine
+except what you tell the browser to post or send.
 
-A personal productivity tool with an optional browser-automation layer:
+> The `automate` commands drive a real browser against your own LinkedIn
+> account, which LinkedIn's User Agreement forbids and can get an account
+> restricted. Every write is budgeted (`automate limits`), paced, and
+> confirmed. A dry run navigates and reads, never writes.
 
-1. **Companies** - Track target companies for networking
-2. **CRM** - Track people you want to connect with, their status, follow-ups
-3. **AI Drafts** - Generate personalized connection requests, messages, intro requests, and more
-4. **Discovery** - AI-powered suggestions for who to connect with
-5. **Content Research** - Get post ideas, engagement strategies, and draft posts
-6. **Applications** - Track job applications, linked to resume variants from your resume repo
-7. **Browser Automation** (optional) - Drive your own LinkedIn session: search, connect, message, post, like, sync your profile, Easy Apply
-8. **Data Management** - Import, export, and backup your data
+## What it does
 
-> ⚠️ The `automate` commands drive a real browser against your own LinkedIn
-> account. Browser automation violates LinkedIn's User Agreement and can get
-> an account restricted. Conservative daily limits, human-like delays, and
-> confirmation prompts are built in, but use it deliberately and at your own
-> risk. Everything else in this tool is plain local CRM + AI drafting.
+- **Contacts and companies.** Who you are trying to reach, what stage they
+  are at, and when they are due. Every active contact always carries a
+  follow-up date; the planner turns those into the day's actions.
+- **Ranking.** Contacts are scored 0–100 against your target role so the
+  day's scarce invitations go to the people who matter. Pinned contacts are
+  always first.
+- **Drafts.** Connection requests, messages, follow-ups and thank-yous,
+  written by the model or by hand (`drafts add`). A template is never passed
+  off as a draft.
+- **Applications.** Lifecycle tracking with its own planner rules, linked to
+  resume variants in the resume repo and to autoapply's submission log.
+- **Posts.** Candidates come from what your public repos actually shipped
+  this week (`posts facts`), are reviewed before they are scheduled, and are
+  published on a cadence with a skip rule when the last three flopped.
+- **Inbox.** `inbox sync` reads replies and accepted invitations and writes
+  *proposals*; `inbox review` applies them one at a time. Nothing inbound
+  advances a contact on its own.
+- **Metrics.** Followers, connections, profile views, impressions and search
+  appearances, one row per day, read from LinkedIn by label. A missing value
+  is `None`, never `0`.
+- **The daily run.** `run-daily` builds the plan, drafts for it, records the
+  run, and exits nonzero when a contact was due and nothing happened.
 
-## Quick Start
+## Install
 
 ```bash
-cd linkedin
-uv sync
+uv sync                      # the CLI
+uv sync --extra automation   # plus Playwright and keyring for the browser layer
+uv sync --extra dev          # pytest, ruff, coverage
+uv run playwright install chromium
+```
 
-# 1. Set up your profile (used for personalization)
-uv run linkedin-cli profile setup
+Both `linkedin` and `linkedin-cli` run the same entry point.
 
-# 2. Add target companies
-uv run linkedin-cli companies add
+## First day
 
-# 3. Add contacts to track
-uv run linkedin-cli contacts add --company-id 1
+```bash
+uv run linkedin profile setup
+uv run linkedin companies add
+uv run linkedin contacts add --company-id 1
+uv run linkedin contacts rank
+uv run linkedin daily-plan
+```
 
-# 4. Generate personalized outreach
-uv run linkedin-cli drafts connection 1
+Optional: `settings ai off` if you write drafts yourself. `run-daily` stays
+green, drafting is skipped, and hand-written text enters the same pipeline
+through `drafts add` and `posts add-candidate`.
 
-# 5. Get AI suggestions for more contacts
-uv run linkedin-cli discover contacts --company "LangChain"
+## Every morning
 
-# 6. View your dashboard
-uv run linkedin-cli dashboard
+```bash
+uv run linkedin run-daily --save-recap --collect-metrics
+uv run linkedin contacts due
+uv run linkedin automate connect <id>        # one budgeted invitation
+uv run linkedin automate message <id> --draft-id <n>
+uv run linkedin inbox sync && uv run linkedin inbox review
+```
+
+`automation schedule --time 09:00` installs the daily run under cron (or a
+LaunchAgent on macOS); `automation doctor` tells you why a run did not fire.
+
+## Every Sunday
+
+```bash
+uv run linkedin posts facts            # what the public fleet did this week
+uv run linkedin posts draft-week       # model writes candidates (or posts add-candidate by hand)
+uv run linkedin posts review           # approve schedules the next Tuesday
+uv run linkedin posts publish-due      # or let run-daily do it
 ```
 
 ## Commands
 
-### Profile (Your Info)
-```bash
-linkedin-cli profile setup                              # Set up your info for AI personalization
-linkedin-cli profile setup --resume-file resume.txt    # Load resume from file (for AI tailoring)
-linkedin-cli profile show                              # View your saved profile
-```
+| Group | What it holds |
+|---|---|
+| `contacts` | add, list, view, update, due, next-actions, rank, pin, dedupe, merge, repair |
+| `companies` | add, list, view, update, contacts |
+| `drafts` | connection, message, follow-up, intro-request, thank-you, batch-connections, add, list, view |
+| `applications` | add, advance, list, view, stats, suggest-resume, attach-resume, import-autoapply, tailor-resume, cover-letter, skills-gap |
+| `postings` | add, import, list — scored against your profile; `automate jobs` fills this |
+| `posts` | facts, draft-week, add-candidate, review, publish-due, list |
+| `inbox` | sync, list, review, strangers |
+| `metrics` | collect, show |
+| `automate` | login, setup, limits, search, import-search, profile, connect, message, post, engage, jobs, easy-apply, sync-profile |
+| `automation` | status, doctor, schedule, unschedule, env |
+| `data` | export, import, backup, backups, restore, verify-backup |
+| `analytics` | summary, conversion, velocity |
+| `settings` | show, ai |
+| top level | `dashboard`, `daily-plan`, `run-daily`, `run-history` |
 
-### Companies (Track Target Companies)
-```bash
-linkedin-cli companies add                      # Add a new target company
-linkedin-cli companies list                     # List all companies
-linkedin-cli companies list --priority high     # Filter by priority
-linkedin-cli companies view 1                   # View company details
-linkedin-cli companies update 1 --priority high # Update company
-linkedin-cli companies update 1 --add-role "Engineering Manager"  # Add role to find
-linkedin-cli companies contacts 1               # List contacts at a company
-linkedin-cli companies delete 1                 # Delete a company
-```
+`--help` on any group lists its commands with their options.
 
-### Contacts CRM
-```bash
-linkedin-cli contacts add                       # Add a new contact
-linkedin-cli contacts add --company-id 1        # Add contact linked to company
-linkedin-cli contacts list                      # List all contacts
-linkedin-cli contacts list --status connected   # Filter by status
-linkedin-cli contacts list --company-id 1       # Filter by company
-linkedin-cli contacts view 1                    # View contact details
-linkedin-cli contacts update 1 --status connected  # Update status
-linkedin-cli contacts update 1 --status responded  # Auto-credits latest relevant template outcome
-linkedin-cli contacts update 1 --email "x@y.com"   # Add email
-linkedin-cli contacts link-company 1 2          # Link contact to company
-linkedin-cli contacts activity 1                # View activity log
-linkedin-cli contacts due                       # Show overdue follow-ups
-linkedin-cli contacts due --days 7              # Show follow-ups due within 7 days
-linkedin-cli contacts next-actions              # Prioritized outreach to-dos
-linkedin-cli contacts next-actions --generate-drafts --save-drafts  # Auto-generate actionable drafts
-linkedin-cli contacts remind 1 --days 7         # Set follow-up reminder
-linkedin-cli contacts repair --dry-run           # Preview backfill of missing dates
-linkedin-cli contacts repair                     # Backfill so stalled contacts become actionable
-linkedin-cli contacts dedupe                    # Find likely duplicates with confidence scores
-linkedin-cli contacts merge 1 2                 # Merge duplicate contact #2 into #1
-linkedin-cli contacts stats                     # View pipeline stats
-```
+## Configuration
 
-### Campaign Sequences
-```bash
-linkedin-cli campaigns enroll 1 --name networking_21d   # Start a 21-day outreach sequence
-linkedin-cli campaigns status 1                          # Show one contact's campaign progress
-linkedin-cli campaigns status --active-only              # List all active campaign enrollments
-linkedin-cli campaigns due                               # Show due campaign steps + suggested commands
-linkedin-cli campaigns advance 1                         # Mark current campaign step complete
-linkedin-cli campaigns advance 1 --complete              # Mark sequence complete now
-```
+| Variable | Purpose |
+|---|---|
+| `LINKEDIN_DATA_DIR` | Data directory (default `~/.linkedin-cli`) |
+| `ANTHROPIC_API_KEY` | Model access; scheduled runs read it from `~/.linkedin-cli/cron.env` |
+| `LINKEDIN_AI_MODEL` | Model id for drafts and posts |
+| `LINKEDIN_AI_FALLBACK_ENABLED` | Offline templates when the model is unreachable (`drafts` only, never `run-daily`) |
+| `LINKEDIN_RESUME_REPO` | Path to the resume repo checkout (default `~/code/resume`) |
 
-### AI Drafts
-```bash
-linkedin-cli drafts connection 1    # Generate connection request
-linkedin-cli drafts message 1       # Generate follow-up message
-linkedin-cli drafts intro-request 1 --to 2  # Ask contact 1 to intro you to contact 2
-linkedin-cli drafts thank-you 1     # Generate thank you note after call
-linkedin-cli drafts follow-up 1     # Generate follow-up after no response
-linkedin-cli drafts follow-up 1 --attempt 2  # Second follow-up attempt
-linkedin-cli drafts batch-connections --limit 5  # Generate drafts for all not_contacted
-linkedin-cli drafts list            # List saved drafts
-linkedin-cli drafts view 1          # View a draft
-```
+Daily browser caps live in `limits.json` and are stepped up with
+`automate limits set <kind> <n>`.
 
-### Templates & Experiments
-```bash
-linkedin-cli templates save --name "Conn A" --type connection --content "Hi {{name}}" --variant A
-linkedin-cli templates use 1 1                  # Render template 1 for contact 1 (tracks usage)
-linkedin-cli templates record-response 1         # Record a response for template 1
-linkedin-cli templates suggest-best --type connection  # Best-performing template by type
-linkedin-cli templates ab-results                # A/B comparison for variants
-linkedin-cli templates dashboard                 # Experiment summary by template type
-# Positive contact status updates auto-credit matching templates:
-# connected -> connection templates, responded/call_scheduled/hired -> message/follow_up
-```
-
-### Discovery (AI-Powered Suggestions)
-```bash
-linkedin-cli discover contacts --company "LangChain"  # Who to find at a company
-linkedin-cli discover contacts --role "Engineering Manager"  # Who to find by role
-linkedin-cli discover companies     # Suggest companies based on your profile
-```
-
-### Content Research
-```bash
-linkedin-cli research engagement    # Show engagement strategies
-linkedin-cli research ideas         # Generate post ideas
-linkedin-cli research draft-post "topic" --style story  # Write a post
-linkedin-cli research hashtags "AI" # Get hashtag suggestions
-```
-
-### Market Intelligence
-```bash
-linkedin-cli market analyze --role "ML Engineer" --industry "SaaS"
-linkedin-cli market salary --role "ML Engineer" --location "San Francisco, CA"
-linkedin-cli market trends --industry "AI"
-linkedin-cli market add-posting --title "Senior ML Engineer" --company "Acme" --skills "Python, ML"
-linkedin-cli market import-postings jobs.csv --merge
-linkedin-cli market postings --min-score 40
-```
-
-### Job Applications
-```bash
-linkedin-cli applications add --company "Acme" --title "ML Engineer" --url "https://..." --jd "Job description"
-linkedin-cli applications list [--status phone_screen] [--company "Acme"]
-linkedin-cli applications view 1
-linkedin-cli applications advance 1 --status applied --notes "Submitted via website"
-linkedin-cli applications tailor-resume 1 [--resume-file resume.txt]
-linkedin-cli applications cover-letter 1
-linkedin-cli applications skills-gap 1
-linkedin-cli applications stats
-```
-
-### Interview Prep
-```bash
-linkedin-cli interview prep 1          # Generate questions + STAR answers (saved for later)
-linkedin-cli interview research 1      # Company briefing: funding, culture, tech stack
-linkedin-cli interview star 1          # STAR method answer scaffolds
-linkedin-cli interview questions 1     # Smart questions to ask the interviewer
-linkedin-cli interview view 1          # Show all saved prep for an application
-```
-
-### Conversation History
-```bash
-linkedin-cli conversations log 1 --from me --text "Hi there, wanted to connect..."
-linkedin-cli conversations log 1 --from them --text "Sure, happy to chat!"
-linkedin-cli conversations view 1
-linkedin-cli conversations export 1
-```
-
-### Content Calendar
-```bash
-linkedin-cli calendar add --title "AI post" --date 2026-03-01 [--draft-id 3]
-linkedin-cli calendar list [--week] [--month]
-linkedin-cli calendar mark-posted 1 [--date 2026-03-02]
-linkedin-cli calendar stats
-```
-
-### Browser Automation (requires `uv sync --extra automation` + `uv run playwright install chromium`)
-```bash
-# One-time setup
-linkedin-cli automate setup                 # Store credentials in the system keyring
-linkedin-cli automate login                 # Log in (headful; handles 2FA) and save the session
-linkedin-cli contacts rank                  # Who the connection budget should go to (★ = pinned, exempt)
-linkedin-cli contacts pin 12                # Keep following #12 whatever the rank says
-linkedin-cli automate engage --pinned       # Like recent posts of every pinned contact
-linkedin-cli settings ai off                # No API key: drafts are written by hand; run-daily skips drafting
-linkedin-cli drafts add 12 --file reply.txt # Save a hand-written message for contact #12
-linkedin-cli posts add-candidate --file p.md # Queue a hand-written post for Sunday review
-linkedin-cli posts facts                    # What the public fleet did this week (the drafter's only input)
-linkedin-cli posts draft-week               # Sunday batch 1/3: AI candidates from those facts
-linkedin-cli posts review                   # Sunday batch 2/3: approve (schedules Tuesday) or reject
-linkedin-cli posts publish-due --headless   # Sunday batch 3/3: publish the due post unless the skip rule fires
-linkedin-cli metrics collect --headless     # Followers, connections, profile views, impressions, search appearances (read-only)
-linkedin-cli metrics show --days 7          # Latest row with deltas; per-post impressions
-linkedin-cli automation doctor --probe-ai   # Prove the API key works, not just that it is set
-linkedin-cli automate limits                # Today's usage vs daily budget
-linkedin-cli automate limits set post 2     # Raise a daily cap (writes limits.json)
-
-# Import people into the CRM
-linkedin-cli automate search --query "ML Engineer at Stripe" --limit 20         # Preview results
-linkedin-cli automate import-search --query "ML Engineer at Stripe" --limit 20  # Import to CRM
-linkedin-cli automate profile https://linkedin.com/in/username                  # Import single profile
-
-# Outreach (uses the contact's linkedin_url; updates pipeline status on success)
-linkedin-cli automate connect 1 --draft-id 3          # Send connection request w/ AI draft as note
-linkedin-cli automate connect 1 --note "Hi!" --dry-run
-linkedin-cli automate message 1 --draft-id 4          # Message a connected contact
-
-# Content + engagement
-linkedin-cli automate post --calendar-id 1            # Publish a scheduled post, mark it posted
-linkedin-cli automate post --text "Shipped a thing"   # Ad-hoc post (asks for confirmation)
-linkedin-cli automate engage --contact-id 1 --contact-id 2 --likes 2  # Warm up targets
-linkedin-cli automate engage --feed --likes 5         # Like posts on your feed
-linkedin-cli automate engage --feed --likes 5 --comments 2  # ...and leave AI-personalized comments
-# Each AI comment is shown for approval before posting; --yes skips the review
-
-# Profile appearance
-linkedin-cli automate sync-profile --headline-from-profile          # Push local profile headline
-linkedin-cli automate sync-profile --about-file about.txt --dry-run # Push a new About section
-
-# Applying (see Resume Repo Integration below)
-linkedin-cli automate easy-apply 1              # Walk Easy Apply, stop at review step
-linkedin-cli automate easy-apply 1 --submit     # Actually submit, with the attached resume PDF
-```
-
-Daily budgets live in `~/.linkedin-cli/limits.json` (usage in `automation_usage.json`). The defaults are a
-ramp for an account with no automated history — 0 connections, 25 messages, 1 post, 5 reactions,
-2 comments, 15 Easy Applies, 30 searches per day. Step one up with `linkedin-cli automate limits set reaction 10`.
-
-### Resume Repo Integration
-
-Job applications link to resume variants built by your resume repository
-(the repo with `variants/<slug>/`, `output/<slug>-resume.pdf`, and the
-`autoapply` pipeline). Point the CLI at your local checkout:
+## Development
 
 ```bash
-export LINKEDIN_RESUME_REPO=~/resume    # or pass --resume-repo per command
-
-linkedin-cli applications suggest-resume 1     # Rank variants against the JD (skills.tex vs jd_text)
-linkedin-cli applications attach-resume 1      # Attach best-matching variant + built PDFs
-linkedin-cli applications attach-resume 1 --variant ai-engineer
-linkedin-cli applications import-autoapply     # Pull submitted/interview/offer apps from autoapply's state.db
-linkedin-cli applications import-autoapply --include-queued
+uv run pytest
+uv run pytest --cov=linkedin --cov-report=term-missing
+uv run ruff check src/ tests/ && uv run ruff format src/ tests/
 ```
 
-The division of labor: the resume repo owns resume artifacts and broad ATS
-auto-apply (Greenhouse/Lever/Ashby); this repo owns networking, LinkedIn-side
-automation (including Easy Apply with the right variant PDF), and unified
-application tracking.
-
-### Data Management
-```bash
-linkedin-cli data export contacts   # Export contacts to CSV
-linkedin-cli data export companies  # Export companies to CSV
-linkedin-cli data export all        # Export everything
-linkedin-cli data export contacts --format json  # Export as JSON
-linkedin-cli data import contacts contacts.csv   # Import contacts
-linkedin-cli data import contacts contacts.csv --merge  # Merge with existing
-linkedin-cli data backup            # Create backup of all data
-linkedin-cli data backup --verify   # Backup + integrity verification
-linkedin-cli data backups           # List available backups
-linkedin-cli data verify-backup backup.zip  # Verify an existing backup archive
-linkedin-cli data restore backup.zip  # Restore from backup
-linkedin-cli data restore backup.zip --dry-run  # Validate restore without writing files
-```
-
-### Analytics & Profile Optimization
-```bash
-linkedin-cli analytics summary       # Response rates, velocity, source effectiveness
-linkedin-cli analytics conversion    # Pipeline conversion funnel
-linkedin-cli analytics velocity      # Weekly outreach velocity
-linkedin-cli optimize headline       # AI headline suggestions
-linkedin-cli optimize about          # AI About-section rewrite
-linkedin-cli optimize skills         # AI skills-list suggestions
-linkedin-cli optimize full           # Full profile optimization report
-# Then push the result live: linkedin-cli automate sync-profile --headline "..." --about-file about.txt
-```
-
-### Dashboard
-```bash
-linkedin-cli dashboard    # Overview of your job hunt
-linkedin-cli daily-plan   # Unified daily execution plan (actions + opportunities + templates)
-linkedin-cli daily-plan --save-recap  # Save the plan as markdown under ~/.linkedin-cli/recaps/
-linkedin-cli daily-plan --json  # Machine-readable plan payload for automation
-linkedin-cli run-daily --save-recap --generate-drafts --save-drafts
-linkedin-cli run-daily --watch --time 09:00 --run-now  # Hands-off daily runner
-linkedin-cli run-daily --idempotency-key monday-run  # Prevent duplicate one-shot executions
-linkedin-cli run-daily --notify-webhook "https://hooks.slack.com/services/..."  # Failure alerts
-linkedin-cli run-daily --retry-attempts 2 --retry-backoff-seconds 10
-linkedin-cli run-daily --failure-streak-threshold 3  # Escalate when failures are consecutive
-linkedin-cli automation status --json  # Check managed scheduler + latest run health
-linkedin-cli automation schedule --time 09:00  # Install/update managed daily cron schedule
-linkedin-cli automation schedule --time 09:00 --adopt-existing  # Migrate legacy unmanaged cron lines
-linkedin-cli automation env sync  # Sync shell secrets to cron env file (~/.linkedin-cli/cron.env)
-linkedin-cli automation env status  # Verify cron env file + key presence
-linkedin-cli automation doctor --fix --run-smoke  # Diagnose, repair, and smoke-test automation
-linkedin-cli automation unschedule  # Remove managed schedule
-linkedin-cli automation doctor --json  # Preflight checks (API key, lock, schedule, history, webhook); --fix applies safe ones
-linkedin-cli run-history --status failed --limit 50 --json  # Inspect recent failed runs
-```
-
-Run reliability notes:
-- Every `automate` run ends by reporting any LinkedIn selector that matched
-  nothing, so a markup change is visible instead of looking like a quiet feed.
-  Selectors live in `src/linkedin/automation/selectors.py`.
-- `run-daily` exits **nonzero** on `failed` and on `no_actions` — the planner finding
-  nothing while contacts are still in the pipeline is a stall, not a success. Run
-  `contacts repair` and `contacts next-actions` to see why.
-- `run-daily` acquires a lock file to prevent overlapping runs.
-- Scheduled watch runs are idempotent by day (`schedule:<time>:<YYYY-MM-DD>`).
-- Watch mode can catch up missed same-day runs (`--catch-up-missed`, enabled by default).
-- Failed runs can auto-retry with exponential backoff.
-- Failure-streak alerting avoids silent degradation (`--failure-streak-threshold`).
-- `automation schedule` manages a dedicated cron block so setup is idempotent and reversible.
-- `automation schedule` can adopt existing unmanaged `run-daily` cron entries to avoid duplicates.
-- Managed schedules source an env file (`~/.linkedin-cli/cron.env`) for cron-safe secrets.
-- Draft generation has a deterministic fallback mode when AI is unavailable (`LINKEDIN_AI_FALLBACK_ENABLED`).
-- Every run appends a structured log entry at `~/.linkedin-cli/run_daily.log.jsonl`.
-- Optional webhook notifications can also be set via `LINKEDIN_RUN_NOTIFY_WEBHOOK`.
-
-## Pipeline Stages
-
-Track each contact through your outreach pipeline:
-
-```
-⚪ not_contacted  →  📤 connection_sent  →  🤝 connected
-                                              ↓
-                                         💬 messaged
-                                              ↓
-                                         ✉️ responded
-                                              ↓
-                                         📅 call_scheduled
-                                              ↓
-                                         🎉 hired!
-```
-
-## How AI Works
-
-The CLI uses Claude AI (via the Anthropic API) to generate personalized drafts. It uses:
-
-- **Your profile** (skills, experience, target role)
-- **Contact's info** (title, company, why you want to connect)
-- **Company context** (if linked to a target company)
-- **Context** (notes you've added)
-
-To generate drafts that sound natural and personalized, not templated.
-
-## Example Workflow
-
-```bash
-# Morning: Research target companies
-linkedin-cli companies add -n "LangChain" -i "AI/ML" --priority high
-linkedin-cli discover contacts --company "LangChain"
-
-# Add contacts you found
-linkedin-cli contacts add -n "Harrison Chase" -t "CEO" --company-id 1 \
-  --notes "Founder, building RAG tools"
-
-# Generate outreach
-linkedin-cli drafts connection 1
-# → AI generates personalized connection request
-
-# Track progress
-linkedin-cli contacts update 1 --status connection_sent
-linkedin-cli contacts remind 1 --days 7
-
-# When they accept
-linkedin-cli contacts update 1 --status connected
-linkedin-cli drafts message 1 -c "Ask about AI engineering roles"
-
-# After a call
-linkedin-cli drafts thank-you 1 --context "Great call about RAG tools"
-
-# If no response
-linkedin-cli contacts due
-linkedin-cli drafts follow-up 1 --attempt 1
-
-# View your progress
-linkedin-cli dashboard
-
-# Create thought leadership content
-linkedin-cli research draft-post "lessons from my job search" --style story
-
-# Backup your data
-linkedin-cli data backup
-```
-
-## Data Storage
-
-Everything is stored locally in `~/.linkedin-cli/`:
-
-```
-~/.linkedin-cli/
-├── my_profile.json   # Your info
-├── contacts.json     # Your CRM
-├── companies.json    # Target companies
-├── drafts.json       # Saved drafts
-├── templates.json    # Reusable templates + experiment stats
-├── research.json     # Saved ideas
-├── job_postings.json # Tracked opportunities + profile match scores
-├── applications.json # Job application tracking
-├── conversations.json # Message threads per contact
-├── content_calendar.json # Scheduled posts
-├── interview_prep.json # Saved interview prep
-├── limits.json       # Daily automation caps (seeded with the ramp defaults)
-├── posts.json        # Posts published through the tool, with their URNs
-├── thread_index.json # Who wrote in LinkedIn messaging (no bodies); feeds `inbox strangers`
-├── metrics.json      # Account metrics, one row per day (None = could not be read)
-├── automation_usage.json # Today's browser-automation counters
-├── li_session.json   # Saved LinkedIn browser session (cookies)
-├── run_daily_state.json # Completed idempotency keys
-├── run_daily.log.jsonl  # Structured run history
-├── run_daily.lock    # Active run lock (ephemeral)
-└── backups/          # Backup files
-```
-
-## Why Not Just Use LinkedIn?
-
-This tool helps you:
-- **Stay organized** - Track who you've contacted, who responded
-- **Track companies** - Keep notes on target companies and who you know there
-- **Save time** - AI writes personalized drafts instantly
-- **Be strategic** - See conversion rates, optimize your approach
-- **Get reminders** - Never forget to follow up
-- **Build content** - Get ideas that actually get engagement
-- **Keep your data** - Export, backup, and own your job search data
-
-## Requirements
-
-- Python 3.10+
-- Anthropic API key (set `ANTHROPIC_API_KEY` environment variable)
-- `uv` package manager (or pip)
-
-## License
-
-MIT
+`CLAUDE.md` documents the architecture and the invariants that have bitten
+before. `CONTEXT.md` is the glossary.

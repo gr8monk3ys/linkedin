@@ -104,10 +104,12 @@ def test_automate_connect_dry_run_keeps_status(runner, fake_session):
 
 def test_automate_message_uses_draft(runner, fake_session, tmp_path):
     _add_contact(runner)
-    save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hello from draft", "type": "message", "source": "ai"}])
+    save_json(
+        cli_mod._app.data_dir.drafts, [{"id": 1, "content": "Hello from draft", "type": "message", "source": "ai"}]
+    )
     result = runner.invoke(cli, ["automate", "message", "1", "--draft-id", "1"])
     assert result.exit_code == 0, result.output
-    (args, _), = fake_session.calls_to("message")
+    ((args, _),) = fake_session.calls_to("message")
     assert args[1] == "Hello from draft"
     assert load_json(cli_mod._app.data_dir.contacts)[0]["status"] == "messaged"
 
@@ -120,14 +122,15 @@ def test_automate_message_requires_text(runner, fake_session):
 
 
 def test_automate_post_from_calendar_marks_posted(runner, fake_session):
-    save_json(cli_mod._app.data_dir.drafts, [{"id": 1, "content": "My scheduled post", "type": "post", "source": "ai"}])
-    result = runner.invoke(cli, ["calendar", "add", "--title", "Post", "--date", "2026-03-01", "--draft-id", "1"])
-    assert result.exit_code == 0, result.output
+    save_json(
+        cli_mod._app.data_dir.drafts,
+        [{"id": 1, "content": "My scheduled post", "type": "post_fleet", "source": "ai", "review": "pending"}],
+    )
+    assert cli_mod._app.content_svc.approve(1, publish_on="2026-03-01")["id"] == 1
     result = runner.invoke(cli, ["automate", "post", "--calendar-id", "1"], input="y\n")
     assert result.exit_code == 0, result.output
     assert "published" in result.output
-    listing = runner.invoke(cli, ["calendar", "list"])
-    assert "posted" in listing.output
+    assert cli_mod._app.calendar_repo.list_all()[0]["status"] == "posted"
 
 
 def test_automate_post_records_the_urn(runner, fake_session):
@@ -264,7 +267,7 @@ def test_automate_easy_apply_submits_and_advances(runner, fake_session, resume_r
     assert result.exit_code == 0, result.output
     assert "applied" in result.output
     # The matched variant's PDF was passed through
-    (_, kwargs), = fake_session.calls_to("easy_apply")
+    ((_, kwargs),) = fake_session.calls_to("easy_apply")
     assert kwargs["resume_path"].endswith("ai-engineer-resume.pdf")
     assert kwargs["submit"] is True
     view = runner.invoke(cli, ["applications", "view", "1"])
@@ -372,7 +375,9 @@ def test_easy_apply_hands_a_question_step_to_the_human_when_headful(runner, fake
     monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
     fake_session.results["easy_apply"] = ActionResult(
-        "skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "Form has required fields that need manual answers"}
+        "skipped",
+        "needs_manual_input",
+        {"status": "needs_manual_input", "detail": "Form has required fields that need manual answers"},
     )
     # Person finishes the form in the window, then confirms they submitted.
     # (`click.pause` is a no-op without a TTY, so only the confirm reads input.)
@@ -387,7 +392,9 @@ def test_easy_apply_hands_a_question_step_to_the_human_when_headful(runner, fake
 def test_easy_apply_question_step_not_submitted_stays_saved(runner, fake_session, monkeypatch):
     monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
-    fake_session.results["easy_apply"] = ActionResult("skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "required fields"})
+    fake_session.results["easy_apply"] = ActionResult(
+        "skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "required fields"}
+    )
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit"], input="n\n")
     assert result.exit_code == 0, result.output
     view = runner.invoke(cli, ["applications", "view", "1"])
@@ -398,6 +405,8 @@ def test_easy_apply_question_step_headless_is_still_a_failure(runner, fake_sessi
     """With nobody watching there is no one to hand the form to."""
     monkeypatch.delenv("LINKEDIN_RESUME_REPO", raising=False)
     runner.invoke(cli, ["applications", "add", "-c", "Acme", "-t", "SE", "-u", "https://x/1"])
-    fake_session.results["easy_apply"] = ActionResult("skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "required fields"})
+    fake_session.results["easy_apply"] = ActionResult(
+        "skipped", "needs_manual_input", {"status": "needs_manual_input", "detail": "required fields"}
+    )
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit", "--headless"])
     assert result.exit_code == 1

@@ -147,9 +147,7 @@ def import_autoapply_applications(repo_root: str = "", include_queued: bool = Fa
     conn.row_factory = sqlite3.Row
     # `discovered_at` was added to the pipeline's schema later; an older
     # checkout does not have it, and the fallback is optional, not required.
-    has_discovered = any(
-        row[1] == "discovered_at" for row in conn.execute("PRAGMA table_info(jobs)")
-    )
+    has_discovered = any(row[1] == "discovered_at" for row in conn.execute("PRAGMA table_info(jobs)"))
 
     discovered = "j.discovered_at" if has_discovered else "NULL AS discovered_at"
     placeholders = ",".join("?" * len(statuses))

@@ -19,8 +19,17 @@ def data_svc(json_repos, tmp_path):
 class TestDataService:
     def test_export_contacts_csv(self, data_svc, json_repos, tmp_path):
         contact_repo = json_repos[0]
-        contact_repo.add({"id": 1, "name": "Alice", "title": "Engineer", "company": "Acme",
-                          "linkedin_url": "", "status": "connected", "notes": ""})
+        contact_repo.add(
+            {
+                "id": 1,
+                "name": "Alice",
+                "title": "Engineer",
+                "company": "Acme",
+                "linkedin_url": "",
+                "status": "connected",
+                "notes": "",
+            }
+        )
 
         output = str(tmp_path / "contacts.csv")
         count, path = data_svc.export_contacts(output=output, fmt="csv")
@@ -29,8 +38,17 @@ class TestDataService:
 
     def test_export_contacts_json(self, data_svc, json_repos, tmp_path):
         contact_repo = json_repos[0]
-        contact_repo.add({"id": 1, "name": "Alice", "title": "Engineer", "company": "Acme",
-                          "linkedin_url": "", "status": "connected", "notes": ""})
+        contact_repo.add(
+            {
+                "id": 1,
+                "name": "Alice",
+                "title": "Engineer",
+                "company": "Acme",
+                "linkedin_url": "",
+                "status": "connected",
+                "notes": "",
+            }
+        )
 
         output = str(tmp_path / "out_contacts.json")
         count, path = data_svc.export_contacts(output=output, fmt="json")
@@ -42,8 +60,18 @@ class TestDataService:
 
     def test_export_companies_csv(self, data_svc, json_repos, tmp_path):
         company_repo = json_repos[1]
-        company_repo.add({"id": 1, "name": "Acme", "industry": "Tech", "size": "51-200",
-                          "priority": "high", "linkedin_url": "", "website": "", "notes": ""})
+        company_repo.add(
+            {
+                "id": 1,
+                "name": "Acme",
+                "industry": "Tech",
+                "size": "51-200",
+                "priority": "high",
+                "linkedin_url": "",
+                "website": "",
+                "notes": "",
+            }
+        )
 
         output = str(tmp_path / "companies.csv")
         count, path = data_svc.export_companies(output=output, fmt="csv")

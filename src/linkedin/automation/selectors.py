@@ -27,20 +27,44 @@ LOGIN_PASSWORD_LABEL = "Password"
 #: which is the *first* button on the page.
 SIGN_IN_BUTTON = "Sign in"
 
+#: The profile's own action bar. Verified live 2026-09-03: the first <section>
+#: of <main> is the top card, headed by the profile person's own name, and every
+#: other "Invite … to connect" button on the page belongs to a *different*
+#: person in a "People you may know" or "Explore Premium profiles" card further
+#: down. Every top-card lookup must be scoped to this, and none may fall back to
+#: a page-wide search: an unscoped `get_by_role("button", name="Connect").first`
+#: clicked a stranger's card and sent nine invitations to people who were not in
+#: the CRM, while the tool reported that every send had failed.
+PROFILE_TOP_CARD = "main section"
+
 CONNECT_BUTTON = "Connect"
+#: What a real invitation control is called on a card: "Invite <name> to connect".
+#: Used to assert that a top-card Connect belongs to the profile being viewed.
+INVITE_TO_CONNECT_LABEL = re.compile(r"^Invite .+ to connect$", re.I)
 #: Shown in place of Connect while an invitation is outstanding.
 PENDING_BUTTON = re.compile(r"^Pending\b", re.I)
 MORE_BUTTON = "More"
 CONNECT_MENU_ITEM = "Connect"
 ADD_NOTE_BUTTON = "Add a note"
 ADD_NOTE_TEXTBOX = "Add a note"
-SEND_BUTTON = "Send"
+#: Scoped to the invitation dialog, never the page: "Send" also matches the
+#: messaging composer's own Send button.
+SEND_BUTTON = re.compile(r"^Send(?: invitation| now| without a note)?$", re.I)
+CONNECT_DIALOG = "dialog"
 
 MESSAGE_BUTTON = "Message"
 MESSAGE_TEXTBOX = "Write a message"
 
 START_POST_BUTTON = re.compile("Start a post", re.I)
+#: The composer mounts inside a shadow root several seconds after the modal
+#: opens, so it must be waited for: querying in the same tick as the click read
+#: as "no editor" every time, and posting had never once succeeded. Verified
+#: live 2026-09-03: role=textbox, aria-label "Text editor for creating content",
+#: class `ql-editor`, contenteditable. Note that `document.querySelector` does
+#: not pierce the shadow root and finds none of this; Playwright locators do.
 POST_EDITOR_TEXTBOX = re.compile("Text editor", re.I)
+#: Scoped to the composer: "Post" alone also matches feed controls.
+POST_COMPOSER = "div.share-box"
 POST_SUBMIT_BUTTON = re.compile(r"^Post$", re.I)
 
 #: The feed's like control was relabelled "Reaction button state: no reaction"
@@ -133,7 +157,45 @@ THREAD_OWN_MESSAGE_PREFIX = re.compile(r"^\s*you\s*:", re.I)
 # names (`aa13b50b ce9c4d83 ...`, verified 2026-08-30), so there is no semantic
 # class left to key on and `li.invitation-card` matches nothing. Profile links are
 # the only stable handle, and they are what the matcher actually needs.
+#: Kept for the health catalogue and the "is the page there at all" wait.
 INVITATION_PROFILE_LINK = "main a[href*='/in/']"
+
+#: The control every sent-invitation card carries, and nothing else on the page
+#: does. It is a class-obfuscated <span>, not a button, so it is found by its
+#: text rather than by role.
+WITHDRAW_BUTTON = r"^Withdraw$"
+
+#: Read sent invitations by shape: a card is the smallest ancestor of a Withdraw
+#: control that also holds a profile link. Verified live 2026-09-03: reads all
+#: ten pending invitations, names and URLs. The page now
+#: embeds feed content, so `main a[href*='/in/']` matched thirteen links -- feed
+#: posts, reaction bylines, "People you may know" -- and *none* of the nine real
+#: invitations. Since the caller infers acceptance from absence, that read every
+#: outstanding invitation as accepted. The button pattern is passed in from
+#: WITHDRAW_BUTTON rather than copied here.
+SENT_INVITATIONS_SCRIPT = """({ withdrawPattern }) => {
+  const re = new RegExp(withdrawPattern, 'i');
+  const out = []; const seen = new Set();
+  // The control is a class-obfuscated <span>, not a button: `main button` with
+  // an aria-label matched nothing at all. Leaf text is what survives the churn.
+  for (const el0 of document.querySelectorAll('main *')) {
+    if (el0.children.length !== 0) continue;
+    if (!re.test((el0.innerText || '').trim())) continue;
+    let el = el0, card = null, link = null;
+    for (let k = 0; k < 12 && el; k++) {
+      el = el.parentElement; if (!el) break;
+      const a = el.querySelector("a[href*='/in/']");
+      if (a) { card = el; link = a; break; }
+    }
+    if (!card || seen.has(card)) continue;
+    seen.add(card);
+    const href = link.getAttribute('href') || '';
+    const lines = card.innerText.split('\\n').map(x => x.trim()).filter(Boolean)
+      .filter(x => !re.test(x) && !/^Sent /.test(x));
+    out.push({ url: href, name: lines[0] || '' });
+  }
+  return out;
+}"""
 #: The links themselves carry no text — the name lives in the surrounding card,
 #: which has no usable class either. This walks up to the nearest ancestor that
 #: has any text at all, whose first line is the name.
@@ -303,6 +365,7 @@ FRAGILE_SELECTORS = {
     "thread_card": THREAD_CARD,
     "thread_name": THREAD_NAME,
     "invitation_profile_link": INVITATION_PROFILE_LINK,
+    "withdraw_control": WITHDRAW_BUTTON,
     "job_card": JOB_CARD,
     "job_title": JOB_TITLE,
     # -- writes: a relabelled button here used to be a bare False, indistinguishable
@@ -310,11 +373,14 @@ FRAGILE_SELECTORS = {
     "login_email_input": LOGIN_EMAIL_INPUT,
     "login_password_input": LOGIN_PASSWORD_INPUT,
     "sign_in_button": SIGN_IN_BUTTON,
+    "profile_top_card": PROFILE_TOP_CARD,
     "connect_button": CONNECT_BUTTON,
-    "send_button": SEND_BUTTON,
+    "connect_dialog": CONNECT_DIALOG,
+    "send_button": SEND_BUTTON.pattern,
     "message_button": MESSAGE_BUTTON,
     "message_textbox": MESSAGE_TEXTBOX,
     "start_post_button": START_POST_BUTTON.pattern,
+    "post_composer": POST_COMPOSER,
     "post_editor": POST_EDITOR_TEXTBOX.pattern,
     "post_submit_button": POST_SUBMIT_BUTTON.pattern,
     "post_success_link": POST_SUCCESS_LINK,

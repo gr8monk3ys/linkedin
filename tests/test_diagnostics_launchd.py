@@ -16,7 +16,9 @@ PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 
 def test_launchd_job_is_read_from_the_plist(tmp_path):
     (tmp_path / "com.example.linkedin.run_daily.plist").write_text(PLIST)
-    (tmp_path / "com.example.goodreads.run_daily.plist").write_text(PLIST.replace("linkedin", "goodreads").replace("linkedin-cli", "goodreads-cli"))
+    (tmp_path / "com.example.goodreads.run_daily.plist").write_text(
+        PLIST.replace("linkedin", "goodreads").replace("linkedin-cli", "goodreads-cli")
+    )
     job = launchd_job(tmp_path)
     assert job["label"] == "com.example.linkedin.run_daily"
     assert job["time"] == "09:00" and job["collect_metrics"] is True

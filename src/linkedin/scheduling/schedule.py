@@ -78,11 +78,14 @@ def build_scheduled_run_daily_tokens(
     notify_on_recovery: bool,
     notify_webhook: str,
     collect_metrics: bool = False,
+    send_connections: bool = False,
 ) -> list[str]:
     command = [
         *runner_tokens,
         "run-daily",
         "--json",
+        "--trigger",
+        "scheduled",
         "--retry-attempts",
         str(retry_attempts),
         "--retry-backoff-seconds",
@@ -98,6 +101,8 @@ def build_scheduled_run_daily_tokens(
         command.append("--save-drafts")
     if collect_metrics:
         command.append("--collect-metrics")
+    if send_connections:
+        command.append("--send-connections")
     if notify_webhook.strip():
         command.extend(["--notify-webhook", notify_webhook.strip()])
     if not notify_on_recovery:

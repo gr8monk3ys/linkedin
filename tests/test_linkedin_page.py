@@ -112,60 +112,112 @@ class TestLogin:
 
 
 class TestConnectionRequest:
+    """Every lookup is scoped to the top card. The sidebar test is the important one."""
+
     def test_direct_connect_button(self, page):
-        connect, send = FakeElement(), FakeElement()
-        page.register_role("button", sel.CONNECT_BUTTON, connect)
-        page.register_role("button", sel.SEND_BUTTON, send)
+        connect, send, dialog = FakeElement(), FakeElement(), FakeElement()
+        page.register_top_card({("button", sel.CONNECT_BUTTON): connect})
+        page.register_role("dialog", None, dialog)
+        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(send))
 
         assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert connect.clicked == 1 and send.clicked == 1
 
+    def test_a_dialog_that_stays_open_is_an_unconfirmed_send(self, page):
+        """Clicking Send is not evidence. The tool reported an invitation as
+        sent that never reached the sent list; only the dialog closing says so."""
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("dialog", None, FakeElement())
+        page.register_role("button", sel.SEND_BUTTON, FakeElement())
+
+        result = LinkedInPage(page).send_connection_request()
+        assert result.outcome == "degraded" and "unconfirmed" in result.detail
+
+    def test_a_connect_button_outside_the_top_card_is_never_clicked(self, page):
+        """The regression. LinkedIn shows "Invite <someone else> to connect" on
+        every "People you may know" card; an unscoped `.first` clicked one of
+        those and sent nine invitations to people who were not in the CRM."""
+        stranger = FakeElement()
+        page.register_role("button", sel.CONNECT_BUTTON, stranger)
+        page.register_top_card({("button", sel.MESSAGE_BUTTON): FakeElement()})
+
+        lp = LinkedInPage(page)
+        result = lp.send_connection_request()
+        assert stranger.clicked == 0
+        assert result.outcome == "not_applicable" and lp.selector_misses == []
+
     def test_falls_back_to_the_more_menu(self, page):
         more, menu_item, send = FakeElement(), FakeElement(), FakeElement()
-        page.register_role("button", sel.MORE_BUTTON, more)
+        page.register_top_card({("button", sel.MORE_BUTTON): more})
         page.register_role("menuitem", sel.CONNECT_MENU_ITEM, menu_item)
-        page.register_role("button", sel.SEND_BUTTON, send)
+        page.register_role("dialog", None, FakeElement())
+        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(send))
 
         assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert more.clicked == 1 and menu_item.clicked == 1
 
+    def test_no_top_card_is_a_selector_miss(self, page):
+        lp = LinkedInPage(page)
+        assert lp.send_connection_request().outcome == "selector_missing"
+        assert "profile_top_card" in lp.selector_misses
+
     def test_no_connect_affordance_at_all_is_a_selector_miss(self, page):
-        """No Connect, More, Message or Pending: this is not a profile page we know."""
+        """A top card with no Connect, More, Message or Pending is not a profile we know."""
+        page.register_top_card({})
         lp = LinkedInPage(page)
         result = lp.send_connection_request()
         assert result.outcome == "selector_missing"
         assert "connect_button" in lp.selector_misses
 
     def test_already_connected_is_a_normal_absence(self, page):
-        page.register_role("button", sel.MESSAGE_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.MESSAGE_BUTTON): FakeElement()})
         lp = LinkedInPage(page)
         result = lp.send_connection_request()
         assert result.outcome == "not_applicable"
         assert lp.selector_misses == []
 
     def test_pending_invitation_is_a_normal_absence(self, page):
-        page.register_role("button", sel.PENDING_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.PENDING_BUTTON): FakeElement()})
         assert LinkedInPage(page).send_connection_request().outcome == "not_applicable"
 
     def test_more_menu_without_a_connect_item(self, page):
-        page.register_role("button", sel.MORE_BUTTON, FakeElement())
-        assert LinkedInPage(page).send_connection_request().outcome == "not_applicable"
+        """Verified live: a follow-only profile's More menu offers Follow, not Connect."""
+        page.register_top_card({("button", sel.MORE_BUTTON): FakeElement()})
+        lp = LinkedInPage(page)
+        assert lp.send_connection_request().outcome == "not_applicable"
+        assert lp.selector_misses == []
+
+    def test_no_dialog_after_clicking_connect_is_a_miss_and_sends_nothing(self, page):
+        """A stranger's card sends immediately with no dialog. If no dialog
+        appears, the click was not an invitation flow: never hunt for a Send
+        button on the page, the messaging composer has one."""
+        page_send = FakeElement()
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("button", sel.SEND_BUTTON, page_send)
+
+        lp = LinkedInPage(page)
+        result = lp.send_connection_request()
+        assert result.outcome == "selector_missing" and "connect_dialog" in lp.selector_misses
+        assert page_send.clicked == 0
 
     def test_note_is_typed_before_sending(self, page):
         note_box = FakeElement()
-        page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("dialog", None, FakeElement())
         page.register_role("button", sel.ADD_NOTE_BUTTON, FakeElement())
         page.register_role("textbox", sel.ADD_NOTE_TEXTBOX, note_box)
-        page.register_role("button", sel.SEND_BUTTON, FakeElement())
+        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(FakeElement()))
 
         assert LinkedInPage(page).send_connection_request(note="Hi Ada").outcome == "ok"
         assert note_box.filled == ["Hi Ada"]
 
     def test_missing_send_button_is_a_selector_miss(self, page):
-        page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("dialog", None, FakeElement())
         lp = LinkedInPage(page)
-        assert lp.send_connection_request().outcome == "selector_missing"
-        assert lp.selector_misses == ["send_button"]
+        result = lp.send_connection_request()
+        assert result.outcome == "selector_missing"
+        assert "send_button" in lp.selector_misses
 
 
 class TestSendMessage:
@@ -207,7 +259,9 @@ class TestCreatePost:
             page.register_css(sel.POST_EDITOR_FALLBACK, FakeElement())
         page.register_role("button", sel.POST_SUBMIT_BUTTON, FakeElement())
         if success_link:
-            page.register_css(sel.POST_SUCCESS_LINK, FakeElement(href=f"https://www.linkedin.com/feed/update/{self.URN}/"))
+            page.register_css(
+                sel.POST_SUCCESS_LINK, FakeElement(href=f"https://www.linkedin.com/feed/update/{self.URN}/")
+            )
         return page
 
     def test_publishes_and_reads_back_the_urn(self, page):
@@ -226,14 +280,18 @@ class TestCreatePost:
         assert result.detail.startswith("posted, but")
         assert lp.selector_misses == ["post_success_link"]
 
-    def test_refuses_the_legacy_editor(self, page):
-        """Typing a public post into an editor we no longer recognise is acting on
-        a page we do not understand. It used to type into it and report success."""
+    def test_refuses_an_editor_it_cannot_identify(self, page):
+        """Typing a public post into an editor we cannot identify is acting on a
+        page we do not understand. It used to type into it and report success.
+
+        The editor is a Quill `ql-editor` and always was; what identifies it is
+        its role and label. If those stop matching while the element is still
+        there, that is a rename to investigate, not a licence to type."""
         self._prepare(page, with_editor=False, fallback_editor=True)
         lp = LinkedInPage(page)
         result = lp.create_post("Shipped")
         assert result.outcome == "selector_missing"
-        assert "legacy editor" in result.detail
+        assert "not identifiable by role" in result.detail
         assert page.registry[canonical("css", sel.POST_EDITOR_FALLBACK)][0].filled == []
         assert lp.selector_misses == ["post_editor"]
 
@@ -346,13 +404,29 @@ class TestRebuiltFeed:
 
     def test_script_rows_become_posts_and_tagged_cards_take_likes(self, page):
         # The fake cannot run the script, so the cards it would have tagged are registered up front.
-        other = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: Like"})]})
-        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: no reaction"})]})
+        other = FakeCard(
+            None,
+            {
+                canonical("role", "button", sel.LIKE_BUTTON): [
+                    FakeElement(attributes={"aria-label": "Reaction button state: Like"})
+                ]
+            },
+        )
+        card = FakeCard(
+            None,
+            {
+                canonical("role", "button", sel.LIKE_BUTTON): [
+                    FakeElement(attributes={"aria-label": "Reaction button state: no reaction"})
+                ]
+            },
+        )
         _with_feed(page, [])
         page.register_css(f"[{sel.FEED_CARD_TAG}]", [other, card])
         page.register_css(f'[{sel.FEED_CARD_TAG}="1"]', [card])
         other._page = card._page = page
-        page.evaluate_result = [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
+        page.evaluate_result = [
+            {"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}
+        ]
         lp = LinkedInPage(page)
         posts = lp.get_feed_posts(max_posts=3)
         assert posts == [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
@@ -360,7 +434,12 @@ class TestRebuiltFeed:
         assert page.evaluated == [sel.FEED_POSTS_SCRIPT]
         # the button patterns reach the script from the catalogue, not a JS copy
         (arg,) = page.evaluate_args[0]
-        assert arg == {"maxPosts": 3, "tag": sel.FEED_CARD_TAG, "likePattern": sel.LIKE_BUTTON.pattern, "commentPattern": sel.COMMENT_BUTTON.pattern}
+        assert arg == {
+            "maxPosts": 3,
+            "tag": sel.FEED_CARD_TAG,
+            "likePattern": sel.LIKE_BUTTON.pattern,
+            "commentPattern": sel.COMMENT_BUTTON.pattern,
+        }
         # like_post finds the card by its exact tag value, not by position
         assert lp.like_post(1).outcome == "ok"
         assert lp.like_post(7).outcome == "not_applicable"
@@ -372,7 +451,14 @@ class TestRebuiltFeed:
         assert lp.selector_misses == ["feed_card"]
 
     def test_a_reaction_state_other_than_none_is_already_liked(self, page):
-        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: Like"})]})
+        card = FakeCard(
+            None,
+            {
+                canonical("role", "button", sel.LIKE_BUTTON): [
+                    FakeElement(attributes={"aria-label": "Reaction button state: Like"})
+                ]
+            },
+        )
         _with_feed(page, [card])
         assert LinkedInPage(page).like_post(0).outcome == "not_applicable"
 
@@ -468,12 +554,26 @@ class TestSearchResults:
     def test_rebuilt_page_is_read_by_the_dom_shape_script(self, page):
         """Verified 2026-09-02: no CSS card matches; the script reads name/degree/headline lines."""
         page.evaluate_result = [
-            {"name": "Neha Tammana", "headline": "Senior Solutions Engineer - AI Specialist", "location": "SF Bay Area", "degree": "2nd", "linkedin_url": "https://www.linkedin.com/in/neha"},
+            {
+                "name": "Neha Tammana",
+                "headline": "Senior Solutions Engineer - AI Specialist",
+                "location": "SF Bay Area",
+                "degree": "2nd",
+                "linkedin_url": "https://www.linkedin.com/in/neha",
+            },
             {"name": "", "headline": "nameless", "linkedin_url": ""},
         ]
         lp = LinkedInPage(page)
         rows = lp.get_search_results()
-        assert rows == [{"name": "Neha Tammana", "headline": "Senior Solutions Engineer - AI Specialist", "linkedin_url": "https://www.linkedin.com/in/neha", "location": "SF Bay Area", "degree": "2nd"}]
+        assert rows == [
+            {
+                "name": "Neha Tammana",
+                "headline": "Senior Solutions Engineer - AI Specialist",
+                "linkedin_url": "https://www.linkedin.com/in/neha",
+                "location": "SF Bay Area",
+                "degree": "2nd",
+            }
+        ]
         assert lp.selector_misses == []
         assert page.evaluated == [sel.SEARCH_RESULTS_SCRIPT]
 
@@ -506,7 +606,6 @@ class TestScrapeProfile:
         assert set(lp.selector_misses) == {"profile_name", "profile_headline", "profile_about"}
 
 
-
 class TestRebuiltProfile:
     """Verified 2026-09-03: no h1, no class hooks; the page text has a fixed shape."""
 
@@ -522,7 +621,12 @@ class TestRebuiltProfile:
 
     def test_the_footer_about_line_is_not_an_about_section(self, page):
         # A stranger's profile with no About loaded: the only "About" is the footer's link list.
-        page.register_css("main", FakeElement("Satya Nadella\n· 3rd\nChairman and CEO at Microsoft\nRedmond, Washington\nMessage\nAbout\nAccessibility\nTalent Solutions\nCareers"))
+        page.register_css(
+            "main",
+            FakeElement(
+                "Satya Nadella\n· 3rd\nChairman and CEO at Microsoft\nRedmond, Washington\nMessage\nAbout\nAccessibility\nTalent Solutions\nCareers"
+            ),
+        )
         d = LinkedInPage(page).scrape_profile()
         assert d["headline"] == "Chairman and CEO at Microsoft" and "about" not in d
 
@@ -538,7 +642,9 @@ class TestRebuiltProfile:
     def test_scrape_scrolls_before_reading(self, page):
         page.register_css("main", FakeElement("Ada Lovelace\nEngineer\nLondon"))
         LinkedInPage(page).scrape_profile()
-        assert page.evaluated[: len(sel.PROFILE_SCROLL_STOPS)] == [sel.PROFILE_SCROLL_SCRIPT] * len(sel.PROFILE_SCROLL_STOPS)
+        assert page.evaluated[: len(sel.PROFILE_SCROLL_STOPS)] == [sel.PROFILE_SCROLL_SCRIPT] * len(
+            sel.PROFILE_SCROLL_STOPS
+        )
         assert [a for (a,) in page.evaluate_args[: len(sel.PROFILE_SCROLL_STOPS)]] == list(sel.PROFILE_SCROLL_STOPS)
 
     def test_degree_marker_is_skipped_like_pronouns(self, page):
@@ -649,7 +755,8 @@ class TestSelectorCatalogue:
         button was a bare False the report never mentioned."""
         expected = {
             "login": (lambda lp: lp.login("e", "p"), "login_email_input"),
-            "connect": (lambda lp: lp.send_connection_request(), "connect_button"),
+            # An empty page has no top card, so that is the first thing missing.
+            "connect": (lambda lp: lp.send_connection_request(), "profile_top_card"),
             "message": (lambda lp: lp.send_message("hi"), "message_button"),
             "post": (lambda lp: lp.create_post("x"), "start_post_button"),
             "headline": (lambda lp: lp.update_headline("x"), "edit_intro_button"),
@@ -760,49 +867,44 @@ class TestMessageThreads:
 
 
 class TestPendingInvitations:
-    """Keyed on profile links: LinkedIn rebuilt this page with obfuscated class
-    names, so `li.invitation-card` matches nothing on the live site."""
+    """Read by card shape: a card is the smallest ancestor of a Withdraw button
+    that also holds a profile link. Keying on `main a[href*='/in/']` matched the
+    embedded feed and none of the nine real invitations on the live page."""
 
     @staticmethod
-    def _link(name, href):
-        """One invitation anchor: no text of its own, name on an ancestor."""
-        card = FakeCard(None, {
-            canonical("css", sel.INVITATION_NAME_ANCESTOR): [
-                FakeElement(f"{name}\nProduct Manager\nSent 3 days ago") if name else FakeElement("")
-            ],
-        })
-        card._elements = [FakeElement(href=href)]
-        return card
+    def _rows(*pairs):
+        return [{"name": name, "url": href} for name, href in pairs]
 
-    def _page_with(self, links, main_text="People (2)"):
+    def _page_with(self, rows, main_text="People (2)"):
+        """A page whose shape script yields `rows`, or successive batches of rows."""
         page = FakePage()
-        for card in links:
-            card._page = page
-        page.register_css(sel.INVITATION_PROFILE_LINK, links)
         page.register_css("main", [FakeElement(main_text)])
+        page.register_css(sel.INVITATION_PROFILE_LINK, [FakeElement()])
+        if rows and isinstance(rows[0], list):
+            batches = list(rows)
+
+            def evaluate(script, *args):
+                page.evaluated.append(script)
+                return batches.pop(0) if batches else []
+
+            page.evaluate = evaluate
+        else:
+            page.evaluate_result = rows
         return page
 
     def test_reads_pending_invitations(self):
-        page = self._page_with([
-            self._link("Andy Matsuzaki", "/in/andy"),
-            self._link("Michele Chung", "/in/michele"),
-        ])
-        pending = LinkedInPage(page).get_pending_sent_invitations()
-
-        assert pending == [
+        page = self._page_with(self._rows(("Andy Matsuzaki", "/in/andy"), ("Michele Chung", "/in/michele")))
+        assert LinkedInPage(page).get_pending_sent_invitations() == [
             {"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"},
             {"name": "Michele Chung", "url": "https://www.linkedin.com/in/michele"},
         ]
 
     def test_the_same_profile_linked_twice_is_one_invitation(self):
         """A card links the profile from both the avatar and the name."""
-        page = self._page_with([
-            self._link("", "/in/andy"),
-            self._link("Andy Matsuzaki", "/in/andy"),
-        ], main_text="People (1)")
-        pending = LinkedInPage(page).get_pending_sent_invitations()
-
-        assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
+        page = self._page_with(self._rows(("", "/in/andy"), ("Andy Matsuzaki", "/in/andy")), main_text="People (1)")
+        assert LinkedInPage(page).get_pending_sent_invitations() == [
+            {"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}
+        ]
 
     def test_a_still_rendering_list_is_refused(self):
         """The most dangerous shape: rows present, but not all of them yet.
@@ -811,41 +913,35 @@ class TestPendingInvitations:
         — three of seven rendered, and the four missing were all real contacts.
         A list still filling in changes between reads, which is the tell.
         """
-        page = self._page_with([], main_text="People (7)")
-        growing = [
-            [self._link("Sashank Gondala", "/in/sashank")],
-            [self._link("Sashank Gondala", "/in/sashank"), self._link("Andy", "/in/andy")],
-            [self._link("Sashank Gondala", "/in/sashank"), self._link("Andy", "/in/andy"),
-             self._link("Michele", "/in/michele")],
-        ]
-
-        def next_batch(_selector):
-            batch = growing.pop(0) if growing else []
-            for card in batch:
-                card._page = page
-            return FakeLocator(page, batch)
-
-        page.locator = next_batch
+        page = self._page_with(
+            [
+                self._rows(("Sashank", "/in/sashank")),
+                self._rows(("Sashank", "/in/sashank"), ("Andy", "/in/andy")),
+                self._rows(("Sashank", "/in/sashank"), ("Andy", "/in/andy"), ("Michele", "/in/michele")),
+            ],
+            main_text="People (7)",
+        )
         lp = LinkedInPage(page)
-
         assert lp.get_pending_sent_invitations() is None
         assert "invitation_profile_link" in lp.selector_misses
 
     def test_a_list_that_stops_changing_is_trusted(self):
         """Two identical reads mean the page finished rendering."""
-        page = self._page_with([
-            self._link("Andy Matsuzaki", "/in/andy"),
-        ], main_text="People (0)")  # count renders stale; stability is the test
-
-        pending = LinkedInPage(page).get_pending_sent_invitations()
-        assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
+        page = self._page_with(self._rows(("Andy Matsuzaki", "/in/andy")), main_text="People (0)")
+        # The count renders stale; stability is the test.
+        assert LinkedInPage(page).get_pending_sent_invitations() == [
+            {"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}
+        ]
 
     def test_a_complete_list_matching_the_stated_count_is_accepted(self):
-        page = self._page_with([
-            self._link("Andy Matsuzaki", "/in/andy"),
-            self._link("Michele Chung", "/in/michele"),
-        ], main_text="People (2)")
+        page = self._page_with(self._rows(("Andy", "/in/andy"), ("Michele", "/in/michele")), main_text="People (2)")
         assert len(LinkedInPage(page).get_pending_sent_invitations()) == 2
+
+    def test_a_script_that_throws_is_unreadable_not_empty(self):
+        """A shape script that breaks must never read as "everything was accepted"."""
+        page = self._page_with([], main_text="People (7)")
+        page.evaluate_result = RuntimeError("script blew up")
+        assert LinkedInPage(page).get_pending_sent_invitations() is None
 
     def test_unreadable_list_returns_none_not_empty(self):
         """The caller treats [] as 'all accepted'. A broken page must not say that.
@@ -978,7 +1074,7 @@ class TestJobResultScrolling:
         page = FakePage()
         batches = [
             [self._card("A"), self._card("B")],
-            [self._card("C")],          # A and B recycled out
+            [self._card("C")],  # A and B recycled out
             [self._card("D")],
         ]
 

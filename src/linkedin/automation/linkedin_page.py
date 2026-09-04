@@ -44,6 +44,11 @@ class WriteResult:
         return self.outcome in ("ok", "degraded")
 
 
+#: A send whose delivery the page would not confirm. The session maps `degraded`
+#: to `ok`, so callers that must not treat it as sent match on this.
+INVITATION_UNCONFIRMED = "clicked Send but the invitation dialog is still open; delivery unconfirmed"
+
+
 def _ok(detail: str = "") -> WriteResult:
     return WriteResult("ok", detail)
 
@@ -213,42 +218,106 @@ class LinkedInPage:
     # Connection Requests
     # -------------------------------------------------------------------------
 
+    def _top_card(self) -> Locator:
+        """The profile's own action bar: the first section of main.
+
+        Everything the profile page says about *this* person is in here. The
+        cards further down ("People you may know") carry Connect buttons for
+        other people entirely, so no action lookup may leave this scope.
+        """
+        return self.page.locator(sel.PROFILE_TOP_CARD).first
+
     def send_connection_request(self, note: str = "") -> WriteResult:
         """Send a connection request from a profile page (assumes we are on one).
 
-        No Connect button beside a Message or Pending button is a normal
-        absence (already connected or pending); no Connect, More, Message or
-        Pending at all is a page we do not recognise.
+        Scoped to the top card throughout. LinkedIn puts an "Invite <name> to
+        connect" button on every "People you may know" card, so a page-wide
+        search for a Connect button finds five strangers before it finds the
+        person whose profile this is. That is not hypothetical: on 2026-09-03
+        an unscoped lookup invited nine people who were not in the CRM, marked
+        the intended contacts as `connection_sent`, and reported every send as
+        failed because the stranger's card sends immediately with no dialog.
+
+        A profile with no Connect in the top card and none in its More menu
+        cannot be invited at all (already connected or pending, follow-only,
+        or out of invitations). That is `not_applicable`, not a breakage.
         """
         try:
-            connect_btn = self.page.get_by_role("button", name=sel.CONNECT_BUTTON)
+            top = self._top_card()
+            try:
+                # The card is server-rendered but the page is still settling on
+                # arrival; reading in the same tick reported "no top card" for a
+                # profile that was plainly there.
+                top.wait_for(timeout=10000)
+            except Exception:
+                pass
+            if top.count() == 0:
+                return self._missing("profile_top_card", "no top card on the page")
+
+            connect_btn = top.get_by_role("button", name=sel.CONNECT_BUTTON)
             if connect_btn.count() > 0:
                 connect_btn.first.click()
             else:
-                more_btn = self.page.get_by_role("button", name=sel.MORE_BUTTON)
+                more_btn = top.get_by_role("button", name=sel.MORE_BUTTON)
                 if more_btn.count() == 0:
-                    if self.page.get_by_role("button", name=sel.MESSAGE_BUTTON).count() > 0 or self.page.get_by_role("button", name=sel.PENDING_BUTTON).count() > 0:
+                    if (
+                        top.get_by_role("button", name=sel.MESSAGE_BUTTON).count() > 0
+                        or top.get_by_role("button", name=sel.PENDING_BUTTON).count() > 0
+                    ):
                         return _na("already connected or pending")
-                    return self._missing("connect_button", "no Connect, More, Message or Pending button on the page")
+                    return self._missing("connect_button", "no Connect, More, Message or Pending button in the top card")
                 more_btn.first.click()
+                self.page.wait_for_timeout(1200)  # the menu animates open too
                 connect_option = self.page.get_by_role("menuitem", name=sel.CONNECT_MENU_ITEM)
                 if connect_option.count() == 0:
-                    return _na("no Connect item in the More menu (already connected or pending)")
+                    return _na("no Connect in the top card's More menu (follow-only, already connected, or pending)")
                 connect_option.first.click()
 
+            # The dialog animates in. Checking for it in the same tick reads as
+            # "no dialog" on every profile and the send never happens.
+            dialog = self.page.get_by_role(sel.CONNECT_DIALOG)
+            try:
+                dialog.first.wait_for(timeout=8000)
+            except Exception:
+                pass
+            if not self._present(dialog, "connect_dialog"):
+                # The click landed on something that is not an invitation flow.
+                # Never hunt for a Send button outside the dialog: the one on
+                # the page belongs to the message composer.
+                return self._missing("connect_dialog", "no invitation dialog after clicking Connect")
+            dialog = dialog.first
+
             if note:
-                add_note_btn = self.page.get_by_role("button", name=sel.ADD_NOTE_BUTTON)
+                add_note_btn = dialog.get_by_role("button", name=sel.ADD_NOTE_BUTTON)
                 if add_note_btn.count() > 0:
                     add_note_btn.first.click()
-                    self.page.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).first.fill(note)
+                    dialog.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).first.fill(note)
 
-            send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
+            send_btn = dialog.get_by_role("button", name=sel.SEND_BUTTON)
             if not self._present(send_btn, "send_button"):
                 return self._missing("send_button")
             send_btn.first.click()
-            return _ok()
+            return self._confirm_invitation_sent()
         except Exception as exc:
             return self._missing("connect_button", f"{type(exc).__name__}: {exc}")
+
+    def _confirm_invitation_sent(self) -> WriteResult:
+        """Read back whether the invitation actually went out.
+
+        Clicking Send is not evidence that anything was sent. Returning `ok` on
+        the click alone is how this reported "Sent invitation to Jonathan Shin"
+        for an invitation that never appeared in the sent list. The dialog
+        closing is the page's own acknowledgement; when it will not close, the
+        caller is told the send is unconfirmed rather than done.
+        """
+        self.page.wait_for_timeout(2000)
+        dialog = self.page.get_by_role(sel.CONNECT_DIALOG)
+        try:
+            if dialog.count() == 0:
+                return _ok()
+        except Exception:
+            return _ok()
+        return _degraded(INVITATION_UNCONFIRMED)
 
     # -------------------------------------------------------------------------
     # Messaging
@@ -353,13 +422,22 @@ class LinkedInPage:
             start_btn.first.click()
 
             editor = self.page.get_by_role("textbox", name=sel.POST_EDITOR_TEXTBOX)
+            try:
+                # The composer mounts in a shadow root a few seconds after the
+                # modal opens. Reading in the same tick found no editor on every
+                # attempt, which is why no post had ever gone out.
+                editor.first.wait_for(timeout=15000)
+            except Exception:
+                pass
             if editor.count() == 0:
                 if self.page.locator(sel.POST_EDITOR_FALLBACK).count() > 0:
-                    return self._missing("post_editor", "only the legacy editor is present; refusing to type into an editor we do not recognise")
+                    return self._missing("post_editor", "an editor is present but not identifiable by role; refusing to type into an editor we do not recognise")
                 return self._missing("post_editor")
             editor.first.fill(text)
 
-            post_btn = self.page.get_by_role("button", name=sel.POST_SUBMIT_BUTTON)
+            composer = self.page.locator(sel.POST_COMPOSER)
+            scope = composer.first if composer.count() > 0 else self.page
+            post_btn = scope.get_by_role("button", name=sel.POST_SUBMIT_BUTTON)
             if not self._present(post_btn, "post_submit_button"):
                 return self._missing("post_submit_button")
             post_btn.first.click()
@@ -764,37 +842,25 @@ class LinkedInPage:
         return int(match.group(1)) if match else None
 
     def _invitation_rows(self) -> list[dict]:
-        """One row per distinct profile linked from the invitation list.
+        """One row per sent-invitation card, read by shape.
 
-        A card links the same profile more than once (avatar and name), so rows
-        are deduped on URL, keeping the longest surrounding text as the name
-        source — the avatar link carries no text.
+        A card is the smallest ancestor of a Withdraw button that also holds a
+        profile link. Keying on profile links alone matched every `/in/` link in
+        main -- feed posts and "People you may know" included -- and missed the
+        invitations entirely. A script that throws is an unreadable list, which
+        the caller turns into None rather than "everything was accepted".
         """
-        links = self.page.locator(sel.INVITATION_PROFILE_LINK)
+        rows = self.page.evaluate(sel.SENT_INVITATIONS_SCRIPT, {"withdrawPattern": sel.WITHDRAW_BUTTON})
         best: dict[str, str] = {}
-        for i in range(links.count()):
-            link = links.nth(i)
-            href = self._absolute(link.get_attribute("href") or "")
+        for row in rows or []:
+            href = self._absolute(row.get("url") or "")
             if not href:
                 continue
-            name = self._invitation_name(link)
-            # `setdefault` first: the anchors carry no text of their own, so a
-            # plain "keep the longest" comparison never fired and the whole list
-            # came back empty while seven links sat on the page.
+            name = (row.get("name") or "").strip()
             best.setdefault(href, name)
             if len(name) > len(best[href]):
                 best[href] = name
         return [{"name": name, "url": url} for url, name in best.items()]
-
-    @staticmethod
-    def _invitation_name(link) -> str:
-        try:
-            ancestor = link.locator(sel.INVITATION_NAME_ANCESTOR)
-            if ancestor.count() == 0:
-                return ""
-            return (ancestor.first.inner_text() or "").strip().split("\n")[0].strip()
-        except Exception:
-            return ""
 
     def get_job_results(self, limit: int = 25, max_scrolls: int = 12) -> list[dict]:
         """Read job cards from the current job-search page.

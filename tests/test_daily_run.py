@@ -28,17 +28,25 @@ def test_plan_sections_are_ordered_and_render_both_ways():
         "templates": [],
     }
     plan = build_plan(data)
-    assert [s.key for s in plan.sections] == ["actions", "inbound", "applications", "postings", "metrics", "templates"]
+    assert [s.key for s in plan.sections] == [
+        "actions",
+        "invitations",
+        "inbound",
+        "applications",
+        "postings",
+        "metrics",
+    ]
     md = plan.to_markdown()
     assert md.startswith("# Daily Plan")
     assert "## Priority Actions" in md and "Follow up (today)" in md and "drafts follow-up 1" in md
     assert "## Inbound (needs your confirmation)" in md and "Nothing new" in md
-    assert "## Best Templates" in md
 
 
 def test_optional_sections_are_marked_so_the_terminal_can_skip_them():
-    plan = build_plan({"actions": [], "application_actions": [], "inbox_proposals": [], "postings": [], "templates": []})
-    assert {s.key for s in plan.sections if s.optional} == {"inbound", "applications", "metrics"}
+    plan = build_plan(
+        {"actions": [], "application_actions": [], "inbox_proposals": [], "postings": [], "templates": []}
+    )
+    assert {s.key for s in plan.sections if s.optional} == {"invitations", "inbound", "applications", "metrics"}
 
 
 # -- classification --------------------------------------------------------------
@@ -103,7 +111,11 @@ def test_execute_retries_with_backoff_then_recovers(tmp_path):
     slept = []
     app = App(DataDir(tmp_path))
     run = DailyRun(app, RunConfig(retry_attempts=2, retry_backoff_seconds=1.0), sleep=slept.append)
-    with patch.object(DailyRun, "cycle", side_effect=[RuntimeError("boom"), RuntimeError("boom"), {"actions": [{"x": 1}], "drafts": {}}]):
+    with patch.object(
+        DailyRun,
+        "cycle",
+        side_effect=[RuntimeError("boom"), RuntimeError("boom"), {"actions": [{"x": 1}], "drafts": {}}],
+    ):
         result = run.execute("manual", datetime.now())
     assert result["status"] == "success"
     assert result["attempts"] == 3 and result["recovered_after_retries"] == 2
@@ -133,11 +145,21 @@ def test_no_actions_is_reported_with_the_stalled_ids(tmp_path):
 def test_collect_metrics_runs_before_the_plan_and_never_fails_the_run(tmp_path):
     app = App(DataDir(tmp_path))
     calls = []
-    run = DailyRun(app, RunConfig(collect_metrics=True), sleep=lambda s: None, metrics_collector=lambda: calls.append(1) or {"recorded": "2026-09-02"})
+    run = DailyRun(
+        app,
+        RunConfig(collect_metrics=True),
+        sleep=lambda s: None,
+        metrics_collector=lambda: calls.append(1) or {"recorded": "2026-09-02"},
+    )
     data = run.cycle()
     assert calls == [1] and data["metrics_collected"] == {"recorded": "2026-09-02"}
 
-    boom = DailyRun(app, RunConfig(collect_metrics=True), sleep=lambda s: None, metrics_collector=lambda: (_ for _ in ()).throw(RuntimeError("no browser")))
+    boom = DailyRun(
+        app,
+        RunConfig(collect_metrics=True),
+        sleep=lambda s: None,
+        metrics_collector=lambda: (_ for _ in ()).throw(RuntimeError("no browser")),
+    )
     data = boom.cycle()
     assert "no browser" in data["metrics_collected"]["error"]
     assert "actions" in data  # the plan still ran

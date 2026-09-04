@@ -15,7 +15,14 @@ def c(**kw):
 def test_pinned_is_always_100_and_first():
     score, reasons = score_contact(c(pinned=True), PROFILE, COMPANIES)
     assert (score, reasons) == (100, ["pinned"])
-    rows = rank_contacts([c(id=1, name="Zed", pinned=True), c(id=2, name="Ann", title="Hiring Manager", company="Acme", status="responded")], PROFILE, COMPANIES)
+    rows = rank_contacts(
+        [
+            c(id=1, name="Zed", pinned=True),
+            c(id=2, name="Ann", title="Hiring Manager", company="Acme", status="responded"),
+        ],
+        PROFILE,
+        COMPANIES,
+    )
     assert [r["name"] for r in rows] == ["Zed", "Ann"]
 
 
@@ -27,7 +34,11 @@ def test_hiring_side_title_at_a_high_priority_company_outranks_a_peer():
 
 
 def test_reasons_name_every_signal():
-    score, reasons = score_contact(c(title="Director of AI/ML Platform", company="Acme", status="responded", referral_contact_id=3), PROFILE, COMPANIES)
+    score, reasons = score_contact(
+        c(title="Director of AI/ML Platform", company="Acme", status="responded", referral_contact_id=3),
+        PROFILE,
+        COMPANIES,
+    )
     assert "decision-maker title" in reasons
     assert "high-priority company" in reasons
     assert any(r.startswith("industry overlap") for r in reasons)
@@ -48,7 +59,11 @@ def test_target_role_in_title_lifts_a_hiring_title():
 
 
 def test_bottom_never_contains_a_pinned_contact():
-    rows = rank_contacts([c(id=1, name="Pinned", pinned=True), c(id=2, name="Low"), c(id=3, name="Mid", title="Engineer")], PROFILE, COMPANIES)
+    rows = rank_contacts(
+        [c(id=1, name="Pinned", pinned=True), c(id=2, name="Low"), c(id=3, name="Mid", title="Engineer")],
+        PROFILE,
+        COMPANIES,
+    )
     assert [r["name"] for r in bottom(rows, 5)] == ["Low", "Mid"]
 
 

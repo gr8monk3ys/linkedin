@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-LinkedIn Job Hunt Assistant — a Python CLI combining a local CRM, AI-powered draft generation (Claude API), job application lifecycle tracking, interview prep, analytics, market intelligence, profile optimization, smart templates, content calendar, and conversation history. Storage is JSON files under `~/.linkedin-cli`. Includes Playwright-based browser automation.
+LinkedIn Job Hunt Assistant — a Python CLI: a local CRM with a daily planner, draft generation (Claude API or by hand), application tracking, a review-gated content pipeline, an inbox reader that proposes pipeline moves, account metrics, and Playwright browser automation. Storage is JSON files under `~/.linkedin-cli`.
+
+Nine command groups (interview, optimize, research, discover, market, templates, calendar, campaigns, conversations) were deleted 2026-09-03: all depended on AI that is off by choice and held almost no data. `docs/adr/0001` is the rule: a feature needs a user who runs it.
 
 ## Commands
 
@@ -34,14 +36,14 @@ uv run ruff format src/ tests/
 
 **Modular structure** — thin CLI → services → repositories → storage:
 
-- `src/linkedin/cli.py` — Click groups + Rich formatting. No business logic; all calls go to services.
+- `src/linkedin/cli/` — one module per command group. `_common.py` holds the root `cli` group, the `console`, and the lazy `_app` handle; `__init__.py` imports every group module for registration and re-exports what tests need. Click groups + Rich formatting only; all calls go to services. Tests that patch a name the CLI imported (crontab I/O, fleet facts) patch it on the group module that uses it, e.g. `linkedin.cli.automation.read_user_crontab_lines`.
 - `src/linkedin/scheduling/schedule.py` — schedule-time math and the argv for a scheduled `run-daily`. Pure functions.
 - `src/linkedin/scheduling/crontab.py` — the one delimited crontab block the CLI owns, plus the cron env file. Never rewrites unmanaged lines.
 - `src/linkedin/services/daily_run.py` — the daily run: `DailyRun(app, RunConfig).execute(trigger, run_at)` owns idempotency, retry/backoff, the failure-streak escalation and recovery, the run log, and the `success | no_actions | failed` classification. `build_plan(data)` shapes the plan into ordered `Section`s that the terminal (Rich) and the recap (`DailyPlan.to_markdown`) both iterate — a new section is one entry, not three functions.
 - `src/linkedin/services/diagnostics.py` — the one check list behind `automation doctor` and `automation status`. It reads the macOS LaunchAgent too (`launchd_job`): the daily run on this machine is a launchd job, and the doctor once reported "no schedule" for one that fired every morning. `health` was a second copy under different names and is gone; CI's smoke step calls `automation doctor --json --time 09:00`.
 - `src/linkedin/services/run_state.py` — run log, lock file, idempotency keys, webhook notifications: the storage `daily_run` sits on.
 - `src/linkedin/constants.py` — Enums (`ContactStatus`, `CompanyPriority`, etc.), emoji mappings.
-- `src/linkedin/types.py` — TypedDicts for all domain objects: `ContactDict`, `CompanyDict`, `ProfileDict`, `DraftDict`, `ResearchDict`, `ApplicationDict`, `ApplicationEventDict`, `InterviewPrepDict`, `ConversationDict`, `MessageDict`, `ContentPostDict`.
+- `src/linkedin/types.py` — TypedDicts for all domain objects: `ContactDict`, `CompanyDict`, `ProfileDict`, `DraftDict`, `ApplicationDict`, `ApplicationEventDict`, `ContentPostDict`, `PostDict`.
 - `src/linkedin/ai/client.py` — the AI seam. `ai_call(prompt, *, max_tokens, fallback=None) -> AIResult(text, error, was_fallback)` is what services call; it never raises. `generate_with_ai(...)` underneath is the raw call that raises `AIClientError` (auth errors are not retried) and is what tests patch. Model from `LINKEDIN_AI_MODEL`; retry/backoff via `LINKEDIN_AI_*` env vars.
 
 **Data layer:**
@@ -53,22 +55,16 @@ uv run ruff format src/ tests/
 **Services** (`src/linkedin/services/`) — All business logic. Accept/return plain dicts:
 - `planner.py` — every table the planner reads: `STATUS_RULES`, `APPLICATION_STATUS_RULES`, and `ACTIONS` (one row per action name: `label`, `command`, `draft` spec or None). Three coverage checks run at import; `contact_service` and `application_service` re-export the rule tables from here.
 - `ranking_service.py` — ranks contacts 0–100 by career priority (hiring-side title, tracked-company priority, industry overlap, relationship) with named reasons. `pinned` contacts are exempt: always 100, first in `contacts rank`, never in `--bottom`, and the target set for `automate engage --pinned`. `get_next_actions(scores=)` adds `connection_bonus(score)` (0–25) to every `send_connection` priority, so the day's scarce invitations go to the top of the ranking; `DailyRun` passes the scores.
-- `contact_service.py` — CRUD, pipeline advancement, next-actions, outreach campaign management, duplicate detection + merge, pin/unpin
+- `contact_service.py` — CRUD, pipeline advancement, next-actions, duplicate detection + merge, pin/unpin
 - `company_service.py`, `profile_service.py` — CRUD
 - `draft_service.py` — AI draft generation with offline fallback templates (connection, message, intro, thank you, follow-up, batch). Fallback controlled by `LINKEDIN_AI_FALLBACK_ENABLED` env var.
 - `application_service.py` — Job application lifecycle, AI tailor-resume / cover-letter / skills-gap
-- `interview_service.py` — AI prep (questions+STAR), company research briefing, STAR scaffolds, questions-to-ask
-- `conversation_service.py` — Per-contact message thread logging + plain-text export
-- `calendar_service.py` — Content calendar (schedule, mark-posted, stats)
-- `discover_service.py` — AI contact/company discovery suggestions
-- `research_service.py` — Content research, post ideas, hashtags
-- `market_service.py` — AI salary estimates, hiring trends, job posting import + skill-match scoring
-- `optimizer_service.py` — AI headline/about/skills/full profile optimization
-- `template_service.py` — `{{placeholder}}` templates, A/B testing, response tracking, auto-outcome recording
+- `postings_service.py` — Job posting import (CSV/JSON, `automate jobs`), dedupe, skill-match scoring against the profile. The daily plan's opportunities section.
+- `content_service.py` — The post pipeline: candidates from fleet facts, review, the calendar entry an approval creates, `mark_posted`, the skip rule.
 - `data_service.py` — CSV/JSON import/export, backup create/verify/restore (with path-traversal protection)
 - `resume_service.py` — Bridge to the resume repo checkout (`LINKEDIN_RESUME_REPO` env var): variant discovery, `skills.tex` parsing, JD→variant matching, built-PDF resolution, autoapply `state.db` import. Stdlib only — never imports resume repo code.
 - `inbox_service.py` — The inbound edge. Turns message threads and pending invitations into *proposed* pipeline transitions. Pure (dicts in, proposals out, no browser, no repo) because the matching logic is what can corrupt the CRM.
-- `dashboard_service.py`, `analytics_service.py` — Overview aggregation, pipeline conversion, response rates
+- `dashboard_service.py`, `analytics_service.py`, `metrics_service.py`, `post_service.py` — Overview aggregation, pipeline conversion, the daily metrics store, the published-post record
 
 **Automation** (`src/linkedin/automation/`) — Playwright-based browser automation behind one module, `session.py`. `LinkedInSession.open(data_dir, headless=, dry_run=, on_login_needed=)` starts the browser, establishes the login (saved session first, keyring second, then a person at the window), and always closes. Its named verbs (`connect`, `message`, `post`, `react`, `like_post`, `comment`, `sync_profile`, `easy_apply`, `search`, `jobs`, `scrape`, `inbox`) each do the same six things — budget, pace, navigate, page verb, record on success — and return one `ActionResult(status, reason, data)` with status `ok | skipped | refused | failed`, truthy only on `ok`. A dry run navigates and reads, never writes, never spends. `budget.py` is the daily budget: `Budget.spend(kind, n)` / `remaining(kind)` over one caps table read from `limits.json` (seeded with the ramp caps: 0 connections, 1 post, 5 reactions, 2 comments per day) and today's usage in `automation_usage.json`; `automate limits set <kind> <n>` steps a cap up. There is no "no budget". The CLI opens sessions through `_open_session()`; tests use the `fake_session` fixture, which makes `LinkedInSession.open` yield `tests/fake_session.FakeSession` — the second adapter at the session port, with scripted results and recorded calls.
 
@@ -80,7 +76,7 @@ uv run ruff format src/ tests/
 - `tests/fake_page.py` is a Page/Locator double — register what the page contains, and anything unregistered resolves empty (exactly what a renamed class looks like).
 
 **Key patterns:**
-- Services are instantiated with their repos at module level in `cli.py` and reused across commands.
+- Every service is built once in `App` (`app.py`) and reached through `_app.<name>_svc` from any CLI module.
 - All AI calls go through `ai_call` and read the `AIResult`. No service catches `AIClientError` or lets it reach the CLI; the tuple-returning services hand back `(result.error, result.text)`.
 - Mock patches target the one seam: `linkedin.ai.client.generate_with_ai` (return a string, or `side_effect=AIClientError`).
 - Contact pipeline: `not_contacted → connection_sent → connected → messaged → responded → call_scheduled → hired/rejected`.
@@ -92,8 +88,14 @@ uv run ruff format src/ tests/
 - **Backups enumerate the data directory** (`DataDir.backup_members`), not a list. A list is how job postings, templates, the usage counters, and the inbox proposals were left out of every backup. Excluded on purpose: the browser session (cookies), the lock, temp files.
 - **Nothing inbound auto-advances a contact.** `inbox sync` reads LinkedIn messaging and the sent-invitation manager and writes *proposals* to `inbox_proposals.json`; `inbox review` applies them one at a time. Both halves of that invariant live in `inbox_service.py`, pure and tested without a CLI runner: `propose_transitions` decides what to propose, `review_proposals(proposals, contacts, confirm=, yes=)` decides what may be applied — a contact whose status changed since the sync drops its proposal (the hand edit wins), a missing contact drops it, `--yes` covers high-confidence proposals only, and a proposal matched on display name alone is `low` confidence and is always put to `confirm`. The CLI keeps only the prompt and the write.
 - **`inbox sync` keeps a thread index** (`thread_index.json`): sender name and URL, when they last wrote, whether the last word is theirs, first/last seen, whether they are a contact. No message bodies. `inbound_from_strangers(index, since)` is the growth goal's metric (someone who is not a contact wrote unprompted); `inbox strangers --days N` lists them. The matcher discards strangers, which is why the index exists.
-- **`get_pending_sent_invitations` returns `None`, not `[]`, when it cannot read the list.** Every other page-object method fails soft to an empty result; this one must not. Acceptance is inferred from an invitation's *absence*, so a selector that stopped matching would otherwise read as "every outstanding invitation was accepted" and advance the whole pipeline at once. `[]` is returned only when LinkedIn's own empty state is on the page.
+- **Every profile-page action is scoped to the top card** (`selectors.PROFILE_TOP_CARD`, the first `section` of `main`). LinkedIn puts an "Invite <name> to connect" button on every "People you may know" and "Explore Premium profiles" card, so a page-wide `get_by_role("button", name="Connect").first` finds a stranger: on 2026-09-03 that sent nine invitations to people who were not in the CRM, marked the intended contacts `connection_sent`, and reported "0 sent, 13 failed" because a stranger's card sends immediately with no dialog. Sampled live across six CRM profiles, *none* had a Connect button in its own top card; Connect lives in the top card's More menu, and a follow-only profile offers Follow there instead (that is `not_applicable`, not a breakage). There is no page-wide fallback. The Send button is scoped to the invitation dialog for the same reason: the page's other Send belongs to the message composer.
+- **A click is not evidence.** `send_connection_request` confirms the invitation by the dialog closing and returns `degraded` otherwise; `send_due_connections` never counts an unconfirmed send as sent, never advances the contact, and stops. Returning `ok` on the click alone reported "Sent invitation to Jonathan Shin" before there was anything to show for it.
+- **The daily budget is spent on a reported success, so it does not bound real activity when a write misfires.** Nine invitations went out while `automate limits` read `0` used. Bounding the sweep is `send_due_connections`' job: `limit` caps *attempts* (capping successes let a run where every send failed walk all 28 contacts against live LinkedIn), and three failures in a row stop it, because a repeated failure is a markup breakage rather than a property of the contact.
+- **`tests/fake_page.py` honours scope.** `register_top_card(...)` puts elements *inside* the card; a page-wide lookup does not see them. Before that the double resolved every scoped lookup against the flat page registry, so no test could tell a scoped lookup from an unscoped one and the invitation bug was uncatchable.
+- **`get_pending_sent_invitations` returns `None`, not `[]`, when it cannot read the list.** Every other page-object method fails soft to an empty result; this one must not. Acceptance is inferred from an invitation's *absence*, so a selector that stopped matching would otherwise read as "every outstanding invitation was accepted" and advance the whole pipeline at once. `[]` is returned only when LinkedIn's own empty state is on the page. **The None-guard is not enough on its own**: `main a[href*='/in/']` kept matching, but the page now embeds feed content, so a live read returned thirteen rows ("Feed post", reaction bylines) and none of the nine real invitations — full of the wrong thing rather than empty. Invitations are read by shape now (`SENT_INVITATIONS_SCRIPT`): a card is the smallest ancestor of a Withdraw control that also holds a profile link, and the control is a class-obfuscated `span`, not a button.
 - **The reply signal rests entirely on `THREAD_OWN_MESSAGE_PREFIX`.** LinkedIn prefixes a thread snippet with `You:` when the last message is the user's own; that prefix is the only thing separating a real reply from an echo of the message we sent. Lose it and every outbound message becomes a fake response.
+- **A contact who has never been written to is never a follow-up.** `FOLLOW_UP_CADENCE_DAYS` seeds `follow_up_date` on add, so the date-driven rules fired first for someone never contacted, rendered as "follow-up overdue", and outranked the `send_connection` the contact actually needed — the ranking bonus for the day's invitations reached nobody. `get_next_actions` skips the date rules for any status whose `STATUS_RULES` action is `send_connection`.
+- **The invitation sweep reads the whole ranked queue, not the plan's slice.** `DailyRun.invitation_queue()` is every `send_connection` action best-ranked first; the plan's `actions_limit` is a display limit, and on a day with eight overdue follow-ups the slice holds no invitations at all.
 - **Applications have their own planner rules and their own plan section.** `APPLICATION_STATUS_RULES` mirrors `contact_service.STATUS_RULES`, with the same coverage check against `APPLICATION_STATUSES`. Kept out of `get_next_actions`: `DailyRun.classify` classifies a run by whether the *contact* planner produced anything, and merging application rows in would let a due application mask a broken contact planner — the exact failure that guard exists to catch.
 - **AI can be off by choice.** `settings.json` (`settings ai off`) sets `ai_enabled: false`: `ai_call` returns `AI_DISABLED` at once (no retries, no network, no template), `run-daily` skips drafting and stays green, and the doctor reports the key as "disabled by choice" instead of nagging. The user runs this way: drafts and post candidates are written by hand (Claude through the browser) and enter the same pipeline through `drafts add CONTACT --file/--text` and `posts add-candidate --file/--text`, saved with `source: ai` and `generated_from: hand-written`. The Sunday batch is then: `posts facts` → write candidates → `posts add-candidate` each → `posts review` → `posts publish-due`.
 - **Every message and post prompt ends with `ai/style.STYLE_RULES`** (no em dashes, emojis, exclamation marks, lists of three, or the AI vocabulary; plain words, one concrete detail, a specific ask). A generated-sounding message to a real person costs the reply. Drafts written by hand follow the same rules.
@@ -109,19 +111,19 @@ uv run ruff format src/ tests/
 
 **Fixtures** (`tests/conftest.py`):
 - `isolated_data_dir` (autouse) — sets `LINKEDIN_DATA_DIR` to a per-test directory and resets `cli._app`. Every test, in every file, runs against its own directory; never monkeypatch a path.
-- `json_repos` — `create_repos(DataDir(tmp_path)).as_tuple()` in factory order; use for service tests. Stateful services take their file explicitly: `TemplateService(..., templates_file)`, `MarketService(..., postings_file)`, `DataService(data_dir)`.
+- `json_repos` — `create_repos(DataDir(tmp_path)).as_tuple()` in factory order; use for service tests. Stateful services take their file explicitly: `PostingService(..., postings_file)`, `DataService(data_dir)`.
 - `sample_contact`, `sample_company`, `sample_profile` — factory functions (accept `**overrides`). `sample_profile` includes `resume_text` by default.
 
 **Test files:**
 - `test_cli.py` — CLI integration tests via Click's `CliRunner`.
 - `test_daily_run.py` — `DailyRun`: sections and Markdown, classification, drafts, retries and streaks, without a CLI runner.
-- `test_cli_applications.py` — CLI integration tests for `applications`, `interview`, `conversations`, `calendar` command groups.
+- `test_cli_applications.py` — CLI integration tests for the `applications` group.
 - `test_ai_client.py` — The AI seam: `ai_call` result contract, fallback on/off, model from env.
 - `test_services.py` — Service unit tests for original services.
-- `test_application_service.py`, `test_interview_service.py`, `test_conversation_service.py`, `test_calendar_service.py` — Service tests for new features including `AIClientError` paths.
+- `test_application_service.py` — Application lifecycle and its `AIClientError` paths.
 - `test_data_service.py` — Import/export/backup over a `DataDir(tmp_path)`.
 - `test_json_store.py`, `test_factory.py`, `test_paths.py` — Storage layer tests: `save_json` atomicity, repos per directory, `DataDir` resolution and backup enumeration, and that importing the CLI creates nothing on disk.
-- `test_analytics.py`, `test_market.py`, `test_optimizer.py`, `test_templates.py` — Feature-specific tests.
+- `test_analytics.py`, `test_postings.py` — Analytics and the posting importer/scorer.
 - `test_automation.py` — Browser config (only fields something reads) and pacing.
 - `test_budget.py` — The budget: caps table, per-day persistence, legacy counter names, `limits.json` seeding.
 - `test_session.py` — Every verb's preamble over a MagicMock page: budget before navigation, skipped vs failed, dry run, `open()` lifecycle (login handoff, browser closed on raise, Playwright missing).
@@ -166,4 +168,4 @@ The five default labels, unchanged: `needs-triage`, `needs-info`, `ready-for-age
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the root is the glossary and `docs/adr/` holds decisions (empty until one is recorded). See `docs/agents/domain.md`.
+Single-context: `CONTEXT.md` at the root is the glossary and `docs/adr/` holds decisions. See `docs/agents/domain.md`.

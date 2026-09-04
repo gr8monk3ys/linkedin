@@ -863,57 +863,44 @@ class TestMessageThreads:
 
 
 class TestPendingInvitations:
-    """Keyed on profile links: LinkedIn rebuilt this page with obfuscated class
-    names, so `li.invitation-card` matches nothing on the live site."""
+    """Read by card shape: a card is the smallest ancestor of a Withdraw button
+    that also holds a profile link. Keying on `main a[href*='/in/']` matched the
+    embedded feed and none of the nine real invitations on the live page."""
 
     @staticmethod
-    def _link(name, href):
-        """One invitation anchor: no text of its own, name on an ancestor."""
-        card = FakeCard(
-            None,
-            {
-                canonical("css", sel.INVITATION_NAME_ANCESTOR): [
-                    FakeElement(f"{name}\nProduct Manager\nSent 3 days ago") if name else FakeElement("")
-                ],
-            },
-        )
-        card._elements = [FakeElement(href=href)]
-        return card
+    def _rows(*pairs):
+        return [{"name": name, "url": href} for name, href in pairs]
 
-    def _page_with(self, links, main_text="People (2)"):
+    def _page_with(self, rows, main_text="People (2)"):
+        """A page whose shape script yields `rows`, or successive batches of rows."""
         page = FakePage()
-        for card in links:
-            card._page = page
-        page.register_css(sel.INVITATION_PROFILE_LINK, links)
         page.register_css("main", [FakeElement(main_text)])
+        page.register_css(sel.INVITATION_PROFILE_LINK, [FakeElement()])
+        if rows and isinstance(rows[0], list):
+            batches = list(rows)
+
+            def evaluate(script, *args):
+                page.evaluated.append(script)
+                return batches.pop(0) if batches else []
+
+            page.evaluate = evaluate
+        else:
+            page.evaluate_result = rows
         return page
 
     def test_reads_pending_invitations(self):
-        page = self._page_with(
-            [
-                self._link("Andy Matsuzaki", "/in/andy"),
-                self._link("Michele Chung", "/in/michele"),
-            ]
-        )
-        pending = LinkedInPage(page).get_pending_sent_invitations()
-
-        assert pending == [
+        page = self._page_with(self._rows(("Andy Matsuzaki", "/in/andy"), ("Michele Chung", "/in/michele")))
+        assert LinkedInPage(page).get_pending_sent_invitations() == [
             {"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"},
             {"name": "Michele Chung", "url": "https://www.linkedin.com/in/michele"},
         ]
 
     def test_the_same_profile_linked_twice_is_one_invitation(self):
         """A card links the profile from both the avatar and the name."""
-        page = self._page_with(
-            [
-                self._link("", "/in/andy"),
-                self._link("Andy Matsuzaki", "/in/andy"),
-            ],
-            main_text="People (1)",
-        )
-        pending = LinkedInPage(page).get_pending_sent_invitations()
-
-        assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
+        page = self._page_with(self._rows(("", "/in/andy"), ("Andy Matsuzaki", "/in/andy")), main_text="People (1)")
+        assert LinkedInPage(page).get_pending_sent_invitations() == [
+            {"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}
+        ]
 
     def test_a_still_rendering_list_is_refused(self):
         """The most dangerous shape: rows present, but not all of them yet.
@@ -922,50 +909,35 @@ class TestPendingInvitations:
         — three of seven rendered, and the four missing were all real contacts.
         A list still filling in changes between reads, which is the tell.
         """
-        page = self._page_with([], main_text="People (7)")
-        growing = [
-            [self._link("Sashank Gondala", "/in/sashank")],
-            [self._link("Sashank Gondala", "/in/sashank"), self._link("Andy", "/in/andy")],
+        page = self._page_with(
             [
-                self._link("Sashank Gondala", "/in/sashank"),
-                self._link("Andy", "/in/andy"),
-                self._link("Michele", "/in/michele"),
+                self._rows(("Sashank", "/in/sashank")),
+                self._rows(("Sashank", "/in/sashank"), ("Andy", "/in/andy")),
+                self._rows(("Sashank", "/in/sashank"), ("Andy", "/in/andy"), ("Michele", "/in/michele")),
             ],
-        ]
-
-        def next_batch(_selector):
-            batch = growing.pop(0) if growing else []
-            for card in batch:
-                card._page = page
-            return FakeLocator(page, batch)
-
-        page.locator = next_batch
+            main_text="People (7)",
+        )
         lp = LinkedInPage(page)
-
         assert lp.get_pending_sent_invitations() is None
         assert "invitation_profile_link" in lp.selector_misses
 
     def test_a_list_that_stops_changing_is_trusted(self):
         """Two identical reads mean the page finished rendering."""
-        page = self._page_with(
-            [
-                self._link("Andy Matsuzaki", "/in/andy"),
-            ],
-            main_text="People (0)",
-        )  # count renders stale; stability is the test
-
-        pending = LinkedInPage(page).get_pending_sent_invitations()
-        assert pending == [{"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}]
+        page = self._page_with(self._rows(("Andy Matsuzaki", "/in/andy")), main_text="People (0)")
+        # The count renders stale; stability is the test.
+        assert LinkedInPage(page).get_pending_sent_invitations() == [
+            {"name": "Andy Matsuzaki", "url": "https://www.linkedin.com/in/andy"}
+        ]
 
     def test_a_complete_list_matching_the_stated_count_is_accepted(self):
-        page = self._page_with(
-            [
-                self._link("Andy Matsuzaki", "/in/andy"),
-                self._link("Michele Chung", "/in/michele"),
-            ],
-            main_text="People (2)",
-        )
+        page = self._page_with(self._rows(("Andy", "/in/andy"), ("Michele", "/in/michele")), main_text="People (2)")
         assert len(LinkedInPage(page).get_pending_sent_invitations()) == 2
+
+    def test_a_script_that_throws_is_unreadable_not_empty(self):
+        """A shape script that breaks must never read as "everything was accepted"."""
+        page = self._page_with([], main_text="People (7)")
+        page.evaluate_result = RuntimeError("script blew up")
+        assert LinkedInPage(page).get_pending_sent_invitations() is None
 
     def test_unreadable_list_returns_none_not_empty(self):
         """The caller treats [] as 'all accepted'. A broken page must not say that.

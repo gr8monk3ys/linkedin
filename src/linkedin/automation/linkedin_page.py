@@ -833,37 +833,25 @@ class LinkedInPage:
         return int(match.group(1)) if match else None
 
     def _invitation_rows(self) -> list[dict]:
-        """One row per distinct profile linked from the invitation list.
+        """One row per sent-invitation card, read by shape.
 
-        A card links the same profile more than once (avatar and name), so rows
-        are deduped on URL, keeping the longest surrounding text as the name
-        source — the avatar link carries no text.
+        A card is the smallest ancestor of a Withdraw button that also holds a
+        profile link. Keying on profile links alone matched every `/in/` link in
+        main -- feed posts and "People you may know" included -- and missed the
+        invitations entirely. A script that throws is an unreadable list, which
+        the caller turns into None rather than "everything was accepted".
         """
-        links = self.page.locator(sel.INVITATION_PROFILE_LINK)
+        rows = self.page.evaluate(sel.SENT_INVITATIONS_SCRIPT, {"withdrawPattern": sel.WITHDRAW_BUTTON})
         best: dict[str, str] = {}
-        for i in range(links.count()):
-            link = links.nth(i)
-            href = self._absolute(link.get_attribute("href") or "")
+        for row in rows or []:
+            href = self._absolute(row.get("url") or "")
             if not href:
                 continue
-            name = self._invitation_name(link)
-            # `setdefault` first: the anchors carry no text of their own, so a
-            # plain "keep the longest" comparison never fired and the whole list
-            # came back empty while seven links sat on the page.
+            name = (row.get("name") or "").strip()
             best.setdefault(href, name)
             if len(name) > len(best[href]):
                 best[href] = name
         return [{"name": name, "url": url} for url, name in best.items()]
-
-    @staticmethod
-    def _invitation_name(link) -> str:
-        try:
-            ancestor = link.locator(sel.INVITATION_NAME_ANCESTOR)
-            if ancestor.count() == 0:
-                return ""
-            return (ancestor.first.inner_text() or "").strip().split("\n")[0].strip()
-        except Exception:
-            return ""
 
     def get_job_results(self, limit: int = 25, max_scrolls: int = 12) -> list[dict]:
         """Read job cards from the current job-search page.

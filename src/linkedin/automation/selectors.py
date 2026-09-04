@@ -149,7 +149,45 @@ THREAD_OWN_MESSAGE_PREFIX = re.compile(r"^\s*you\s*:", re.I)
 # names (`aa13b50b ce9c4d83 ...`, verified 2026-08-30), so there is no semantic
 # class left to key on and `li.invitation-card` matches nothing. Profile links are
 # the only stable handle, and they are what the matcher actually needs.
+#: Kept for the health catalogue and the "is the page there at all" wait.
 INVITATION_PROFILE_LINK = "main a[href*='/in/']"
+
+#: The control every sent-invitation card carries, and nothing else on the page
+#: does. It is a class-obfuscated <span>, not a button, so it is found by its
+#: text rather than by role.
+WITHDRAW_BUTTON = r"^Withdraw$"
+
+#: Read sent invitations by shape: a card is the smallest ancestor of a Withdraw
+#: control that also holds a profile link. Verified live 2026-09-03: reads all
+#: ten pending invitations, names and URLs. The page now
+#: embeds feed content, so `main a[href*='/in/']` matched thirteen links -- feed
+#: posts, reaction bylines, "People you may know" -- and *none* of the nine real
+#: invitations. Since the caller infers acceptance from absence, that read every
+#: outstanding invitation as accepted. The button pattern is passed in from
+#: WITHDRAW_BUTTON rather than copied here.
+SENT_INVITATIONS_SCRIPT = """({ withdrawPattern }) => {
+  const re = new RegExp(withdrawPattern, 'i');
+  const out = []; const seen = new Set();
+  // The control is a class-obfuscated <span>, not a button: `main button` with
+  // an aria-label matched nothing at all. Leaf text is what survives the churn.
+  for (const el0 of document.querySelectorAll('main *')) {
+    if (el0.children.length !== 0) continue;
+    if (!re.test((el0.innerText || '').trim())) continue;
+    let el = el0, card = null, link = null;
+    for (let k = 0; k < 12 && el; k++) {
+      el = el.parentElement; if (!el) break;
+      const a = el.querySelector("a[href*='/in/']");
+      if (a) { card = el; link = a; break; }
+    }
+    if (!card || seen.has(card)) continue;
+    seen.add(card);
+    const href = link.getAttribute('href') || '';
+    const lines = card.innerText.split('\\n').map(x => x.trim()).filter(Boolean)
+      .filter(x => !re.test(x) && !/^Sent /.test(x));
+    out.push({ url: href, name: lines[0] || '' });
+  }
+  return out;
+}"""
 #: The links themselves carry no text — the name lives in the surrounding card,
 #: which has no usable class either. This walks up to the nearest ancestor that
 #: has any text at all, whose first line is the name.
@@ -319,6 +357,7 @@ FRAGILE_SELECTORS = {
     "thread_card": THREAD_CARD,
     "thread_name": THREAD_NAME,
     "invitation_profile_link": INVITATION_PROFILE_LINK,
+    "withdraw_control": WITHDRAW_BUTTON,
     "job_card": JOB_CARD,
     "job_title": JOB_TITLE,
     # -- writes: a relabelled button here used to be a bare False, indistinguishable

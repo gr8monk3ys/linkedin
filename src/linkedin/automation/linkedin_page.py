@@ -102,6 +102,31 @@ class LinkedInPage:
             self._record_miss("feed_card")
         return cards, count
 
+    def _feed_card_at(self, post_index: int) -> tuple[Locator | None, WriteResult | None]:
+        """The card `get_feed_posts` reported at `post_index`, or the WriteResult saying why not.
+
+        On the original markup the index is the card's position. On the rebuilt
+        feed the script tagged each card with its index in *button* order, which
+        is not DOM order when a repost nests another card, so the tag value is
+        matched exactly rather than counted.
+        """
+        cards, card_count = self._feed_cards()
+        if card_count == 0:
+            return None, WriteResult("selector_missing", "feed_card not found")
+        if self.page.locator(sel.FEED_CARD).count() == 0:
+            tagged = self.page.locator(f'[{sel.FEED_CARD_TAG}="{post_index}"]')
+            if tagged.count() == 0:
+                return None, _na(f"no post at index {post_index}")
+            return tagged.first, None
+        if post_index >= card_count:
+            return None, _na(f"no post at index {post_index}")
+        return cards.nth(post_index), None
+
+    @staticmethod
+    def _already_reacted(btn: Locator) -> bool:
+        """aria-pressed, or a reaction-state label other than "no reaction": clicking would un-like."""
+        return btn.get_attribute("aria-pressed") == "true" or bool(sel.LIKE_ALREADY_REACTED.match(btn.get_attribute("aria-label") or ""))
+
     def selector_health(self) -> dict:
         """Report which fragile selectors stopped matching during this session."""
         return {
@@ -379,9 +404,7 @@ class LinkedInPage:
                 if liked >= count:
                     break
                 btn = like_btns.nth(i)
-                # aria-pressed=true (or a reaction-state label other than "no reaction")
-                # means we already reacted — skip to avoid unliking
-                if btn.get_attribute("aria-pressed") == "true" or sel.LIKE_ALREADY_REACTED.match(btn.get_attribute("aria-label") or ""):
+                if self._already_reacted(btn):
                     continue
                 btn.scroll_into_view_if_needed()
                 btn.first.click()
@@ -410,10 +433,16 @@ class LinkedInPage:
 
             if self.page.locator(sel.FEED_CARD).count() == 0:
                 # Rebuilt feed: read cards by shape and tag them for like/comment.
-                scripted = self.page.evaluate(sel.FEED_POSTS_SCRIPT, max_posts)
+                # A script that throws on a changed DOM is a miss, not a quiet feed.
+                try:
+                    scripted = self.page.evaluate(
+                        sel.FEED_POSTS_SCRIPT,
+                        {"maxPosts": max_posts, "tag": sel.FEED_CARD_TAG, "likePattern": sel.LIKE_BUTTON.pattern, "commentPattern": sel.COMMENT_BUTTON.pattern},
+                    )
+                except Exception:
+                    scripted = None
                 rows = [r for r in (scripted if isinstance(scripted, list) else []) if isinstance(r, dict) and r.get("author")]
-                if not rows:
-                    self._record_miss("feed_card")
+                self._feed_cards()  # records the feed_card miss when the script tagged nothing
                 return [{"element_index": int(r["element_index"]), "author": str(r["author"]), "headline": str(r.get("headline", "")), "content": str(r.get("content", ""))[:500]} for r in rows]
 
             scroll_attempts = 0
@@ -459,17 +488,13 @@ class LinkedInPage:
     def like_post(self, post_index: int) -> WriteResult:
         """Like a feed post by index. Already-liked posts are left alone."""
         try:
-            cards, card_count = self._feed_cards()
-            if card_count == 0:
-                return WriteResult("selector_missing", "feed_card not found")
-            if post_index >= card_count:
-                return _na(f"no post at index {post_index}")
-            card = cards.nth(post_index)
+            card, why_not = self._feed_card_at(post_index)
+            if card is None:
+                return why_not
             like_btn = card.get_by_role("button", name=sel.LIKE_BUTTON)
             if not self._present(like_btn, "like_button"):
                 return self._missing("like_button")
-            label = like_btn.first.get_attribute("aria-label") or ""
-            if like_btn.first.get_attribute("aria-pressed") == "true" or sel.LIKE_ALREADY_REACTED.match(label):
+            if self._already_reacted(like_btn.first):
                 return _na("already liked")
             like_btn.first.click()
             return _ok()
@@ -479,12 +504,9 @@ class LinkedInPage:
     def comment_on_post(self, post_index: int, comment_text: str) -> WriteResult:
         """Post a comment on a feed post by index."""
         try:
-            cards, card_count = self._feed_cards()
-            if card_count == 0:
-                return WriteResult("selector_missing", "feed_card not found")
-            if post_index >= card_count:
-                return _na(f"no post at index {post_index}")
-            card = cards.nth(post_index)
+            card, why_not = self._feed_card_at(post_index)
+            if card is None:
+                return why_not
 
             comment_btn = card.get_by_role("button", name=sel.COMMENT_BUTTON)
             if not self._present(comment_btn, "comment_button"):
@@ -951,6 +973,11 @@ class LinkedInPage:
         """
         data: dict[str, str] = {}
         try:
+            # Sections below the fold are lazy-loaded: read unscrolled, About is
+            # absent and the footer's "About" link list is the only match.
+            for y in sel.PROFILE_SCROLL_STOPS:
+                self.page.evaluate(sel.PROFILE_SCROLL_SCRIPT, y)
+                self.page.wait_for_timeout(sel.PROFILE_SCROLL_PAUSE_MS)
             name_el = self.page.locator(sel.PROFILE_NAME)
             if name_el.count():
                 data["name"] = name_el.inner_text().strip()
@@ -968,14 +995,6 @@ class LinkedInPage:
                 else:
                     self._record_miss("profile_about")
                 return data
-            # Sections below the fold are lazy-loaded: without scrolling, About is
-            # absent and the footer's "About" link list is the only match (2026-09-03).
-            for y in sel.PROFILE_SCROLL_STOPS:
-                try:
-                    self.page.evaluate(f"window.scrollTo(0, {y})")
-                    self.page.wait_for_timeout(sel.PROFILE_SCROLL_PAUSE_MS)
-                except Exception:
-                    break
             root = self.page.locator("main")
             if root.count() == 0:
                 root = self.page.locator("body")
@@ -1004,34 +1023,34 @@ def _metric_from_text(text: str, name: str) -> int | None:
         return None
 
 
-_PRONOUNS_OR_DEGREE = re.compile(r"^(\w+/\w+|[•·]\s*(1st|2nd|3rd)\+?)$", re.I)
-#: The page footer also has a line reading "About"; a block that starts with
-#: one of these is the footer's link list, not the profile's About section.
-_FOOTER_LINES = {"Accessibility", "Talent Solutions", "Community Guidelines", "Careers", "Privacy & Terms", "User Agreement", "Ad Choices"}
-_PROFILE_SECTION_HEADINGS = {"Activity", "Experience", "Education", "Skills", "Projects", "Show all", "Analytics", "Featured", "Licenses & certifications"}
+def _ends_about(line: str) -> bool:
+    """A section heading, a footer link, or the "…see more" fold ends the About block."""
+    return line in sel.PROFILE_SECTION_HEADINGS or line in sel.PROFILE_FOOTER_LINES or line.startswith(sel.PROFILE_ABOUT_TRUNCATED)
 
 
 def _profile_from_text(text: str) -> dict[str, str]:
-    """name / headline / location / about from a profile page's main text."""
-    lines = [l.strip() for l in (text or "").split("\n") if l.strip()]
+    """name / headline / location / about from a profile page's text (shape in selectors.py)."""
+    lines = [line.strip() for line in (text or "").split("\n") if line.strip()]
     if not lines:
         return {}
     data = {"name": lines[0]}
-    i = 1
-    if i < len(lines) and _PRONOUNS_OR_DEGREE.match(lines[i]):
-        i += 1
-    if i < len(lines):
-        data["headline"] = lines[i]
-        i += 1
-    if i < len(lines) and lines[i] not in _PROFILE_SECTION_HEADINGS:
-        data["location"] = lines[i]
-    for start in (i + 1 for i, l in enumerate(lines) if l == "About"):
+    pos = 1
+    if pos < len(lines) and sel.PROFILE_PRONOUNS_OR_DEGREE.match(lines[pos]):
+        pos += 1
+    if pos < len(lines):
+        data["headline"] = lines[pos]
+        pos += 1
+    if pos < len(lines) and lines[pos] not in sel.PROFILE_NOT_A_LOCATION:
+        data["location"] = lines[pos]
+    for start in (n + 1 for n, line in enumerate(lines) if line == "About"):
+        if start >= len(lines) or lines[start] in sel.PROFILE_FOOTER_LINES:
+            continue  # the footer's link list, not a section
         body = []
-        for l in lines[start:]:
-            if l in _PROFILE_SECTION_HEADINGS or l.startswith("…") or l in _FOOTER_LINES:
+        for line in lines[start:]:
+            if _ends_about(line):
                 break
-            body.append(l)
-        if body and lines[start] not in _FOOTER_LINES:
+            body.append(line)
+        if body:
             data["about"] = "\n\n".join(body)
-            break
+        break
     return data

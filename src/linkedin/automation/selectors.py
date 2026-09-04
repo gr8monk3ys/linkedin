@@ -192,22 +192,36 @@ JOB_EASY_APPLY = (
     ".job-search-card__easy-apply-label"
 )
 
-#: The old Quill editor. Present in the catalogue so a page that shows it can be
-#: named, never typed into: a post goes out publicly under the user's name, and
-#: an editor we no longer recognise is a page we do not understand.
+#: Profile sections lazy-load on scroll; these stops reach About on a long
+#: profile. Unscrolled, the only line reading "About" is the footer's link list.
+PROFILE_SCROLL_STOPS = (600, 1200, 2000, 3000)
+PROFILE_SCROLL_PAUSE_MS = 700
+PROFILE_SCROLL_SCRIPT = "(y) => window.scrollTo(0, y)"
+
+#: Text shape of a profile page (verified 2026-09-03, no h1 and no class hooks):
+#: name, then an optional pronouns ("He/Him") or degree ("· 2nd") line, then the
+#: headline, then the location. About is the block after the "About" heading up to
+#: the next section heading. The footer also carries a line reading "About", so a
+#: block that opens with a footer link is not an About section.
+PROFILE_PRONOUNS_OR_DEGREE = re.compile(r"^(\w+/\w+|[•·]\s*(1st|2nd|3rd)\+?)$", re.I)
+PROFILE_SECTION_HEADINGS = frozenset({"Activity", "Experience", "Education", "Skills", "Projects", "Show all", "Analytics", "Featured", "Licenses & certifications"})
+PROFILE_FOOTER_LINES = frozenset({"Accessibility", "Talent Solutions", "Community Guidelines", "Careers", "Privacy & Terms", "User Agreement", "Ad Choices"})
+#: Lines that follow the headline when a profile carries no location.
+PROFILE_NOT_A_LOCATION = PROFILE_SECTION_HEADINGS | {"·", "•", "Contact info", "Message", "Connect", "Follow", "More"}
+PROFILE_ABOUT_TRUNCATED = "…"
+
 #: The home feed moved to obfuscated component divs (verified 2026-09-03: no
 #: `feed-shared-update-v2`, no data-urn). Cards are found by shape — the
 #: smallest ancestor of a reaction button that also holds a Comment button —
-#: and tagged with this attribute so like/comment can address them by index.
-#: Profile sections lazy-load on scroll; these stops reach About on a long profile.
-PROFILE_SCROLL_STOPS = (600, 1200, 2000, 3000)
-PROFILE_SCROLL_PAUSE_MS = 700
-
+#: and tagged with FEED_CARD_TAG=<index> so like/comment can address the same
+#: card. The script takes the tag name and the button patterns as arguments so
+#: LIKE_BUTTON and COMMENT_BUTTON stay the single definition of those buttons.
 FEED_CARD_TAG = "data-linkedin-cli-card"
-FEED_POSTS_SCRIPT = """(maxPosts) => {
-  const TAG = 'data-linkedin-cli-card';
-  const isReact = b => /^Reaction button state|^React Like|^Like\\b/i.test(b.getAttribute('aria-label') || b.innerText.trim());
-  const isComment = b => /^Comment\\b/i.test(b.getAttribute('aria-label') || b.innerText.trim());
+FEED_POSTS_SCRIPT = """({ maxPosts, tag, likePattern, commentPattern }) => {
+  const likeRe = new RegExp(likePattern, 'i'), commentRe = new RegExp(commentPattern, 'i');
+  const label = b => b.getAttribute('aria-label') || b.innerText.trim();
+  const isReact = b => likeRe.test(label(b));
+  const isComment = b => commentRe.test(label(b));
   const out = []; const seen = new Set();
   for (const b of document.querySelectorAll('main button')) {
     if (!isReact(b)) continue;
@@ -219,7 +233,7 @@ FEED_POSTS_SCRIPT = """(maxPosts) => {
     if (!card || seen.has(card)) continue;
     seen.add(card);
     const idx = out.length;
-    card.setAttribute(TAG, String(idx));
+    card.setAttribute(tag, String(idx));
     const lines = card.innerText.split('\\n').map(x => x.trim()).filter(Boolean).filter(x => x !== 'Feed post');
     // author, degree, headline, age, then the body until the reaction counts
     const author = lines[0] || '';
@@ -235,6 +249,9 @@ FEED_POSTS_SCRIPT = """(maxPosts) => {
   return out;
 }"""
 
+#: The old Quill editor. Present in the catalogue so a page that shows it can be
+#: named, never typed into: a post goes out publicly under the user's name, and
+#: an editor we no longer recognise is a page we do not understand.
 POST_EDITOR_FALLBACK = "div.ql-editor[contenteditable='true']"
 #: After a successful post LinkedIn shows a "View post" link whose href carries
 #: the activity URN. It is the only way to join a published post to its metrics.

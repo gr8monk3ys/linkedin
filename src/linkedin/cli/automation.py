@@ -30,6 +30,11 @@ def automation():
     pass
 
 
+def _env_path(option: str) -> Path:
+    """The cron env file: the option if given, else the data dir's. Resolved at call time, never at import."""
+    return Path(option).expanduser() if option.strip() else default_automation_env_file(_app.data_dir)
+
+
 def _render_checks(title: str, checks: list[dict]) -> None:
     table = Table(title=title)
     table.add_column("Check", style="cyan")
@@ -87,11 +92,11 @@ def automation_env():
 
 
 @automation_env.command("status")
-@click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file path")
+@click.option("--env-file", default="", help="Env file path (default: cron.env in the data dir)")
 @click.option("--json", "as_json", is_flag=True, help="Output env status as JSON")
 def automation_env_status(env_file, as_json):
     """Show env-file readiness for scheduled runs."""
-    env_path = Path(env_file).expanduser()
+    env_path = _env_path(env_file)
     status = env_file_status(env_path)
     if as_json:
         click.echo(json.dumps(status, indent=2))
@@ -111,11 +116,11 @@ def automation_env_status(env_file, as_json):
 
 
 @automation_env.command("sync")
-@click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file path")
+@click.option("--env-file", default="", help="Env file path (default: cron.env in the data dir)")
 @click.option("--json", "as_json", is_flag=True, help="Output sync result as JSON")
 def automation_env_sync(env_file, as_json):
     """Sync supported environment variables from current shell into env file."""
-    env_path = Path(env_file).expanduser()
+    env_path = _env_path(env_file)
     updates = {}
     for key in AUTOMATION_ENV_KEYS:
         value = os.environ.get(key, "").strip()
@@ -149,12 +154,12 @@ def automation_env_sync(env_file, as_json):
 
 
 @automation_env.command("set-anthropic-key")
-@click.option("--env-file", default=str(default_automation_env_file(_app.data_dir)), help="Env file path")
+@click.option("--env-file", default="", help="Env file path (default: cron.env in the data dir)")
 @click.option("--key", prompt=True, hide_input=True, confirmation_prompt=True, help="Anthropic API key")
 @click.option("--json", "as_json", is_flag=True, help="Output result as JSON")
 def automation_env_set_anthropic_key(env_file, key, as_json):
     """Set ANTHROPIC_API_KEY in the automation env file."""
-    env_path = Path(env_file).expanduser()
+    env_path = _env_path(env_file)
     ok, _, error = write_env_file(env_path, {"ANTHROPIC_API_KEY": key})
     result = {
         "ok": ok and not bool(error),
@@ -300,11 +305,7 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
     help="Read account metrics (headless browser) on each scheduled run",
 )
 @click.option("--adopt-existing/--no-adopt-existing", default=True, help="Replace unmanaged run-daily cron entries")
-@click.option(
-    "--env-file",
-    default=str(default_automation_env_file(_app.data_dir)),
-    help="Env file sourced by cron before run-daily",
-)
+@click.option("--env-file", default="", help="Env file sourced by cron before run-daily (default: cron.env in the data dir)")
 @click.option("--sync-env/--no-sync-env", default=True, help="Sync shell ANTHROPIC_API_KEY into env file when present")
 @click.option("--retry-attempts", type=int, default=2, help="Additional retries when a scheduled run fails")
 @click.option("--retry-backoff-seconds", type=float, default=10.0, help="Base seconds for retry backoff")
@@ -344,7 +345,7 @@ def automation_schedule(
         schedule_time=schedule_time,
         runner_tokens=runner_tokens,
         workdir=workdir_path,
-        env_file=Path(env_file).expanduser(),
+        env_file=_env_path(env_file),
         stdout_log=Path(stdout_log).expanduser() if stdout_log else _app.data_dir.cron_out_log,
         stderr_log=Path(stderr_log).expanduser() if stderr_log else _app.data_dir.cron_err_log,
         save_recap=save_recap,

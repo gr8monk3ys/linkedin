@@ -294,7 +294,13 @@ def automate_connect_due(limit, dry_run, headless):
     with _open_session(headless=headless, dry_run=dry_run) as session:
         outcome = _send_due_connections(session, due, limit=limit)
     for row in outcome["sent"]:
-        console.print(f"[green]{'Would send' if dry_run else 'Sent'} invitation to {row['name']}.[/green]")
+        if dry_run:
+            # A dry run stops at the budget-and-navigate preamble, so it cannot
+            # know whether the profile even offers Connect. Saying "would send"
+            # promised invitations to a follow-only profile the real run skips.
+            console.print(f"[cyan]Would open {row['name']}'s profile and try to connect.[/cyan]")
+        else:
+            console.print(f"[green]Sent invitation to {row['name']}.[/green]")
     for row in outcome["skipped"]:
         console.print(f"[dim]Skipped {row['name']}: {row['reason']}[/dim]")
     for row in outcome["failed"]:
@@ -304,7 +310,8 @@ def automate_connect_due(limit, dry_run, headless):
         console.print("[dim]  Not marked as sent. Check the sent-invitation list before retrying.[/dim]")
     if outcome["stopped"]:
         console.print(f"[yellow]Stopped: {outcome['stopped']}[/yellow]")
-    console.print(f"{len(outcome['sent'])} sent, {len(outcome['skipped'])} skipped, {len(outcome['failed'])} failed.")
+    verb = "would be attempted" if dry_run else "sent"
+    console.print(f"{len(outcome['sent'])} {verb}, {len(outcome['skipped'])} skipped, {len(outcome['failed'])} failed.")
 
 
 @automate.command("message")

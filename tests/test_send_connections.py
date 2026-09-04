@@ -106,7 +106,7 @@ def test_connect_due_dry_run_sends_nothing_and_changes_nothing(fake_session):
     _add(runner, "Ann", "https://linkedin.com/in/ann")
     fake_session.results["connect"] = ActionResult("ok", "", None)
     result = runner.invoke(cli, ["automate", "connect-due", "--dry-run"])
-    assert result.exit_code == 0 and "Would send" in result.output
+    assert result.exit_code == 0 and "Would open Ann's profile" in result.output
     assert fake_session.dry_run
     assert _app.contact_repo.list_all()[0]["status"] == "not_contacted"
 
@@ -238,3 +238,15 @@ def test_an_unconfirmed_send_is_not_a_sent_one():
     assert [r["contact_id"] for r in outcome["unconfirmed"]] == [1]
     assert outcome["stopped"] == "a send could not be confirmed; stopping"
     assert len(session.calls_to("connect")) == 1
+
+
+def test_dry_run_does_not_promise_a_send(fake_session):
+    """A dry run returns before the page is touched, so it cannot know whether
+    the profile offers Connect at all. It said "Would send invitation to Neha
+    Tammana" for a follow-only profile the real run correctly skips."""
+    runner = CliRunner()
+    _add(runner, "Ann", "https://linkedin.com/in/ann")
+    fake_session.results["connect"] = ActionResult("ok", "", None)
+    result = runner.invoke(cli, ["automate", "connect-due", "--dry-run"])
+    assert result.exit_code == 0
+    assert "Would open Ann's profile" in result.output and "Would send" not in result.output

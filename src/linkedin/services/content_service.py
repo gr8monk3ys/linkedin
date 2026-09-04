@@ -80,13 +80,21 @@ class ContentService:
             out.append((style, ai_call(build_prompt(self.profiles.get(), facts, style), max_tokens=600)))
         return out
 
-    def save_candidate(self, text: str, style: str, facts: dict) -> dict:
+    def save_candidate(self, text: str, style: str, facts: dict, *, hand_written: bool = False) -> dict:
+        """Queue a candidate for review.
+
+        `source` is "ai" either way: it records that the text is real writing
+        rather than an offline template, which is what `automate post` refuses.
+        `generated_from` is what separates a model's draft from one typed by
+        hand, so the two are not silently the same row.
+        """
         draft = {
             "id": self.drafts.next_id(),
             "contact_id": None,
             "type": DRAFT_TYPE,
             "content": text.strip(),
             "source": "ai",
+            "generated_from": "hand-written" if hand_written else "model",
             "topic": f"fleet week {facts.get('since')}..{facts.get('until')} ({style})",
             "review": "pending",
             "created_at": datetime.now().isoformat(timespec="seconds"),

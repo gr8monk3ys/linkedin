@@ -56,7 +56,15 @@ MESSAGE_BUTTON = "Message"
 MESSAGE_TEXTBOX = "Write a message"
 
 START_POST_BUTTON = re.compile("Start a post", re.I)
+#: The composer mounts inside a shadow root several seconds after the modal
+#: opens, so it must be waited for: querying in the same tick as the click read
+#: as "no editor" every time, and posting had never once succeeded. Verified
+#: live 2026-09-03: role=textbox, aria-label "Text editor for creating content",
+#: class `ql-editor`, contenteditable. Note that `document.querySelector` does
+#: not pierce the shadow root and finds none of this; Playwright locators do.
 POST_EDITOR_TEXTBOX = re.compile("Text editor", re.I)
+#: Scoped to the composer: "Post" alone also matches feed controls.
+POST_COMPOSER = "div.share-box"
 POST_SUBMIT_BUTTON = re.compile(r"^Post$", re.I)
 
 #: The feed's like control was relabelled "Reaction button state: no reaction"
@@ -372,6 +380,7 @@ FRAGILE_SELECTORS = {
     "message_button": MESSAGE_BUTTON,
     "message_textbox": MESSAGE_TEXTBOX,
     "start_post_button": START_POST_BUTTON.pattern,
+    "post_composer": POST_COMPOSER,
     "post_editor": POST_EDITOR_TEXTBOX.pattern,
     "post_submit_button": POST_SUBMIT_BUTTON.pattern,
     "post_success_link": POST_SUCCESS_LINK,

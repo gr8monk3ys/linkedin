@@ -221,3 +221,14 @@ def test_publish_due_skips_by_default_when_underperforming(fake_session):
     assert result.exit_code == 2 and "Skipping" in result.output
     assert fake_session.calls_to("post") == []
     assert _app.calendar_repo.list_all()[0]["status"] == "scheduled"
+
+
+def test_a_hand_written_candidate_is_marked_as_one(tmp_path):
+    """Both are `source: ai`, which only means "not an offline template".
+    `generated_from` is what tells a typed post from a generated one."""
+    app = App(DataDir(tmp_path))
+    svc = app.content_svc
+    typed = svc.save_candidate("Typed by a person.", "story", {"since": "hand", "until": "x"}, hand_written=True)
+    generated = svc.save_candidate("Written by the model.", "story", {"since": "a", "until": "b"})
+    assert typed["source"] == "ai" and typed["generated_from"] == "hand-written"
+    assert generated["source"] == "ai" and generated["generated_from"] == "model"

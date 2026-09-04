@@ -280,14 +280,18 @@ class TestCreatePost:
         assert result.detail.startswith("posted, but")
         assert lp.selector_misses == ["post_success_link"]
 
-    def test_refuses_the_legacy_editor(self, page):
-        """Typing a public post into an editor we no longer recognise is acting on
-        a page we do not understand. It used to type into it and report success."""
+    def test_refuses_an_editor_it_cannot_identify(self, page):
+        """Typing a public post into an editor we cannot identify is acting on a
+        page we do not understand. It used to type into it and report success.
+
+        The editor is a Quill `ql-editor` and always was; what identifies it is
+        its role and label. If those stop matching while the element is still
+        there, that is a rename to investigate, not a licence to type."""
         self._prepare(page, with_editor=False, fallback_editor=True)
         lp = LinkedInPage(page)
         result = lp.create_post("Shipped")
         assert result.outcome == "selector_missing"
-        assert "legacy editor" in result.detail
+        assert "not identifiable by role" in result.detail
         assert page.registry[canonical("css", sel.POST_EDITOR_FALLBACK)][0].filled == []
         assert lp.selector_misses == ["post_editor"]
 

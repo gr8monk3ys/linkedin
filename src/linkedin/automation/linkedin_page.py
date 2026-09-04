@@ -422,13 +422,22 @@ class LinkedInPage:
             start_btn.first.click()
 
             editor = self.page.get_by_role("textbox", name=sel.POST_EDITOR_TEXTBOX)
+            try:
+                # The composer mounts in a shadow root a few seconds after the
+                # modal opens. Reading in the same tick found no editor on every
+                # attempt, which is why no post had ever gone out.
+                editor.first.wait_for(timeout=15000)
+            except Exception:
+                pass
             if editor.count() == 0:
                 if self.page.locator(sel.POST_EDITOR_FALLBACK).count() > 0:
-                    return self._missing("post_editor", "only the legacy editor is present; refusing to type into an editor we do not recognise")
+                    return self._missing("post_editor", "an editor is present but not identifiable by role; refusing to type into an editor we do not recognise")
                 return self._missing("post_editor")
             editor.first.fill(text)
 
-            post_btn = self.page.get_by_role("button", name=sel.POST_SUBMIT_BUTTON)
+            composer = self.page.locator(sel.POST_COMPOSER)
+            scope = composer.first if composer.count() > 0 else self.page
+            post_btn = scope.get_by_role("button", name=sel.POST_SUBMIT_BUTTON)
             if not self._present(post_btn, "post_submit_button"):
                 return self._missing("post_submit_button")
             post_btn.first.click()

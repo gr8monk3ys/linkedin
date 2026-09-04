@@ -58,7 +58,7 @@ def posts_add_candidate(path, text, style):
         console.print("[red]No text given.[/red]")
         raise SystemExit(1)
     facts = {"since": "hand", "until": datetime.now().date().isoformat()}
-    draft = _app.content_svc.save_candidate(body, style, facts)
+    draft = _app.content_svc.save_candidate(body, style, facts, hand_written=True)
     console.print(f"[green]Candidate #{draft['id']} queued.[/green] Review with: linkedin-cli posts review")
 
 

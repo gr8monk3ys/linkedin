@@ -153,3 +153,17 @@ uv run ruff format src/ tests/
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every push and PR: ruff check → pytest → CLI smoke test across Python 3.10, 3.11, 3.12.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in this repo's GitHub Issues (`gh` CLI); external PRs are not a request surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default labels, unchanged: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` at the root is the glossary and `docs/adr/` holds decisions (empty until one is recorded). See `docs/agents/domain.md`.

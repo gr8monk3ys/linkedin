@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 LinkedIn Job Hunt Assistant — a Python CLI: a local CRM with a daily planner, draft generation (Claude API or by hand), application tracking, a review-gated content pipeline, an inbox reader that proposes pipeline moves, account metrics, and Playwright browser automation. Storage is JSON files under `~/.linkedin-cli`.
 
-Nine command groups (interview, optimize, research, discover, market, templates, calendar, campaigns, conversations) were deleted 2026-09-03: all depended on AI that is off by choice and held almost no data. Do not reintroduce a feature without a user who runs it.
+Nine command groups (interview, optimize, research, discover, market, templates, calendar, campaigns, conversations) were deleted 2026-09-03: all depended on AI that is off by choice and held almost no data. `docs/adr/0001` is the rule: a feature needs a user who runs it.
 
 ## Commands
 
@@ -162,4 +162,4 @@ The five default labels, unchanged: `needs-triage`, `needs-info`, `ready-for-age
 
 ### Domain docs
 
-Single-context: `CONTEXT.md` at the root is the glossary and `docs/adr/` holds decisions (empty until one is recorded). See `docs/agents/domain.md`.
+Single-context: `CONTEXT.md` at the root is the glossary and `docs/adr/` holds decisions. See `docs/agents/domain.md`.

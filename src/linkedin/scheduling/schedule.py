@@ -83,6 +83,8 @@ def build_scheduled_run_daily_tokens(
         *runner_tokens,
         "run-daily",
         "--json",
+        "--trigger",
+        "scheduled",
         "--retry-attempts",
         str(retry_attempts),
         "--retry-backoff-seconds",

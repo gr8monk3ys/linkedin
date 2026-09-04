@@ -1,6 +1,5 @@
 import json
 import os
-import time
 from datetime import datetime, timedelta
 
 import click
@@ -13,10 +12,6 @@ from linkedin.constants import (
     DASHBOARD_PIPELINE,
     PRIORITY_EMOJI,
     CompanyPriority,
-)
-from linkedin.scheduling.schedule import (
-    next_scheduled_run,
-    scheduled_run_for_date,
 )
 from linkedin.services.daily_run import DailyRun, RunConfig, build_plan
 from linkedin.services.run_state import (
@@ -247,14 +242,12 @@ def daily_plan(actions_limit, postings_limit, min_posting_score, save_recap, rec
     is_flag=True,
     help="Read the account's metrics (headless browser) before each run; the 14-day baseline",
 )
-@click.option("--watch", is_flag=True, help="Run continuously once per day at --time")
 @click.option("--time", "schedule_time", default="09:00", help="Daily run time in HH:MM (24-hour local)")
-@click.option("--run-now", is_flag=True, help="When --watch is set, run immediately before waiting for schedule")
-@click.option("--max-runs", type=int, default=0, help="Maximum runs in watch mode (0 means unlimited)")
 @click.option(
-    "--catch-up-missed/--no-catch-up-missed",
-    default=True,
-    help="In watch mode, run now if today's scheduled time was missed",
+    "--trigger",
+    type=click.Choice(["manual", "scheduled"]),
+    default="manual",
+    help="Who started this run. A scheduled run is keyed to its day so a double fire cannot double run.",
 )
 @click.option("--retry-attempts", type=int, default=1, help="Additional retries when a run fails")
 @click.option("--retry-backoff-seconds", type=float, default=5.0, help="Base delay in seconds between retries")
@@ -277,11 +270,8 @@ def run_daily(
     generate_drafts,
     save_drafts,
     collect_metrics,
-    watch,
     schedule_time,
-    run_now,
-    max_runs,
-    catch_up_missed,
+    trigger,
     retry_attempts,
     retry_backoff_seconds,
     lock_ttl_minutes,
@@ -293,11 +283,7 @@ def run_daily(
     notify_on_recovery,
     as_json,
 ):
-    """Run the daily plan now, or on a schedule for hands-off execution."""
-    if max_runs < 0:
-        console.print("[red]--max-runs must be 0 or greater.[/red]")
-        return
-
+    """Run the daily plan once. Cron or launchd runs this with --trigger scheduled."""
     if lock_ttl_minutes < 1:
         console.print("[red]--lock-ttl-minutes must be at least 1.[/red]")
         return
@@ -344,7 +330,7 @@ def run_daily(
         now = datetime.now().isoformat(timespec="seconds")
         skipped = {
             "status": "skipped_locked",
-            "trigger": "startup",
+            "trigger": trigger,
             "reason": lock_error,
             "started_at": now,
             "finished_at": now,
@@ -354,59 +340,12 @@ def run_daily(
         return
 
     try:
-        if not watch:
-            result = run.execute("manual", datetime.now())
-            _emit_run_result(result, as_json)
-            # A stalled planner and a crashed run must both be visible to whatever
-            # scheduled us. Reporting exit 0 is how five months of empty runs hid.
-            if result.get("status") in ("no_actions", "failed"):
-                raise SystemExit(1)
-            return
-
-        try:
-            next_scheduled_run(schedule_time)
-        except ValueError as exc:
-            console.print(f"[red]{exc}[/red]")
-            return
-
-        runs_completed = 0
-        if not as_json:
-            console.print(
-                f"[bold]Daily runner started[/bold] (time={schedule_time}, max_runs={'unlimited' if max_runs == 0 else max_runs})"
-            )
-
-        if catch_up_missed and not run_now:
-            now = datetime.now()
-            scheduled_today = scheduled_run_for_date(schedule_time, now.date())
-            if now >= scheduled_today:
-                _emit_run_result(run.execute("watch_catch_up", scheduled_today, watch_mode=True), as_json)
-                runs_completed += 1
-                if max_runs and runs_completed >= max_runs:
-                    return
-
-        if run_now:
-            _emit_run_result(run.execute("watch_run_now", datetime.now(), watch_mode=True), as_json)
-            runs_completed += 1
-            if max_runs and runs_completed >= max_runs:
-                return
-
-        while True:
-            next_run = next_scheduled_run(schedule_time)
-            wait_seconds = max(1, int((next_run - datetime.now()).total_seconds()))
-            if not as_json:
-                console.print(
-                    f"\n[dim]Next run at {next_run.strftime('%Y-%m-%d %H:%M:%S')} (in {wait_seconds} sec)[/dim]"
-                )
-            time.sleep(wait_seconds)
-            _emit_run_result(run.execute("watch_scheduled", next_run, watch_mode=True), as_json)
-            runs_completed += 1
-            if max_runs and runs_completed >= max_runs:
-                if not as_json:
-                    console.print(f"\n[green]Reached max runs ({max_runs}). Stopping.[/green]")
-                return
-    except KeyboardInterrupt:
-        if not as_json:
-            console.print("\n[yellow]Stopped run-daily.[/yellow]")
+        result = run.execute(trigger, datetime.now(), scheduled=trigger == "scheduled")
+        _emit_run_result(result, as_json)
+        # A stalled planner and a crashed run must both be visible to whatever
+        # scheduled us. Reporting exit 0 is how five months of empty runs hid.
+        if result.get("status") in ("no_actions", "failed"):
+            raise SystemExit(1)
     finally:
         release_run_lock(_app.data_dir)
 
@@ -420,7 +359,7 @@ def run_daily(
     default="all",
     help="Filter by run status",
 )
-@click.option("--trigger", default="", help="Optional trigger filter (manual, watch_scheduled, etc.)")
+@click.option("--trigger", default="", help="Optional trigger filter (manual, scheduled, doctor_smoke)")
 @click.option("--since-days", type=int, default=0, help="Only include runs from the last N days")
 @click.option("--json", "as_json", is_flag=True, help="Output entries as JSON")
 def run_history(limit, status_filter, trigger, since_days, as_json):

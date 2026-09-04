@@ -296,3 +296,5 @@ def test_scheduled_tokens_carry_collect_metrics():
     )
     assert "--collect-metrics" in build_scheduled_run_daily_tokens(["linkedin-cli"], collect_metrics=True, **base)
     assert "--collect-metrics" not in build_scheduled_run_daily_tokens(["linkedin-cli"], **base)
+    tokens = build_scheduled_run_daily_tokens(["linkedin-cli"], **base)
+    assert tokens[tokens.index("--trigger") + 1] == "scheduled"

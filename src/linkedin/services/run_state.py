@@ -273,17 +273,22 @@ def release_run_lock(data_dir: DataDir) -> None:
 
 def effective_idempotency_key(
     key: str,
-    watch_mode: bool,
+    scheduled: bool,
     schedule_time: str,
     run_at: datetime,
 ) -> str:
+    """A scheduled run is keyed to its day, so a double fire cannot double run.
+
+    A manual run has no key unless one was given: typing `run-daily` twice
+    is two runs by intent.
+    """
     trimmed = key.strip()
     day_key = run_at.date().isoformat()
     if trimmed:
-        if watch_mode:
+        if scheduled:
             return f"{trimmed}:{day_key}"
         return trimmed
-    if watch_mode:
+    if scheduled:
         return f"schedule:{schedule_time}:{day_key}"
     return ""
 

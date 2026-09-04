@@ -9,24 +9,15 @@ from rich.table import Table
 
 from linkedin.cli._common import _app, cli, console
 from linkedin.cli.daily import _daily_run
+from linkedin.scheduling import install
 from linkedin.scheduling.crontab import (
     AUTOMATION_ENV_KEYS,
-    build_cron_shell_command,
-    build_managed_cron_block,
-    build_managed_cron_job_line,
     default_automation_env_file,
     env_file_status,
-    read_user_crontab_lines,
-    strip_legacy_scheduler_comment_lines,
-    strip_managed_cron_block,
-    strip_unmanaged_run_daily_cron_jobs,
     write_env_file,
-    write_user_crontab_lines,
 )
 from linkedin.scheduling.schedule import (
-    build_scheduled_run_daily_tokens,
     default_scheduler_runner_tokens,
-    parse_schedule_time,
     runner_tokens_from_option,
 )
 from linkedin.services.daily_run import RunConfig
@@ -55,7 +46,7 @@ def _render_checks(title: str, checks: list[dict]) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Output schedule status as JSON")
 def automation_status(as_json):
     """Show managed schedule status and latest run health."""
-    cron_lines, cron_error = read_user_crontab_lines()
+    cron_lines, cron_error = install.read_user_crontab_lines()
     checks, facts = diagnostics(_app.get(), cron_lines=cron_lines, cron_error=cron_error)
     latest = facts["latest_run"]
     result = {
@@ -197,7 +188,7 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
     """Diagnose daily-run health and optionally apply fixes. The one check list; `health` was a second copy."""
     fixes: list[str] = []
     errors: list[str] = []
-    cron_lines, cron_error = read_user_crontab_lines()
+    cron_lines, cron_error = install.read_user_crontab_lines()
     checks, facts = diagnostics(
         _app.get(),
         cron_lines=cron_lines,
@@ -223,8 +214,7 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
                 checks.append({"name": "run_lock_fix", "status": "warn", "detail": f"Failed to remove lock: {exc}"})
 
         env_file = facts["env_file"]
-        updates = {key: os.environ[key].strip() for key in AUTOMATION_ENV_KEYS if os.environ.get(key, "").strip()}
-        _, _, env_error = write_env_file(env_file, updates)
+        _, env_error = install.sync_env_from_environ(env_file)
         if env_error:
             checks.append({"name": "env_sync_fix", "status": "warn", "detail": env_error})
             errors.append(env_error)
@@ -232,36 +222,18 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
             fixes.append(f"Synced automation env file: {env_file}")
 
         if not facts["cron_error"] and not facts["managed_job"]:
-            run_tokens = build_scheduled_run_daily_tokens(
-                default_scheduler_runner_tokens(),
-                save_recap=True,
-                generate_drafts=True,
-                save_drafts=True,
-                collect_metrics=True,
-                retry_attempts=2,
-                retry_backoff_seconds=10.0,
-                failure_streak_threshold=3,
-                notify_on_recovery=True,
-                notify_webhook="",
-            )
-            cron_command = build_cron_shell_command(Path.cwd().resolve(), run_tokens, env_file=env_file)
-            job_line = build_managed_cron_job_line(
+            spec = install.ScheduleSpec(
                 schedule_time=schedule_time,
-                cron_command=cron_command,
+                runner_tokens=default_scheduler_runner_tokens(),
+                workdir=Path.cwd().resolve(),
+                env_file=env_file,
                 stdout_log=_app.data_dir.cron_out_log,
                 stderr_log=_app.data_dir.cron_err_log,
             )
-            cleaned, _ = strip_managed_cron_block(cron_lines)
-            cleaned, _ = strip_unmanaged_run_daily_cron_jobs(cleaned)
-            cleaned, _ = strip_legacy_scheduler_comment_lines(cleaned)
-            next_lines = list(cleaned)
-            if next_lines and next_lines[-1].strip():
-                next_lines.append("")
-            next_lines.extend(build_managed_cron_block(job_line))
-            write_error = write_user_crontab_lines(next_lines)
-            if write_error:
-                checks.append({"name": "schedule_fix", "status": "warn", "detail": write_error})
-                errors.append(write_error)
+            installed = install.install_schedule(spec, sync_env=False)
+            if installed.error:
+                checks.append({"name": "schedule_fix", "status": "warn", "detail": installed.error})
+                errors.append(installed.error)
             else:
                 fixes.append("Installed managed cron schedule.")
                 checks.append({"name": "schedule_fix", "status": "ok", "detail": f"Scheduled at {schedule_time}"})
@@ -363,59 +335,18 @@ def automation_schedule(
     as_json,
 ):
     """Create or update a managed daily cron schedule for run-daily."""
-    if retry_attempts < 0:
-        console.print("[red]--retry-attempts must be 0 or greater.[/red]")
-        return
-    if retry_backoff_seconds < 0:
-        console.print("[red]--retry-backoff-seconds must be 0 or greater.[/red]")
-        return
-    if failure_streak_threshold < 1:
-        console.print("[red]--failure-streak-threshold must be at least 1.[/red]")
-        return
-
-    try:
-        parse_schedule_time(schedule_time)
-    except ValueError as exc:
-        console.print(f"[red]{exc}[/red]")
-        return
-
-    if save_drafts:
-        generate_drafts = True
-
     runner_tokens, runner_error = runner_tokens_from_option(runner)
     if runner_error:
         console.print(f"[red]{runner_error}[/red]")
         return
-
-    workdir_path = Path(workdir).expanduser() if workdir.strip() else Path.cwd()
-    workdir_path = workdir_path.resolve()
-    if not workdir_path.exists() or not workdir_path.is_dir():
-        console.print(f"[red]Invalid --workdir: {workdir_path}[/red]")
-        return
-
-    stdout_path = Path(stdout_log).expanduser() if stdout_log else _app.data_dir.cron_out_log
-    stderr_path = Path(stderr_log).expanduser() if stderr_log else _app.data_dir.cron_err_log
-    stdout_path.parent.mkdir(parents=True, exist_ok=True)
-    stderr_path.parent.mkdir(parents=True, exist_ok=True)
-    env_file_path = Path(env_file).expanduser()
-
-    env_synced_keys: list[str] = []
-    env_sync_error = ""
-    if sync_env:
-        updates = {}
-        for key in AUTOMATION_ENV_KEYS:
-            value = os.environ.get(key, "").strip()
-            if value:
-                updates[key] = value
-        if updates:
-            _, env_vars, env_sync_error = write_env_file(env_file_path, updates)
-            if not env_sync_error:
-                env_synced_keys = sorted(k for k in updates if env_vars.get(k))
-        elif not env_file_path.exists():
-            _, _, env_sync_error = write_env_file(env_file_path, {})
-
-    run_tokens = build_scheduled_run_daily_tokens(
-        runner_tokens,
+    workdir_path = (Path(workdir).expanduser() if workdir.strip() else Path.cwd()).resolve()
+    spec = install.ScheduleSpec(
+        schedule_time=schedule_time,
+        runner_tokens=runner_tokens,
+        workdir=workdir_path,
+        env_file=Path(env_file).expanduser(),
+        stdout_log=Path(stdout_log).expanduser() if stdout_log else _app.data_dir.cron_out_log,
+        stderr_log=Path(stderr_log).expanduser() if stderr_log else _app.data_dir.cron_err_log,
         save_recap=save_recap,
         generate_drafts=generate_drafts,
         save_drafts=save_drafts,
@@ -425,100 +356,44 @@ def automation_schedule(
         failure_streak_threshold=failure_streak_threshold,
         notify_on_recovery=notify_on_recovery,
         notify_webhook=notify_webhook,
+        adopt_existing=adopt_existing,
     )
-    cron_command = build_cron_shell_command(workdir_path, run_tokens, env_file=env_file_path)
-    cron_job = build_managed_cron_job_line(
-        schedule_time=schedule_time,
-        cron_command=cron_command,
-        stdout_log=stdout_path,
-        stderr_log=stderr_path,
-    )
-
-    current_lines, read_error = read_user_crontab_lines()
-    if read_error:
-        console.print(f"[red]Could not read crontab: {read_error}[/red]")
+    installed = install.install_schedule(spec, sync_env=sync_env)
+    if installed.error:
+        console.print(f"[red]{installed.error}[/red]")
         return
-
-    cleaned_lines, _ = strip_managed_cron_block(current_lines)
-    adopted_count = 0
-    removed_legacy_comments = 0
-    if adopt_existing:
-        cleaned_lines, adopted_count = strip_unmanaged_run_daily_cron_jobs(cleaned_lines)
-        cleaned_lines, removed_legacy_comments = strip_legacy_scheduler_comment_lines(cleaned_lines)
-
-    next_lines = list(cleaned_lines)
-    if next_lines and next_lines[-1].strip():
-        next_lines.append("")
-    next_lines.extend(build_managed_cron_block(cron_job))
-
-    write_error = write_user_crontab_lines(next_lines)
-    if write_error:
-        console.print(f"[red]Could not install schedule: {write_error}[/red]")
-        return
-
-    result = {
-        "backend": "cron",
-        "configured": True,
-        "schedule_time": schedule_time,
-        "workdir": str(workdir_path),
-        "runner": runner_tokens,
-        "job_line": cron_job,
-        "stdout_log": str(stdout_path),
-        "stderr_log": str(stderr_path),
-        "failure_streak_threshold": failure_streak_threshold,
-        "notify_on_recovery": notify_on_recovery,
-        "env_file": env_file_status(env_file_path),
-        "env_synced_keys": env_synced_keys,
-        "env_sync_error": env_sync_error,
-        "adopted_existing_jobs": adopted_count,
-        "removed_legacy_comments": removed_legacy_comments,
-    }
-
     if as_json:
-        click.echo(json.dumps(result, indent=2))
+        click.echo(json.dumps(installed.as_dict(spec), indent=2))
         return
 
     console.print("[green]✓ Managed cron schedule installed.[/green]")
     console.print(f"  Time: {schedule_time}")
     console.print(f"  Workdir: {workdir_path}")
-    console.print(f"  Command: {shlex.join(run_tokens)}")
-    console.print(f"  Logs: {stdout_path} | {stderr_path}")
-    console.print(f"  Env file: {env_file_path}")
-    if env_synced_keys:
-        console.print(f"  Synced keys: {', '.join(env_synced_keys)}")
-    if env_sync_error:
-        console.print(f"  [yellow]Env sync warning:[/yellow] {env_sync_error}")
-    if adopted_count:
-        console.print(f"  Replaced unmanaged schedule entries: {adopted_count}")
-    if removed_legacy_comments:
-        console.print(f"  Removed legacy comment lines: {removed_legacy_comments}")
+    console.print(f"  Command: {shlex.join(spec.run_tokens())}")
+    console.print(f"  Logs: {spec.stdout_log} | {spec.stderr_log}")
+    console.print(f"  Env file: {spec.env_file}")
+    if installed.env_synced_keys:
+        console.print(f"  Synced keys: {', '.join(installed.env_synced_keys)}")
+    if installed.env_sync_error:
+        console.print(f"  [yellow]Env sync warning:[/yellow] {installed.env_sync_error}")
+    if installed.adopted_existing_jobs:
+        console.print(f"  Replaced unmanaged schedule entries: {installed.adopted_existing_jobs}")
+    if installed.removed_legacy_comments:
+        console.print(f"  Removed legacy comment lines: {installed.removed_legacy_comments}")
 
 
 @automation.command("unschedule")
 @click.option("--json", "as_json", is_flag=True, help="Output unschedule details as JSON")
 def automation_unschedule(as_json):
     """Remove the managed cron schedule created by automation schedule."""
-    current_lines, read_error = read_user_crontab_lines()
-    if read_error:
-        console.print(f"[red]Could not read crontab: {read_error}[/red]")
+    removed, error = install.remove_schedule()
+    if error:
+        console.print(f"[red]{error}[/red]")
         return
-
-    cleaned_lines, removed = strip_managed_cron_block(current_lines)
-    if not removed:
-        result = {"removed": False, "detail": "No managed schedule found."}
-        if as_json:
-            click.echo(json.dumps(result, indent=2))
-        else:
-            console.print("[yellow]No managed schedule found.[/yellow]")
-        return
-
-    write_error = write_user_crontab_lines(cleaned_lines)
-    if write_error:
-        console.print(f"[red]Could not remove schedule: {write_error}[/red]")
-        return
-
-    result = {"removed": True, "detail": "Managed schedule removed."}
+    result = {"removed": removed, "detail": "Managed schedule removed." if removed else "No managed schedule found."}
     if as_json:
         click.echo(json.dumps(result, indent=2))
-        return
-    console.print("[green]✓ Managed schedule removed.[/green]")
+    elif removed:
+        console.print("[green]✓ Managed schedule removed.[/green]")
+    else:
+        console.print("[yellow]No managed schedule found.[/yellow]")

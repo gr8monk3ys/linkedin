@@ -1,7 +1,7 @@
 """The daily run: one interface over the plan, the drafts, and the run lifecycle.
 
 `DailyRun(app, config).execute(trigger, run_at)` is the whole thing — lock
-handling excepted, which is the caller's because it brackets watch mode too.
+handling excepted, which is the caller's because it brackets the lock too.
 Inside: idempotency, retry with backoff, the failure-streak escalation and its
 recovery, the run log, and the classification that decides whether a run was
 `success`, `no_actions`, or `failed`. That policy used to be a thousand lines
@@ -318,14 +318,14 @@ class DailyRun:
 
     # -- lifecycle --------------------------------------------------------------
 
-    def execute(self, trigger: str, run_at: datetime, *, watch_mode: bool = False) -> dict:
+    def execute(self, trigger: str, run_at: datetime, *, scheduled: bool = False) -> dict:
         """Run with retries. The result carries `attempts` and, on recovery, `recovered_after_retries`."""
         cfg = self.config
         max_attempts = max(1, cfg.retry_attempts + 1)
         result: dict = {}
         for attempt in range(max_attempts):
             last = attempt == max_attempts - 1
-            result = self._attempt(trigger, run_at, watch_mode=watch_mode, notify_on_failure=last)
+            result = self._attempt(trigger, run_at, scheduled=scheduled, notify_on_failure=last)
             result["attempts"] = attempt + 1
             if result.get("status") != "failed":
                 if attempt > 0:
@@ -340,12 +340,12 @@ class DailyRun:
                 self.sleep(backoff)
         return result
 
-    def _attempt(self, trigger: str, run_at: datetime, *, watch_mode: bool, notify_on_failure: bool) -> dict:
+    def _attempt(self, trigger: str, run_at: datetime, *, scheduled: bool, notify_on_failure: bool) -> dict:
         """One attempt: idempotency, the cycle, classification, log, streak, notify."""
         cfg, data_dir = self.config, self.app.data_dir
         run_id = uuid.uuid4().hex
         started_at = datetime.now()
-        key = effective_idempotency_key(cfg.idempotency_key, watch_mode, cfg.schedule_time, run_at)
+        key = effective_idempotency_key(cfg.idempotency_key, scheduled, cfg.schedule_time, run_at)
         stamp = lambda: datetime.now().isoformat(timespec="seconds")  # noqa: E731
 
         if key and not cfg.allow_duplicate and idempotency_key_seen(data_dir, key):

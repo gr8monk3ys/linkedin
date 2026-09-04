@@ -372,27 +372,6 @@ class TestDashboard:
         assert "generated_at" in payload
         assert "drafts" in payload
 
-    def test_run_daily_watch_run_now_max_runs(self, runner, temp_data_dir):
-        """run-daily watch mode should support immediate bounded execution."""
-        result = runner.invoke(
-            cli,
-            ["run-daily", "--watch", "--run-now", "--max-runs", "1", "--json"],
-        )
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert "generated_at" in payload
-
-    def test_run_daily_watch_catch_up_runs_when_missed(self, runner, temp_data_dir):
-        """watch mode should catch up if today's schedule time already passed."""
-        result = runner.invoke(
-            cli,
-            ["run-daily", "--watch", "--time", "00:00", "--max-runs", "1", "--json"],
-        )
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert payload["status"] == "success"
-        assert payload["trigger"] == "watch_catch_up"
-
     def test_run_daily_idempotency_key_skips_duplicates(self, runner, temp_data_dir):
         """run-daily should skip duplicate idempotency keys."""
         first = runner.invoke(cli, ["run-daily", "--json", "--idempotency-key", "daily-smoke"])
@@ -403,6 +382,18 @@ class TestDashboard:
         assert second.exit_code == 0
         payload = json.loads(second.output)
         assert payload["status"] == "skipped_duplicate"
+
+    def test_scheduled_run_is_keyed_to_its_day_and_manual_is_not(self, runner, temp_data_dir):
+        """launchd firing twice must not run twice; typing run-daily twice must."""
+        first = runner.invoke(cli, ["run-daily", "--json", "--trigger", "scheduled"])
+        assert first.exit_code == 0, first.output
+        assert json.loads(first.output)["trigger"] == "scheduled"
+        second = runner.invoke(cli, ["run-daily", "--json", "--trigger", "scheduled"])
+        assert json.loads(second.output)["status"] == "skipped_duplicate"
+
+        manual = runner.invoke(cli, ["run-daily", "--json"])
+        payload = json.loads(manual.output)
+        assert payload["status"] == "success" and payload["trigger"] == "manual"
 
     def test_run_daily_writes_structured_log(self, runner, temp_data_dir):
         """run-daily should append a JSONL run log entry."""
@@ -652,7 +643,7 @@ class TestDashboard:
         assert payload["attempts"] == 3
         assert mock_run_reliable.call_count == 3
 
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_doctor_json_reports_schedule_and_api_key(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
         """doctor is the one check list (health was a second copy with its own names)."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -663,7 +654,7 @@ class TestDashboard:
         assert checks["schedule_time"]["status"] == "ok"
         assert checks["anthropic_api_key"]["status"] == "warn"
 
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_doctor_probe_ai_says_invalid_not_configured(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
         """The cron.env key was present and dead for five months while every check said ok."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-shell")
@@ -681,7 +672,7 @@ class TestDashboard:
         """There is one check list now; a second command over it drifted once and would again."""
         assert runner.invoke(cli, ["health", "--json"]).exit_code != 0
 
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_doctor_detects_active_lock(self, _mock_read_cron, runner, temp_data_dir):
         """doctor should flag an active run lock."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
@@ -725,7 +716,7 @@ class TestDashboard:
                         {
                             "status": "failed",
                             "run_id": "b2",
-                            "trigger": "watch_scheduled",
+                            "trigger": "scheduled",
                             "finished_at": "2026-02-21T09:00:00",
                             "error": "boom",
                         }
@@ -741,7 +732,7 @@ class TestDashboard:
         assert payload["total_matching"] == 1
         assert payload["entries"][0]["status"] == "failed"
 
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_automation_status_unconfigured(self, _mock_read_cron, runner, temp_data_dir):
         """automation status should report when no managed schedule exists."""
         result = runner.invoke(cli, ["automation", "status", "--json"])
@@ -751,7 +742,7 @@ class TestDashboard:
         assert payload["configured"] is False
         assert payload["crontab_error"] == ""
 
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_automation_env_sync(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
         """automation env sync should persist shell env keys into env file."""
         env_file = temp_data_dir / "cron.env"
@@ -767,8 +758,8 @@ class TestDashboard:
         assert payload["status"]["exists"] is True
         assert payload["status"]["has_anthropic_api_key"] is True
 
-    @patch("linkedin.cli.automation.write_user_crontab_lines", return_value=None)
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_automation_doctor_fix_installs_schedule(
         self, _mock_read_cron, _mock_write_cron, runner, temp_data_dir, monkeypatch
     ):
@@ -781,7 +772,7 @@ class TestDashboard:
         assert any(check["name"] == "schedule_fix" for check in payload["checks"])
 
     @patch(
-        "linkedin.cli.automation.read_user_crontab_lines",
+        "linkedin.scheduling.install.read_user_crontab_lines",
         return_value=(
             ["0 9 * * * /bin/zsh -lc 'cd /tmp && linkedin-cli run-daily --json'"],
             None,
@@ -797,8 +788,8 @@ class TestDashboard:
         assert payload["schedule_time"] == "09:00"
         assert len(payload["unmanaged_jobs"]) == 1
 
-    @patch("linkedin.cli.automation.write_user_crontab_lines", return_value=None)
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
     def test_automation_schedule_installs_managed_block(self, mock_read_cron, mock_write_cron, runner, temp_data_dir):
         """automation schedule should install an idempotent managed cron block."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
@@ -840,9 +831,9 @@ class TestDashboard:
         cron_lines = [line for line in written_lines if "run-daily" in line and line.strip().startswith("30 9")]
         assert len(cron_lines) == 1
 
-    @patch("linkedin.cli.automation.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
     @patch(
-        "linkedin.cli.automation.read_user_crontab_lines",
+        "linkedin.scheduling.install.read_user_crontab_lines",
         return_value=(
             [
                 "MAILTO=test@example.com",
@@ -903,9 +894,9 @@ class TestDashboard:
         assert result.exit_code == 0
         assert "Invalid --runner value" in result.output
 
-    @patch("linkedin.cli.automation.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
     @patch(
-        "linkedin.cli.automation.read_user_crontab_lines",
+        "linkedin.scheduling.install.read_user_crontab_lines",
         return_value=(
             [
                 "MAILTO=test@example.com",
@@ -927,8 +918,8 @@ class TestDashboard:
         written_lines = mock_write_cron.call_args.args[0]
         assert written_lines == ["MAILTO=test@example.com"]
 
-    @patch("linkedin.cli.automation.write_user_crontab_lines", return_value=None)
-    @patch("linkedin.cli.automation.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
     def test_automation_unschedule_noop_when_missing(self, _mock_read_cron, mock_write_cron, runner, temp_data_dir):
         """automation unschedule should no-op when no managed block exists."""
         result = runner.invoke(cli, ["automation", "unschedule", "--json"])

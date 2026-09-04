@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/gr8monk3ys/linkedin/compare/v0.1.1...v0.1.2) (2026-09-04)
+
+
+### Bug Fixes
+
+* address the review of the feed and profile readers ([#66](https://github.com/gr8monk3ys/linkedin/issues/66)) ([f7a165a](https://github.com/gr8monk3ys/linkedin/commit/f7a165a60f1045da67b9e64cd910983e7436e440))
+
 ## [0.1.1](https://github.com/gr8monk3ys/linkedin/compare/v0.1.0...v0.1.1) (2026-09-03)
 
 

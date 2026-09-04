@@ -345,18 +345,31 @@ class TestRebuiltFeed:
     """Verified 2026-09-03: no CSS card; cards are read by shape and tagged by index."""
 
     def test_script_rows_become_posts_and_tagged_cards_take_likes(self, page):
+        # The fake cannot run the script, so the cards it would have tagged are registered up front.
+        other = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: Like"})]})
+        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: no reaction"})]})
+        _with_feed(page, [])
+        page.register_css(f"[{sel.FEED_CARD_TAG}]", [other, card])
+        page.register_css(f'[{sel.FEED_CARD_TAG}="1"]', [card])
+        other._page = card._page = page
         page.evaluate_result = [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
         lp = LinkedInPage(page)
         posts = lp.get_feed_posts(max_posts=3)
         assert posts == [{"element_index": 0, "author": "Mo Zia", "headline": "CEO", "content": "A post about ops."}]
         assert lp.selector_misses == []
         assert page.evaluated == [sel.FEED_POSTS_SCRIPT]
-        # like_post finds the card the script tagged
-        card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: no reaction"})]})
-        _with_feed(page, [])
-        page.register_css(f"[{sel.FEED_CARD_TAG}]", [card])
-        card._page = page
-        assert lp.like_post(0).outcome == "ok"
+        # the button patterns reach the script from the catalogue, not a JS copy
+        (arg,) = page.evaluate_args[0]
+        assert arg == {"maxPosts": 3, "tag": sel.FEED_CARD_TAG, "likePattern": sel.LIKE_BUTTON.pattern, "commentPattern": sel.COMMENT_BUTTON.pattern}
+        # like_post finds the card by its exact tag value, not by position
+        assert lp.like_post(1).outcome == "ok"
+        assert lp.like_post(7).outcome == "not_applicable"
+
+    def test_a_script_that_throws_is_a_feed_card_miss(self, page):
+        page.evaluate_result = RuntimeError("querySelectorAll is not a function")
+        lp = LinkedInPage(page)
+        assert lp.get_feed_posts(max_posts=3) == []
+        assert lp.selector_misses == ["feed_card"]
 
     def test_a_reaction_state_other_than_none_is_already_liked(self, page):
         card = FakeCard(None, {canonical("role", "button", sel.LIKE_BUTTON): [FakeElement(attributes={"aria-label": "Reaction button state: Like"})]})
@@ -516,6 +529,17 @@ class TestRebuiltProfile:
     def test_body_is_read_when_the_page_has_no_main(self, page):
         page.register_css("body", FakeElement("Ada Lovelace\nShe/Her\nML Engineer\nLondon\nAbout\nHello.\nActivity"))
         assert LinkedInPage(page).scrape_profile()["about"] == "Hello."
+
+    def test_a_profile_without_a_location_does_not_borrow_the_next_line(self, page):
+        page.register_css("main", FakeElement("Bob Builder\nCTO at Acme\n·\nContact info\nAbout\nHi.\nExperience"))
+        d = LinkedInPage(page).scrape_profile()
+        assert d["headline"] == "CTO at Acme" and "location" not in d and d["about"] == "Hi."
+
+    def test_scrape_scrolls_before_reading(self, page):
+        page.register_css("main", FakeElement("Ada Lovelace\nEngineer\nLondon"))
+        LinkedInPage(page).scrape_profile()
+        assert page.evaluated[: len(sel.PROFILE_SCROLL_STOPS)] == [sel.PROFILE_SCROLL_SCRIPT] * len(sel.PROFILE_SCROLL_STOPS)
+        assert [a for (a,) in page.evaluate_args[: len(sel.PROFILE_SCROLL_STOPS)]] == list(sel.PROFILE_SCROLL_STOPS)
 
     def test_degree_marker_is_skipped_like_pronouns(self, page):
         page.register_css("main", FakeElement("Bob Builder\n• 2nd\nCTO at Acme\nDenver"))

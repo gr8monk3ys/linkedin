@@ -27,14 +27,30 @@ LOGIN_PASSWORD_LABEL = "Password"
 #: which is the *first* button on the page.
 SIGN_IN_BUTTON = "Sign in"
 
+#: The profile's own action bar. Verified live 2026-09-03: the first <section>
+#: of <main> is the top card, headed by the profile person's own name, and every
+#: other "Invite … to connect" button on the page belongs to a *different*
+#: person in a "People you may know" or "Explore Premium profiles" card further
+#: down. Every top-card lookup must be scoped to this, and none may fall back to
+#: a page-wide search: an unscoped `get_by_role("button", name="Connect").first`
+#: clicked a stranger's card and sent nine invitations to people who were not in
+#: the CRM, while the tool reported that every send had failed.
+PROFILE_TOP_CARD = "main section"
+
 CONNECT_BUTTON = "Connect"
+#: What a real invitation control is called on a card: "Invite <name> to connect".
+#: Used to assert that a top-card Connect belongs to the profile being viewed.
+INVITE_TO_CONNECT_LABEL = re.compile(r"^Invite .+ to connect$", re.I)
 #: Shown in place of Connect while an invitation is outstanding.
 PENDING_BUTTON = re.compile(r"^Pending\b", re.I)
 MORE_BUTTON = "More"
 CONNECT_MENU_ITEM = "Connect"
 ADD_NOTE_BUTTON = "Add a note"
 ADD_NOTE_TEXTBOX = "Add a note"
-SEND_BUTTON = "Send"
+#: Scoped to the invitation dialog, never the page: "Send" also matches the
+#: messaging composer's own Send button.
+SEND_BUTTON = re.compile(r"^Send(?: invitation| now| without a note)?$", re.I)
+CONNECT_DIALOG = "dialog"
 
 MESSAGE_BUTTON = "Message"
 MESSAGE_TEXTBOX = "Write a message"
@@ -310,8 +326,10 @@ FRAGILE_SELECTORS = {
     "login_email_input": LOGIN_EMAIL_INPUT,
     "login_password_input": LOGIN_PASSWORD_INPUT,
     "sign_in_button": SIGN_IN_BUTTON,
+    "profile_top_card": PROFILE_TOP_CARD,
     "connect_button": CONNECT_BUTTON,
-    "send_button": SEND_BUTTON,
+    "connect_dialog": CONNECT_DIALOG,
+    "send_button": SEND_BUTTON.pattern,
     "message_button": MESSAGE_BUTTON,
     "message_textbox": MESSAGE_TEXTBOX,
     "start_post_button": START_POST_BUTTON.pattern,

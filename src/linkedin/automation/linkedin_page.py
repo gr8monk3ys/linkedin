@@ -44,6 +44,11 @@ class WriteResult:
         return self.outcome in ("ok", "degraded")
 
 
+#: A send whose delivery the page would not confirm. The session maps `degraded`
+#: to `ok`, so callers that must not treat it as sent match on this.
+INVITATION_UNCONFIRMED = "clicked Send but the invitation dialog is still open; delivery unconfirmed"
+
+
 def _ok(detail: str = "") -> WriteResult:
     return WriteResult("ok", detail)
 
@@ -213,42 +218,106 @@ class LinkedInPage:
     # Connection Requests
     # -------------------------------------------------------------------------
 
+    def _top_card(self) -> Locator:
+        """The profile's own action bar: the first section of main.
+
+        Everything the profile page says about *this* person is in here. The
+        cards further down ("People you may know") carry Connect buttons for
+        other people entirely, so no action lookup may leave this scope.
+        """
+        return self.page.locator(sel.PROFILE_TOP_CARD).first
+
     def send_connection_request(self, note: str = "") -> WriteResult:
         """Send a connection request from a profile page (assumes we are on one).
 
-        No Connect button beside a Message or Pending button is a normal
-        absence (already connected or pending); no Connect, More, Message or
-        Pending at all is a page we do not recognise.
+        Scoped to the top card throughout. LinkedIn puts an "Invite <name> to
+        connect" button on every "People you may know" card, so a page-wide
+        search for a Connect button finds five strangers before it finds the
+        person whose profile this is. That is not hypothetical: on 2026-09-03
+        an unscoped lookup invited nine people who were not in the CRM, marked
+        the intended contacts as `connection_sent`, and reported every send as
+        failed because the stranger's card sends immediately with no dialog.
+
+        A profile with no Connect in the top card and none in its More menu
+        cannot be invited at all (already connected or pending, follow-only,
+        or out of invitations). That is `not_applicable`, not a breakage.
         """
         try:
-            connect_btn = self.page.get_by_role("button", name=sel.CONNECT_BUTTON)
+            top = self._top_card()
+            try:
+                # The card is server-rendered but the page is still settling on
+                # arrival; reading in the same tick reported "no top card" for a
+                # profile that was plainly there.
+                top.wait_for(timeout=10000)
+            except Exception:
+                pass
+            if top.count() == 0:
+                return self._missing("profile_top_card", "no top card on the page")
+
+            connect_btn = top.get_by_role("button", name=sel.CONNECT_BUTTON)
             if connect_btn.count() > 0:
                 connect_btn.first.click()
             else:
-                more_btn = self.page.get_by_role("button", name=sel.MORE_BUTTON)
+                more_btn = top.get_by_role("button", name=sel.MORE_BUTTON)
                 if more_btn.count() == 0:
-                    if self.page.get_by_role("button", name=sel.MESSAGE_BUTTON).count() > 0 or self.page.get_by_role("button", name=sel.PENDING_BUTTON).count() > 0:
+                    if (
+                        top.get_by_role("button", name=sel.MESSAGE_BUTTON).count() > 0
+                        or top.get_by_role("button", name=sel.PENDING_BUTTON).count() > 0
+                    ):
                         return _na("already connected or pending")
-                    return self._missing("connect_button", "no Connect, More, Message or Pending button on the page")
+                    return self._missing("connect_button", "no Connect, More, Message or Pending button in the top card")
                 more_btn.first.click()
+                self.page.wait_for_timeout(1200)  # the menu animates open too
                 connect_option = self.page.get_by_role("menuitem", name=sel.CONNECT_MENU_ITEM)
                 if connect_option.count() == 0:
-                    return _na("no Connect item in the More menu (already connected or pending)")
+                    return _na("no Connect in the top card's More menu (follow-only, already connected, or pending)")
                 connect_option.first.click()
 
+            # The dialog animates in. Checking for it in the same tick reads as
+            # "no dialog" on every profile and the send never happens.
+            dialog = self.page.get_by_role(sel.CONNECT_DIALOG)
+            try:
+                dialog.first.wait_for(timeout=8000)
+            except Exception:
+                pass
+            if not self._present(dialog, "connect_dialog"):
+                # The click landed on something that is not an invitation flow.
+                # Never hunt for a Send button outside the dialog: the one on
+                # the page belongs to the message composer.
+                return self._missing("connect_dialog", "no invitation dialog after clicking Connect")
+            dialog = dialog.first
+
             if note:
-                add_note_btn = self.page.get_by_role("button", name=sel.ADD_NOTE_BUTTON)
+                add_note_btn = dialog.get_by_role("button", name=sel.ADD_NOTE_BUTTON)
                 if add_note_btn.count() > 0:
                     add_note_btn.first.click()
-                    self.page.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).first.fill(note)
+                    dialog.get_by_role("textbox", name=sel.ADD_NOTE_TEXTBOX).first.fill(note)
 
-            send_btn = self.page.get_by_role("button", name=sel.SEND_BUTTON)
+            send_btn = dialog.get_by_role("button", name=sel.SEND_BUTTON)
             if not self._present(send_btn, "send_button"):
                 return self._missing("send_button")
             send_btn.first.click()
-            return _ok()
+            return self._confirm_invitation_sent()
         except Exception as exc:
             return self._missing("connect_button", f"{type(exc).__name__}: {exc}")
+
+    def _confirm_invitation_sent(self) -> WriteResult:
+        """Read back whether the invitation actually went out.
+
+        Clicking Send is not evidence that anything was sent. Returning `ok` on
+        the click alone is how this reported "Sent invitation to Jonathan Shin"
+        for an invitation that never appeared in the sent list. The dialog
+        closing is the page's own acknowledgement; when it will not close, the
+        caller is told the send is unconfirmed rather than done.
+        """
+        self.page.wait_for_timeout(2000)
+        dialog = self.page.get_by_role(sel.CONNECT_DIALOG)
+        try:
+            if dialog.count() == 0:
+                return _ok()
+        except Exception:
+            return _ok()
+        return _degraded(INVITATION_UNCONFIRMED)
 
     # -------------------------------------------------------------------------
     # Messaging

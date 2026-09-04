@@ -112,60 +112,112 @@ class TestLogin:
 
 
 class TestConnectionRequest:
+    """Every lookup is scoped to the top card. The sidebar test is the important one."""
+
     def test_direct_connect_button(self, page):
-        connect, send = FakeElement(), FakeElement()
-        page.register_role("button", sel.CONNECT_BUTTON, connect)
-        page.register_role("button", sel.SEND_BUTTON, send)
+        connect, send, dialog = FakeElement(), FakeElement(), FakeElement()
+        page.register_top_card({("button", sel.CONNECT_BUTTON): connect})
+        page.register_role("dialog", None, dialog)
+        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(send))
 
         assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert connect.clicked == 1 and send.clicked == 1
 
+    def test_a_dialog_that_stays_open_is_an_unconfirmed_send(self, page):
+        """Clicking Send is not evidence. The tool reported an invitation as
+        sent that never reached the sent list; only the dialog closing says so."""
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("dialog", None, FakeElement())
+        page.register_role("button", sel.SEND_BUTTON, FakeElement())
+
+        result = LinkedInPage(page).send_connection_request()
+        assert result.outcome == "degraded" and "unconfirmed" in result.detail
+
+    def test_a_connect_button_outside_the_top_card_is_never_clicked(self, page):
+        """The regression. LinkedIn shows "Invite <someone else> to connect" on
+        every "People you may know" card; an unscoped `.first` clicked one of
+        those and sent nine invitations to people who were not in the CRM."""
+        stranger = FakeElement()
+        page.register_role("button", sel.CONNECT_BUTTON, stranger)
+        page.register_top_card({("button", sel.MESSAGE_BUTTON): FakeElement()})
+
+        lp = LinkedInPage(page)
+        result = lp.send_connection_request()
+        assert stranger.clicked == 0
+        assert result.outcome == "not_applicable" and lp.selector_misses == []
+
     def test_falls_back_to_the_more_menu(self, page):
         more, menu_item, send = FakeElement(), FakeElement(), FakeElement()
-        page.register_role("button", sel.MORE_BUTTON, more)
+        page.register_top_card({("button", sel.MORE_BUTTON): more})
         page.register_role("menuitem", sel.CONNECT_MENU_ITEM, menu_item)
-        page.register_role("button", sel.SEND_BUTTON, send)
+        page.register_role("dialog", None, FakeElement())
+        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(send))
 
         assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert more.clicked == 1 and menu_item.clicked == 1
 
+    def test_no_top_card_is_a_selector_miss(self, page):
+        lp = LinkedInPage(page)
+        assert lp.send_connection_request().outcome == "selector_missing"
+        assert "profile_top_card" in lp.selector_misses
+
     def test_no_connect_affordance_at_all_is_a_selector_miss(self, page):
-        """No Connect, More, Message or Pending: this is not a profile page we know."""
+        """A top card with no Connect, More, Message or Pending is not a profile we know."""
+        page.register_top_card({})
         lp = LinkedInPage(page)
         result = lp.send_connection_request()
         assert result.outcome == "selector_missing"
         assert "connect_button" in lp.selector_misses
 
     def test_already_connected_is_a_normal_absence(self, page):
-        page.register_role("button", sel.MESSAGE_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.MESSAGE_BUTTON): FakeElement()})
         lp = LinkedInPage(page)
         result = lp.send_connection_request()
         assert result.outcome == "not_applicable"
         assert lp.selector_misses == []
 
     def test_pending_invitation_is_a_normal_absence(self, page):
-        page.register_role("button", sel.PENDING_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.PENDING_BUTTON): FakeElement()})
         assert LinkedInPage(page).send_connection_request().outcome == "not_applicable"
 
     def test_more_menu_without_a_connect_item(self, page):
-        page.register_role("button", sel.MORE_BUTTON, FakeElement())
-        assert LinkedInPage(page).send_connection_request().outcome == "not_applicable"
+        """Verified live: a follow-only profile's More menu offers Follow, not Connect."""
+        page.register_top_card({("button", sel.MORE_BUTTON): FakeElement()})
+        lp = LinkedInPage(page)
+        assert lp.send_connection_request().outcome == "not_applicable"
+        assert lp.selector_misses == []
+
+    def test_no_dialog_after_clicking_connect_is_a_miss_and_sends_nothing(self, page):
+        """A stranger's card sends immediately with no dialog. If no dialog
+        appears, the click was not an invitation flow: never hunt for a Send
+        button on the page, the messaging composer has one."""
+        page_send = FakeElement()
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("button", sel.SEND_BUTTON, page_send)
+
+        lp = LinkedInPage(page)
+        result = lp.send_connection_request()
+        assert result.outcome == "selector_missing" and "connect_dialog" in lp.selector_misses
+        assert page_send.clicked == 0
 
     def test_note_is_typed_before_sending(self, page):
         note_box = FakeElement()
-        page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("dialog", None, FakeElement())
         page.register_role("button", sel.ADD_NOTE_BUTTON, FakeElement())
         page.register_role("textbox", sel.ADD_NOTE_TEXTBOX, note_box)
-        page.register_role("button", sel.SEND_BUTTON, FakeElement())
+        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(FakeElement()))
 
         assert LinkedInPage(page).send_connection_request(note="Hi Ada").outcome == "ok"
         assert note_box.filled == ["Hi Ada"]
 
     def test_missing_send_button_is_a_selector_miss(self, page):
-        page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("dialog", None, FakeElement())
         lp = LinkedInPage(page)
-        assert lp.send_connection_request().outcome == "selector_missing"
-        assert lp.selector_misses == ["send_button"]
+        result = lp.send_connection_request()
+        assert result.outcome == "selector_missing"
+        assert "send_button" in lp.selector_misses
 
 
 class TestSendMessage:
@@ -699,7 +751,8 @@ class TestSelectorCatalogue:
         button was a bare False the report never mentioned."""
         expected = {
             "login": (lambda lp: lp.login("e", "p"), "login_email_input"),
-            "connect": (lambda lp: lp.send_connection_request(), "connect_button"),
+            # An empty page has no top card, so that is the first thing missing.
+            "connect": (lambda lp: lp.send_connection_request(), "profile_top_card"),
             "message": (lambda lp: lp.send_message("hi"), "message_button"),
             "post": (lambda lp: lp.create_post("x"), "start_post_button"),
             "headline": (lambda lp: lp.update_headline("x"), "edit_intro_button"),

@@ -49,6 +49,7 @@ class ScheduleSpec:
     generate_drafts: bool = True
     save_drafts: bool = True
     collect_metrics: bool = True
+    send_connections: bool = True
     retry_attempts: int = 2
     retry_backoff_seconds: float = 10.0
     failure_streak_threshold: int = 3
@@ -79,6 +80,7 @@ class ScheduleSpec:
             generate_drafts=self.generate_drafts or self.save_drafts,
             save_drafts=self.save_drafts,
             collect_metrics=self.collect_metrics,
+            send_connections=self.send_connections,
             retry_attempts=self.retry_attempts,
             retry_backoff_seconds=self.retry_backoff_seconds,
             failure_streak_threshold=self.failure_streak_threshold,

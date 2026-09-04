@@ -318,6 +318,7 @@ class TestDashboard:
             ["contacts", "add"],
             input="Alice Smith\nEngineer\nAcme\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 
@@ -427,6 +428,7 @@ class TestDashboard:
             ["contacts", "add"],
             input="John Doe\nEngineer\nTestCo\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 
@@ -1136,6 +1138,7 @@ class TestEnhancedContacts:
             ["contacts", "add"],
             input="John Doe\nEngineer\nTestCo\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 
@@ -1157,6 +1160,7 @@ class TestEnhancedContacts:
             ["contacts", "add"],
             input="John Doe\nEngineer\nTestCo\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 

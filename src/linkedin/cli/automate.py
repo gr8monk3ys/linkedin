@@ -6,11 +6,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from linkedin.cli._common import _app, _exit_unless_ok, cli, console
-from linkedin.services.automation_service import publish_unreviewed
+from linkedin.services.automation_service import connection_note_for, publish_unreviewed, send_due_connections
 from linkedin.services.contact_service import (
     import_scraped_profile,
     import_search_results,
 )
+from linkedin.services.daily_run import DailyRun, RunConfig
 from linkedin.services.resume_service import (
     ResumeRepoError,
     match_variants,
@@ -251,6 +252,59 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
     )
     _app.contact_svc.update_contact(contact_id, status="connection_sent")
     console.print(f"[green]Connection request sent to {contact['name']}.[/green] Status → connection_sent")
+
+
+def _send_due_connections(session, actions: list[dict], limit: int | None = None) -> dict:
+    """The sender over this process's App: URLs and notes from the CRM, status updates on success."""
+    drafts = _app.draft_repo.list_all()
+
+    def url_for(contact_id: int) -> str:
+        contact = _app.contact_repo.get(contact_id) or {}
+        return str(contact.get("linkedin_url") or "")
+
+    def on_sent(contact_id: int) -> None:
+        if not session.dry_run:
+            _app.contact_svc.update_contact(contact_id, status="connection_sent")
+
+    return send_due_connections(
+        session,
+        actions,
+        url_for=url_for,
+        note_for=lambda cid: connection_note_for(cid, drafts),
+        on_sent=on_sent,
+        limit=limit,
+    )
+
+
+@automate.command("connect-due")
+@click.option("--limit", type=int, default=None, help="Send at most this many (the daily budget still applies)")
+@click.option("--dry-run", is_flag=True, help="Navigate but do not send")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+def automate_connect_due(limit, dry_run, headless):
+    """Send today's invitations: the planner's connection actions, best-ranked first, up to the budget.
+
+    This is what `run-daily --send-connections` does every morning. The
+    ranking decides who; the budget decides how many; a saved connection
+    draft for the contact is the note, otherwise none.
+    """
+    due = DailyRun(_app.get(), RunConfig()).invitation_queue()
+    if not due:
+        console.print("[dim]No connection actions due.[/dim]")
+        return
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        outcome = _send_due_connections(session, due, limit=limit)
+    for row in outcome["sent"]:
+        console.print(f"[green]{'Would send' if dry_run else 'Sent'} invitation to {row['name']}.[/green]")
+    for row in outcome["skipped"]:
+        console.print(f"[dim]Skipped {row['name']}: {row['reason']}[/dim]")
+    for row in outcome["failed"]:
+        console.print(f"[red]Failed {row['name']}: {row['reason']}[/red]")
+    for row in outcome.get("unconfirmed", []):
+        console.print(f"[yellow]Unconfirmed {row['name']}: {row['reason']}[/yellow]")
+        console.print("[dim]  Not marked as sent. Check the sent-invitation list before retrying.[/dim]")
+    if outcome["stopped"]:
+        console.print(f"[yellow]Stopped: {outcome['stopped']}[/yellow]")
+    console.print(f"{len(outcome['sent'])} sent, {len(outcome['skipped'])} skipped, {len(outcome['failed'])} failed.")
 
 
 @automate.command("message")

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from linkedin.data.json_store import load_json
-from linkedin.services.planner import command_for, label_for
+from linkedin.services.planner import SEND_CONNECTION, command_for, label_for
 from linkedin.services.run_state import (
     append_run_log,
     effective_idempotency_key,
@@ -61,6 +61,8 @@ class RunConfig:
     retry_backoff_seconds: float = 5.0
     #: Read the account's metrics (headless browser) before the plan. Never fails the run.
     collect_metrics: bool = False
+    #: Send the plan's `send_connection` actions (headless browser) after it, up to the daily budget. Never fails the run.
+    send_connections: bool = False
 
 
 @dataclass
@@ -121,6 +123,25 @@ def build_plan(data: dict) -> DailyPlan:
                 for a in data.get("actions") or []
             ],
             "No urgent contact actions today.",
+        ),
+        Section(
+            "invitations",
+            "Invitations Sent",
+            ["Contact", "Outcome"],
+            [
+                *[[s.get("name", ""), "sent"] for s in (data.get("connections") or {}).get("sent", [])],
+                *[
+                    [s.get("name", ""), f"skipped: {s.get('reason', '')}"]
+                    for s in (data.get("connections") or {}).get("skipped", [])
+                ],
+                *[
+                    [s.get("name", ""), f"failed: {s.get('reason', '')}"]
+                    for s in (data.get("connections") or {}).get("failed", [])
+                ],
+            ],
+            "No invitations sent this run.",
+            hint=(data.get("connections") or {}).get("stopped", ""),
+            optional=True,
         ),
         Section(
             "inbound",
@@ -202,6 +223,7 @@ class DailyRun:
         on_draft_failure: Callable[[int, str], None] | None = None,
         on_retry: Callable[[int, int, float], None] | None = None,
         metrics_collector: Callable[[], dict] | None = None,
+        connection_sender: Callable[[list[dict]], dict] | None = None,
     ):
         self.app = app
         self.config = config
@@ -210,8 +232,14 @@ class DailyRun:
         self.on_draft_failure = on_draft_failure
         self.on_retry = on_retry
         self.metrics_collector = metrics_collector
+        self.connection_sender = connection_sender
 
     # -- the plan ---------------------------------------------------------------
+
+    def invitation_queue(self) -> list[dict]:
+        """Every `send_connection` action, best-ranked first. The budget decides how many go out."""
+        actions = self.app.contact_svc.get_next_actions(limit=1000, scores=self.app.ranking_svc.scores())
+        return [a for a in actions if a["action"] == SEND_CONNECTION]
 
     def plan_data(self) -> dict:
         """The plan as data: what `--json` prints and what the sections are built from."""
@@ -283,6 +311,20 @@ class DailyRun:
         data = self.plan_data()
         if data_metrics is not None:
             data["metrics_collected"] = data_metrics
+        if cfg.send_connections and self.connection_sender is not None:
+            # The whole ranked invitation queue, not the plan's top slice: on a
+            # day with eight overdue follow-ups the slice holds no invitations
+            # at all, and the budget would go unspent. A browser failure is
+            # recorded, not raised: the run still reports.
+            try:
+                data["connections"] = self.connection_sender(self.invitation_queue())
+            except Exception as exc:
+                data["connections"] = {
+                    "sent": [],
+                    "skipped": [],
+                    "failed": [],
+                    "stopped": f"{type(exc).__name__}: {exc}",
+                }
         if drafting:
             data["drafts"] = self.draft_for_actions(data["actions"], save=cfg.save_drafts)
         else:

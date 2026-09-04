@@ -152,6 +152,7 @@ class TestContactService:
     def test_get_next_actions_includes_overdue_followup(self, json_repos):
         svc = self._svc(json_repos)
         svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        svc.update_contact(1, status="messaged")
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         svc.set_reminder(1, date=yesterday)
 
@@ -159,6 +160,18 @@ class TestContactService:
         assert len(actions) >= 1
         assert actions[0]["action"] == "follow_up_overdue"
         assert actions[0]["contact_id"] == 1
+
+    def test_a_contact_never_written_to_is_never_a_follow_up(self, json_repos):
+        """The follow-up date is seeded on add, so without this rule a new contact
+        read as "follow-up overdue" and outranked the invitation it actually needs."""
+        svc = self._svc(json_repos)
+        svc.add_contact(name="Alice", title="Engineer", company="TestCo", linkedin="")
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        svc.set_reminder(1, date=yesterday)
+
+        actions = svc.get_next_actions(scores={1: 90})
+        assert [a["action"] for a in actions] == ["send_connection"]
+        assert "rank 90" in actions[0]["reason"]
 
     def test_get_next_actions_includes_connected_message_prompt(self, json_repos):
         svc = self._svc(json_repos)

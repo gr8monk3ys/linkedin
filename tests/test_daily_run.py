@@ -28,7 +28,14 @@ def test_plan_sections_are_ordered_and_render_both_ways():
         "templates": [],
     }
     plan = build_plan(data)
-    assert [s.key for s in plan.sections] == ["actions", "inbound", "applications", "postings", "metrics"]
+    assert [s.key for s in plan.sections] == [
+        "actions",
+        "invitations",
+        "inbound",
+        "applications",
+        "postings",
+        "metrics",
+    ]
     md = plan.to_markdown()
     assert md.startswith("# Daily Plan")
     assert "## Priority Actions" in md and "Follow up (today)" in md and "drafts follow-up 1" in md
@@ -39,7 +46,7 @@ def test_optional_sections_are_marked_so_the_terminal_can_skip_them():
     plan = build_plan(
         {"actions": [], "application_actions": [], "inbox_proposals": [], "postings": [], "templates": []}
     )
-    assert {s.key for s in plan.sections if s.optional} == {"inbound", "applications", "metrics"}
+    assert {s.key for s in plan.sections if s.optional} == {"invitations", "inbound", "applications", "metrics"}
 
 
 # -- classification --------------------------------------------------------------

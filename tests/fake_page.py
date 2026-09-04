@@ -33,6 +33,13 @@ def canonical(kind: str, *parts) -> str:
     return ":".join(out)
 
 
+def sel_top_card() -> str:
+    """The top-card CSS the page object scopes to, read from selectors."""
+    from linkedin.automation import selectors as sel
+
+    return sel.PROFILE_TOP_CARD
+
+
 class StrictModeViolation(Exception):
     """Playwright's strict-mode error, reproduced in the double."""
 
@@ -212,6 +219,33 @@ class FakePage:
 
     def register_label(self, name, elements):
         return self.register(canonical("label", name), elements)
+
+    def close_dialog_on(self, element):
+        """Make `element`'s click remove the registered dialog, the way Send does."""
+        page = self
+
+        original = element.click
+
+        def click():
+            original()
+            page.registry.pop(canonical("role", "dialog", None), None)
+
+        element.click = click
+        return element
+
+    def register_top_card(self, roles=None):
+        """Put a profile top card on the page, holding only `roles`.
+
+        `roles` maps (role, name) to an element. A lookup scoped to the card
+        sees exactly these; a page-wide lookup does not see them at all. That
+        asymmetry is the point: LinkedIn puts an "Invite … to connect" button
+        on every "People you may know" card, so an unscoped search finds
+        strangers, and a double that ignores scope cannot tell the two apart.
+        """
+        children = {canonical("role", role, name): [element] for (role, name), element in (roles or {}).items()}
+        card = FakeCard(self, children)
+        self.register_css(sel_top_card(), card)
+        return card
 
     # -- Playwright Page surface --------------------------------------------
     def _resolve(self, key, scope=None):

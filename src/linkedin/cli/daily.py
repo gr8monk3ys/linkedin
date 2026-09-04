@@ -7,7 +7,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from linkedin.cli._common import _app, cli, console
-from linkedin.cli.automate import _open_session
+from linkedin.cli.automate import _open_session, _send_due_connections
 from linkedin.constants import (
     DASHBOARD_PIPELINE,
     PRIORITY_EMOJI,
@@ -45,6 +45,10 @@ def _daily_run(config: RunConfig, *, show_drafts: bool = True, as_json: bool = F
         entry = _app.metrics_svc.record(result.data)
         return {"recorded": entry["date"], "missing": [k for k, v in entry.items() if k != "date" and v is None]}
 
+    def send_connections(actions: list[dict]) -> dict:
+        with _open_session(headless=True) as session:
+            return _send_due_connections(session, actions)
+
     return DailyRun(
         _app.get(),
         config,
@@ -52,6 +56,7 @@ def _daily_run(config: RunConfig, *, show_drafts: bool = True, as_json: bool = F
         on_draft_failure=on_draft_failure if show_drafts else None,
         on_retry=None if as_json else on_retry,
         metrics_collector=collect_metrics,
+        connection_sender=send_connections,
     )
 
 
@@ -242,6 +247,11 @@ def daily_plan(actions_limit, postings_limit, min_posting_score, save_recap, rec
     is_flag=True,
     help="Read the account's metrics (headless browser) before each run; the 14-day baseline",
 )
+@click.option(
+    "--send-connections",
+    is_flag=True,
+    help="After the plan, send its connection actions (headless browser) up to the daily budget",
+)
 @click.option("--time", "schedule_time", default="09:00", help="Daily run time in HH:MM (24-hour local)")
 @click.option(
     "--trigger",
@@ -270,6 +280,7 @@ def run_daily(
     generate_drafts,
     save_drafts,
     collect_metrics,
+    send_connections,
     schedule_time,
     trigger,
     retry_attempts,
@@ -322,6 +333,7 @@ def run_daily(
         retry_attempts=retry_attempts,
         retry_backoff_seconds=retry_backoff_seconds,
         collect_metrics=collect_metrics,
+        send_connections=send_connections,
     )
     run = _daily_run(config, show_drafts=False, as_json=as_json)
 

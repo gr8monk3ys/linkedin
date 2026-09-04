@@ -12,7 +12,9 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from linkedin.ai.client import ai_call
+from linkedin.automation.linkedin_page import INVITATION_UNCONFIRMED
 from linkedin.data.json_store import JsonProfileRepo
+from linkedin.services.planner import SEND_CONNECTION
 from linkedin.types import ProfileDict
 
 if TYPE_CHECKING:
@@ -178,3 +180,99 @@ Just write the comment, no explanations."""
         if result.error:
             return ""
         return sanitize_comment(result.text)
+
+
+# -- invitations --------------------------------------------------------------------
+
+
+def connection_note_for(contact_id: int, drafts: list[dict]) -> str:
+    """The newest real connection draft for a contact, or an empty note.
+
+    A template is never sent (`source` must be `ai`; hand-written drafts are
+    saved as `ai` too). An empty note is fine: LinkedIn sends the invitation
+    without one, and no note beats a generic one.
+    """
+    rows = [
+        d
+        for d in drafts
+        if d.get("contact_id") == contact_id and d.get("type") == "connection" and d.get("source") == "ai"
+    ]
+    if not rows:
+        return ""
+    return str(rows[-1].get("content", ""))[:300]
+
+
+def send_due_connections(
+    session: LinkedInSession,
+    actions: list[dict],
+    *,
+    url_for: Callable[[int], str],
+    note_for: Callable[[int], str],
+    on_sent: Callable[[int], None],
+    limit: int | None = None,
+    max_consecutive_failures: int = 3,
+) -> dict:
+    """Send the day's invitations: every `send_connection` action, in priority
+    order, until the run stops.
+
+    The planner has already ranked the actions, so the first one is the
+    contact the day's scarce invitations should go to. Each result lands in
+    exactly one of `sent`, `skipped` (already connected, no URL), or
+    `failed`; `stopped` names the reason the loop ended, if any.
+
+    Three things stop it, and each matters:
+
+    - the daily budget, refused by the session;
+    - `limit`, which caps *attempts*, not successes. Capping successes means a
+      run where every send fails never stops, and walks the whole queue
+      against live LinkedIn. That happened: a `--limit 1` run loaded 28
+      profiles;
+    - an unconfirmed send, which is never counted as sent;
+    - `max_consecutive_failures`, because a repeated failure is a markup
+      breakage, not a property of the contact. The first few say everything
+      the next twenty-five would.
+    """
+    sent: list[dict] = []
+    skipped: list[dict] = []
+    failed: list[dict] = []
+    unconfirmed: list[dict] = []
+    stopped = ""
+    attempts = 0
+    consecutive_failures = 0
+    for action in actions:
+        if action.get("action") != SEND_CONNECTION:
+            continue
+        if limit is not None and attempts >= limit:
+            stopped = f"limit of {limit} reached"
+            break
+        contact_id = action["contact_id"]
+        row = {"contact_id": contact_id, "name": action.get("name", "")}
+        url = url_for(contact_id)
+        if not url:
+            skipped.append({**row, "reason": "no linkedin_url"})
+            continue
+        attempts += 1
+        result = session.connect(url, note=note_for(contact_id))
+        if result and INVITATION_UNCONFIRMED in (result.reason or ""):
+            # Truthy, but the page would not confirm delivery. Do not advance the
+            # contact on a maybe, and stop: whatever is wrong is not per-contact.
+            unconfirmed.append({**row, "reason": result.reason})
+            stopped = "a send could not be confirmed; stopping"
+            break
+        if result:
+            consecutive_failures = 0
+            sent.append(row)
+            on_sent(contact_id)
+        elif result.status == "refused":
+            stopped = result.reason
+            break
+        elif result.status == "skipped":
+            consecutive_failures = 0
+            skipped.append({**row, "reason": result.reason})
+        else:
+            failed.append({**row, "reason": result.reason})
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_failures:
+                stopped = f"{consecutive_failures} sends failed in a row ({result.reason}); stopping"
+                break
+    return {"sent": sent, "skipped": skipped, "failed": failed, "unconfirmed": unconfirmed, "stopped": stopped}

@@ -304,8 +304,15 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
     default=True,
     help="Read account metrics (headless browser) on each scheduled run",
 )
+@click.option(
+    "--send-connections/--no-send-connections",
+    default=True,
+    help="After the plan, send its connection actions up to the daily budget",
+)
 @click.option("--adopt-existing/--no-adopt-existing", default=True, help="Replace unmanaged run-daily cron entries")
-@click.option("--env-file", default="", help="Env file sourced by cron before run-daily (default: cron.env in the data dir)")
+@click.option(
+    "--env-file", default="", help="Env file sourced by cron before run-daily (default: cron.env in the data dir)"
+)
 @click.option("--sync-env/--no-sync-env", default=True, help="Sync shell ANTHROPIC_API_KEY into env file when present")
 @click.option("--retry-attempts", type=int, default=2, help="Additional retries when a scheduled run fails")
 @click.option("--retry-backoff-seconds", type=float, default=10.0, help="Base seconds for retry backoff")
@@ -323,6 +330,7 @@ def automation_schedule(
     generate_drafts,
     save_drafts,
     collect_metrics,
+    send_connections,
     adopt_existing,
     env_file,
     sync_env,
@@ -352,6 +360,7 @@ def automation_schedule(
         generate_drafts=generate_drafts,
         save_drafts=save_drafts,
         collect_metrics=collect_metrics,
+        send_connections=send_connections,
         retry_attempts=retry_attempts,
         retry_backoff_seconds=retry_backoff_seconds,
         failure_streak_threshold=failure_streak_threshold,

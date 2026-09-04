@@ -10,6 +10,7 @@ from linkedin.services.planner import (
     FOLLOW_UP_OVERDUE,
     FOLLOW_UP_TODAY,
     REPAIR_CONTACT,
+    SEND_CONNECTION,
     STATUS_RULES,
     TERMINAL_STATUSES,
     _check_status_coverage,
@@ -298,7 +299,17 @@ class ContactService:
         due_data = self.get_due_contacts(days=0, contacts=all_contacts)
         actions: list[dict] = []
 
+        def awaiting_first_contact(contact: ContactDict) -> bool:
+            # A follow-up presumes a first contact. A `not_contacted` contact's
+            # follow-up date is seeded on add (cadence 0), so without this the
+            # date rules fired first as "follow-up overdue" for someone never
+            # written to, outranked `send_connection`, and the ranking bonus for
+            # the day's invitations never applied to anyone.
+            return STATUS_RULES.get(contact.get("status", ""), {}).get("action") == SEND_CONNECTION
+
         for contact, _, days_overdue in due_data["overdue"]:
+            if awaiting_first_contact(contact):
+                continue
             actions.append(
                 self._action(
                     contact,
@@ -309,6 +320,8 @@ class ContactService:
             )
 
         for contact, _, _ in due_data["due_today"]:
+            if awaiting_first_contact(contact):
+                continue
             actions.append(self._action(contact, 95, FOLLOW_UP_TODAY, "Follow-up due today"))
 
         # No loop over due_data["stale"]: STATUS_RULES["connection_sent"] emits the

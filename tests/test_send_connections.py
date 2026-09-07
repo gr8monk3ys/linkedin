@@ -250,3 +250,70 @@ def test_dry_run_does_not_promise_a_send(fake_session):
     result = runner.invoke(cli, ["automate", "connect-due", "--dry-run"])
     assert result.exit_code == 0
     assert "Would open Ann's profile" in result.output and "Would send" not in result.output
+
+
+# -- the guard every advancing caller must go through --------------------------
+
+
+def test_invitation_confirmed_separates_clicked_from_delivered():
+    """`session._write` flattens a degraded write to ok, so truthiness alone
+    means "we clicked Send", not "an invitation was sent"."""
+    from linkedin.automation.linkedin_page import INVITATION_UNCONFIRMED
+    from linkedin.services.automation_service import invitation_confirmed
+
+    assert invitation_confirmed(ActionResult("ok", "", None))
+    assert not invitation_confirmed(ActionResult("ok", INVITATION_UNCONFIRMED, None))
+    assert not invitation_confirmed(ActionResult("failed", "boom", None))
+    assert not invitation_confirmed(ActionResult("skipped", "already connected", None))
+
+
+def test_automate_connect_does_not_advance_on_an_unconfirmed_send(fake_session):
+    """The single-contact command had the bug the sweep was written to prevent:
+    a degraded result is truthy, so it printed "sent" and advanced the contact."""
+    from linkedin.automation.linkedin_page import INVITATION_UNCONFIRMED
+
+    runner = CliRunner()
+    _add(runner, "Ann", "https://linkedin.com/in/ann")
+    fake_session.results["connect"] = ActionResult("ok", INVITATION_UNCONFIRMED, None)
+
+    result = runner.invoke(cli, ["automate", "connect", "1"])
+    assert result.exit_code == 1
+    assert "delivery is unconfirmed" in result.output
+    assert "Connection request sent" not in result.output
+    assert _app.contact_repo.list_all()[0]["status"] == "not_contacted"
+
+
+def test_automate_connect_still_advances_on_a_confirmed_send(fake_session):
+    runner = CliRunner()
+    _add(runner, "Ann", "https://linkedin.com/in/ann")
+    fake_session.results["connect"] = ActionResult("ok", "", None)
+
+    result = runner.invoke(cli, ["automate", "connect", "1"])
+    assert result.exit_code == 0, result.output
+    assert "Connection request sent" in result.output
+    assert _app.contact_repo.list_all()[0]["status"] == "connection_sent"
+
+
+def test_every_outcome_bucket_reaches_the_plan_and_the_recap():
+    """`unconfirmed` was printed by the CLI and dropped from both."""
+    from linkedin.services.automation_service import CONNECTION_OUTCOMES, empty_connection_outcome
+
+    data = {
+        "connections": {
+            "sent": [{"name": "Ann"}],
+            "skipped": [{"name": "Bob", "reason": "already connected"}],
+            "failed": [{"name": "Cid", "reason": "Connect button missing"}],
+            "unconfirmed": [{"name": "Dee", "reason": "dialog still open"}],
+            "stopped": "a send could not be confirmed; stopping",
+        }
+    }
+    section = next(s for s in build_plan(data).sections if s.key == "invitations")
+    assert [r[0] for r in section.rows] == ["Ann", "Bob", "Cid", "Dee"]
+    assert section.rows[3][1] == "unconfirmed, not marked sent"
+
+    markdown = build_plan(data).to_markdown()
+    assert "Dee | unconfirmed, not marked sent" in markdown
+
+    blank = empty_connection_outcome("RuntimeError: browser gone")
+    assert set(CONNECTION_OUTCOMES) <= set(blank)
+    assert blank["stopped"] == "RuntimeError: browser gone"

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from linkedin.data.json_store import load_json
+from linkedin.services.automation_service import CONNECTION_OUTCOMES, empty_connection_outcome
 from linkedin.services.planner import SEND_CONNECTION, command_for, label_for
 from linkedin.services.run_state import (
     append_run_log,
@@ -100,6 +101,15 @@ class DailyPlan:
         return "\n".join(lines) + "\n"
 
 
+def _outcome_label(bucket: str, row: dict) -> str:
+    """How one invitation outcome reads in the plan and the recap."""
+    if bucket == "sent":
+        return "sent"
+    if bucket == "unconfirmed":
+        return "unconfirmed, not marked sent"
+    return f"{bucket}: {row.get('reason', '')}"
+
+
 def build_plan(data: dict) -> DailyPlan:
     """Shape the plan data (the JSON output) into ordered sections."""
     profile = data.get("profile") or {}
@@ -129,15 +139,12 @@ def build_plan(data: dict) -> DailyPlan:
             "Invitations Sent",
             ["Contact", "Outcome"],
             [
-                *[[s.get("name", ""), "sent"] for s in (data.get("connections") or {}).get("sent", [])],
-                *[
-                    [s.get("name", ""), f"skipped: {s.get('reason', '')}"]
-                    for s in (data.get("connections") or {}).get("skipped", [])
-                ],
-                *[
-                    [s.get("name", ""), f"failed: {s.get('reason', '')}"]
-                    for s in (data.get("connections") or {}).get("failed", [])
-                ],
+                # Driven by CONNECTION_OUTCOMES so a new bucket cannot be added
+                # without appearing here. `unconfirmed` was reported by the CLI
+                # and silently dropped from the plan and the recap.
+                [row.get("name", ""), _outcome_label(bucket, row)]
+                for bucket in CONNECTION_OUTCOMES
+                for row in (data.get("connections") or {}).get(bucket, [])
             ],
             "No invitations sent this run.",
             hint=(data.get("connections") or {}).get("stopped", ""),
@@ -319,12 +326,7 @@ class DailyRun:
             try:
                 data["connections"] = self.connection_sender(self.invitation_queue())
             except Exception as exc:
-                data["connections"] = {
-                    "sent": [],
-                    "skipped": [],
-                    "failed": [],
-                    "stopped": f"{type(exc).__name__}: {exc}",
-                }
+                data["connections"] = empty_connection_outcome(f"{type(exc).__name__}: {exc}")
         if drafting:
             data["drafts"] = self.draft_for_actions(data["actions"], save=cfg.save_drafts)
         else:

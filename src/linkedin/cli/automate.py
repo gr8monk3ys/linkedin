@@ -6,7 +6,12 @@ from rich.panel import Panel
 from rich.table import Table
 
 from linkedin.cli._common import _app, _exit_unless_ok, cli, console
-from linkedin.services.automation_service import connection_note_for, publish_unreviewed, send_due_connections
+from linkedin.services.automation_service import (
+    connection_note_for,
+    invitation_confirmed,
+    publish_unreviewed,
+    send_due_connections,
+)
 from linkedin.services.contact_service import (
     import_scraped_profile,
     import_search_results,
@@ -250,6 +255,13 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
         dry_run_message=f"would send connection request to {contact['name']}.",
         failure_prefix="Could not send the connection request",
     )
+    if not invitation_confirmed(result):
+        # Truthy, but the page would not confirm delivery. Advancing here on a
+        # maybe is what `send_due_connections` refuses to do, and this command
+        # used to do it anyway.
+        console.print(f"[yellow]Clicked Send for {contact['name']}, but delivery is unconfirmed.[/yellow]")
+        console.print("[dim]  Not marked as sent. Check the sent-invitation list before retrying.[/dim]")
+        raise SystemExit(1)
     _app.contact_svc.update_contact(contact_id, status="connection_sent")
     console.print(f"[green]Connection request sent to {contact['name']}.[/green] Status → connection_sent")
 

@@ -185,6 +185,22 @@ Just write the comment, no explanations."""
 # -- invitations --------------------------------------------------------------------
 
 
+def invitation_confirmed(result) -> bool:
+    """True only when the page confirmed the invitation went out.
+
+    `session._write` flattens a `degraded` write to `ActionResult("ok", ...)`,
+    so truthiness alone says "we clicked Send", not "an invitation was sent".
+    Every caller that advances a contact goes through here; `automate connect`
+    did not, and reported "Connection request sent" for a send the page had
+    refused to confirm.
+
+    The budget is deliberately already spent by then. If we cannot tell whether
+    an invitation went out we must assume it did, or the next run sends a
+    second one to the same person.
+    """
+    return bool(result) and INVITATION_UNCONFIRMED not in (result.reason or "")
+
+
 def connection_note_for(contact_id: int, drafts: list[dict]) -> str:
     """The newest real connection draft for a contact, or an empty note.
 
@@ -253,7 +269,7 @@ def send_due_connections(
             continue
         attempts += 1
         result = session.connect(url, note=note_for(contact_id))
-        if result and INVITATION_UNCONFIRMED in (result.reason or ""):
+        if result and not invitation_confirmed(result):
             # Truthy, but the page would not confirm delivery. Do not advance the
             # contact on a maybe, and stop: whatever is wrong is not per-contact.
             unconfirmed.append({**row, "reason": result.reason})
@@ -276,3 +292,13 @@ def send_due_connections(
                 stopped = f"{consecutive_failures} sends failed in a row ({result.reason}); stopping"
                 break
     return {"sent": sent, "skipped": skipped, "failed": failed, "unconfirmed": unconfirmed, "stopped": stopped}
+
+
+#: The buckets `send_due_connections` reports. Renderers iterate this so a new
+#: outcome cannot be added without every view showing it.
+CONNECTION_OUTCOMES = ("sent", "skipped", "failed", "unconfirmed")
+
+
+def empty_connection_outcome(stopped: str = "") -> dict:
+    """An outcome dict with every bucket present. One shape, one place."""
+    return {**{k: [] for k in CONNECTION_OUTCOMES}, "stopped": stopped}

@@ -311,9 +311,14 @@ class LinkedInPage:
         caller is told the send is unconfirmed rather than done.
         """
         self.page.wait_for_timeout(2000)
-        dialog = self.page.get_by_role(sel.CONNECT_DIALOG)
         try:
-            if dialog.count() == 0:
+            dialogs = self.page.get_by_role(sel.CONNECT_DIALOG)
+            if dialogs.count() == 0:
+                return _ok()
+            # A dialog is not evidence either: any unrelated modal that happens
+            # to be open would otherwise read every real send as unconfirmed and
+            # stop the whole sweep. Only a dialog still offering Send is ours.
+            if dialogs.first.get_by_role("button", name=sel.SEND_BUTTON).count() == 0:
                 return _ok()
         except Exception:
             return _ok()
@@ -326,14 +331,27 @@ class LinkedInPage:
     def send_message(self, message: str) -> WriteResult:
         """Send a message from the profile page of a connected user.
 
-        No Message button beside a Connect button means not connected (a
-        normal absence); no Message and no Connect is a page we do not know.
+        Scoped to the top card, for the same reason `send_connection_request`
+        is: the sidebar cards carry a Connect button for other people, so a
+        page-wide lookup here read a renamed Message button as "not connected"
+        on the strength of a stranger's control, and recorded no miss. Absence
+        is decided inside the profile's own action bar or not at all.
         """
         try:
-            msg_btn = self.page.get_by_role("button", name=sel.MESSAGE_BUTTON)
+            top = self._top_card()
+            try:
+                top.wait_for(timeout=10000)
+            except Exception:
+                pass
+            if top.count() == 0:
+                return self._missing("profile_top_card", "no top card on the page")
+
+            msg_btn = top.get_by_role("button", name=sel.MESSAGE_BUTTON)
             if msg_btn.count() == 0:
-                if self.page.get_by_role("button", name=sel.CONNECT_BUTTON).count() > 0:
+                if top.get_by_role("button", name=sel.CONNECT_BUTTON).count() > 0:
                     return _na("not connected")
+                if top.get_by_role("button", name=sel.MORE_BUTTON).count() > 0:
+                    return _na("no Message button in the top card (not connected)")
                 return self._missing("message_button")
             msg_btn.first.click()
 

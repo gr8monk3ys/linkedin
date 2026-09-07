@@ -114,21 +114,49 @@ class TestLogin:
 class TestConnectionRequest:
     """Every lookup is scoped to the top card. The sidebar test is the important one."""
 
-    def test_direct_connect_button(self, page):
-        connect, send, dialog = FakeElement(), FakeElement(), FakeElement()
-        page.register_top_card({("button", sel.CONNECT_BUTTON): connect})
+    @staticmethod
+    def _dialog(page, send=None, note_box=None, closes=True):
+        """The invitation dialog, carrying its own Send button.
+
+        Registered as a child of the dialog, never on the page, because the page
+        object reads it as `dialog.get_by_role(...)`. A Send registered
+        page-wide is the message composer's, and must not satisfy this.
+        """
+        send = send if send is not None else FakeElement()
+        children = {canonical("role", "button", sel.SEND_BUTTON): [page.close_dialog_on(send) if closes else send]}
+        if note_box is not None:
+            children[canonical("role", "button", sel.ADD_NOTE_BUTTON)] = [FakeElement()]
+            children[canonical("role", "textbox", sel.ADD_NOTE_TEXTBOX)] = [note_box]
+        dialog = FakeElement(children=children)
         page.register_role("dialog", None, dialog)
-        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(send))
+        return dialog, send
+
+    def test_direct_connect_button(self, page):
+        connect = FakeElement()
+        page.register_top_card({("button", sel.CONNECT_BUTTON): connect})
+        _, send = self._dialog(page)
 
         assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert connect.clicked == 1 and send.clicked == 1
+
+    def test_a_send_button_outside_the_dialog_is_never_clicked(self, page):
+        """The page's other Send belongs to the message composer. Scoping the
+        lookup to the dialog is what keeps an invitation from clicking it."""
+        composer_send = FakeElement()
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        page.register_role("dialog", None, FakeElement())
+        page.register_role("button", sel.SEND_BUTTON, composer_send)
+
+        lp = LinkedInPage(page)
+        result = lp.send_connection_request()
+        assert composer_send.clicked == 0
+        assert result.outcome == "selector_missing" and "send_button" in lp.selector_misses
 
     def test_a_dialog_that_stays_open_is_an_unconfirmed_send(self, page):
         """Clicking Send is not evidence. The tool reported an invitation as
         sent that never reached the sent list; only the dialog closing says so."""
         page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
-        page.register_role("dialog", None, FakeElement())
-        page.register_role("button", sel.SEND_BUTTON, FakeElement())
+        self._dialog(page, closes=False)
 
         result = LinkedInPage(page).send_connection_request()
         assert result.outcome == "degraded" and "unconfirmed" in result.detail
@@ -150,8 +178,7 @@ class TestConnectionRequest:
         more, menu_item, send = FakeElement(), FakeElement(), FakeElement()
         page.register_top_card({("button", sel.MORE_BUTTON): more})
         page.register_role("menuitem", sel.CONNECT_MENU_ITEM, menu_item)
-        page.register_role("dialog", None, FakeElement())
-        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(send))
+        self._dialog(page, send=send)
 
         assert LinkedInPage(page).send_connection_request().outcome == "ok"
         assert more.clicked == 1 and menu_item.clicked == 1
@@ -200,13 +227,33 @@ class TestConnectionRequest:
         assert result.outcome == "selector_missing" and "connect_dialog" in lp.selector_misses
         assert page_send.clicked == 0
 
+    def test_an_unrelated_modal_does_not_make_a_real_send_unconfirmed(self, page):
+        """The confirmation asked for any dialog. A cookie banner or a
+        "you have reached your weekly invitation limit" modal left open would
+        read every real send as unconfirmed and stop the whole sweep. Only a
+        dialog still offering Send is the invitation dialog."""
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
+        send = FakeElement()
+        invitation = FakeElement(children={canonical("role", "button", sel.SEND_BUTTON): [send]})
+        page.register_role("dialog", None, invitation)
+
+        # Sending swaps the invitation dialog for an unrelated modal that has
+        # no Send button of its own.
+        original = send.click
+
+        def click():
+            original()
+            page.register_role("dialog", None, FakeElement())
+
+        send.click = click
+
+        result = LinkedInPage(page).send_connection_request()
+        assert result.outcome == "ok", result.detail
+
     def test_note_is_typed_before_sending(self, page):
         note_box = FakeElement()
         page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
-        page.register_role("dialog", None, FakeElement())
-        page.register_role("button", sel.ADD_NOTE_BUTTON, FakeElement())
-        page.register_role("textbox", sel.ADD_NOTE_TEXTBOX, note_box)
-        page.register_role("button", sel.SEND_BUTTON, page.close_dialog_on(FakeElement()))
+        self._dialog(page, note_box=note_box)
 
         assert LinkedInPage(page).send_connection_request(note="Hi Ada").outcome == "ok"
         assert note_box.filled == ["Hi Ada"]
@@ -221,28 +268,47 @@ class TestConnectionRequest:
 
 
 class TestSendMessage:
+    """Scoped to the top card, like the invitation path and for the same reason."""
+
     def test_sends(self, page):
         box, send = FakeElement(), FakeElement()
-        page.register_role("button", sel.MESSAGE_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.MESSAGE_BUTTON): FakeElement()})
         page.register_role("textbox", sel.MESSAGE_TEXTBOX, box)
         page.register_role("button", sel.SEND_BUTTON, send)
 
         assert LinkedInPage(page).send_message("hello").outcome == "ok"
         assert box.filled == ["hello"] and send.clicked == 1
 
+    def test_no_top_card_is_a_selector_miss(self, page):
+        lp = LinkedInPage(page)
+        assert lp.send_message("hello").outcome == "selector_missing"
+        assert "profile_top_card" in lp.selector_misses
+
     def test_no_message_button_is_a_selector_miss(self, page):
+        page.register_top_card({})
         lp = LinkedInPage(page)
         assert lp.send_message("hello").outcome == "selector_missing"
         assert lp.selector_misses == ["message_button"]
 
     def test_not_connected_is_a_normal_absence(self, page):
-        page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.CONNECT_BUTTON): FakeElement()})
         lp = LinkedInPage(page)
         assert lp.send_message("hello").outcome == "not_applicable"
         assert lp.selector_misses == []
 
+    def test_a_strangers_connect_button_never_decides_we_are_not_connected(self, page):
+        """The regression this scoping closes. A sidebar Connect for someone
+        else used to turn a renamed Message button into a silent
+        `not_applicable`, so the breakage was never reported."""
+        page.register_role("button", sel.CONNECT_BUTTON, FakeElement())
+        page.register_top_card({})
+
+        lp = LinkedInPage(page)
+        assert lp.send_message("hello").outcome == "selector_missing"
+        assert "message_button" in lp.selector_misses
+
     def test_message_box_never_appears(self, page):
-        page.register_role("button", sel.MESSAGE_BUTTON, FakeElement())
+        page.register_top_card({("button", sel.MESSAGE_BUTTON): FakeElement()})
         lp = LinkedInPage(page)
         assert lp.send_message("hello").outcome == "selector_missing"
         assert "message_textbox" in lp.selector_misses
@@ -757,7 +823,8 @@ class TestSelectorCatalogue:
             "login": (lambda lp: lp.login("e", "p"), "login_email_input"),
             # An empty page has no top card, so that is the first thing missing.
             "connect": (lambda lp: lp.send_connection_request(), "profile_top_card"),
-            "message": (lambda lp: lp.send_message("hi"), "message_button"),
+            # An empty page has no top card, so that is the first thing missing.
+            "message": (lambda lp: lp.send_message("hi"), "profile_top_card"),
             "post": (lambda lp: lp.create_post("x"), "start_post_button"),
             "headline": (lambda lp: lp.update_headline("x"), "edit_intro_button"),
         }

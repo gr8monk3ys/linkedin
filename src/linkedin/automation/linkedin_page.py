@@ -807,9 +807,12 @@ class LinkedInPage:
         outstanding invitation at once. So [] is returned only when LinkedIn's
         own "People (0)" count says so; anything else unreadable is None.
 
-        Keyed on profile links rather than a card class: LinkedIn rebuilt this
-        page with obfuscated class names, and the links are both stable and the
-        thing the matcher actually compares on.
+        Read by card shape, not by profile link. Keying on every `/in/` link in
+        main matched the feed content LinkedIn now embeds on this page: a live
+        read returned thirteen rows of feed posts and reaction bylines and none
+        of the nine real invitations, which is the "everything was accepted"
+        misreading the None-guard above exists to prevent, arriving as a full
+        list rather than an empty one.
         """
         self._wait_for_content(sel.INVITATION_PROFILE_LINK)
         try:
@@ -824,7 +827,7 @@ class LinkedInPage:
         # can say, so it is only said when LinkedIn's own count agrees.
         if stated == 0:
             return []
-        self._record_miss("invitation_profile_link")
+        self._record_miss("withdraw_control")
         return None
 
     def _settled_invitation_rows(self, attempts: int = 3, pause_ms: int = 1500) -> list[dict]:

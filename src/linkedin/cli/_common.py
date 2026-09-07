@@ -67,11 +67,11 @@ def cli():
     LinkedIn Job Hunt Assistant
 
     \b
-    A local CRM + AI-powered tool to accelerate your job search:
-    - Track contacts and outreach status
-    - Generate personalized drafts with AI
-    - Research high-engagement content
-    - Plan your LinkedIn strategy
+    A local CRM for a job search:
+    - Track contacts and applications, ranked by what they are worth
+    - Draft outreach, by model or by hand, and send it from a real browser
+    - Read replies and accepted invitations as proposals, never as changes
+    - Measure the account daily, so the plan is judged on numbers
 
     \b
     Quick Start:

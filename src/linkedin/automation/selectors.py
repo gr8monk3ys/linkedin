@@ -38,9 +38,6 @@ SIGN_IN_BUTTON = "Sign in"
 PROFILE_TOP_CARD = "main section"
 
 CONNECT_BUTTON = "Connect"
-#: What a real invitation control is called on a card: "Invite <name> to connect".
-#: Used to assert that a top-card Connect belongs to the profile being viewed.
-INVITE_TO_CONNECT_LABEL = re.compile(r"^Invite .+ to connect$", re.I)
 #: Shown in place of Connect while an invitation is outstanding.
 PENDING_BUTTON = re.compile(r"^Pending\b", re.I)
 MORE_BUTTON = "More"
@@ -196,10 +193,6 @@ SENT_INVITATIONS_SCRIPT = """({ withdrawPattern }) => {
   }
   return out;
 }"""
-#: The links themselves carry no text — the name lives in the surrounding card,
-#: which has no usable class either. This walks up to the nearest ancestor that
-#: has any text at all, whose first line is the name.
-INVITATION_NAME_ANCESTOR = "xpath=ancestor::div[normalize-space(text()) or .//text()][1]"
 #: LinkedIn prints its own count as "People (7)". Comparing it against the number
 #: of links found is what distinguishes a genuinely empty list from a page that
 #: did not render — the reader must never report [] on a guess, because the

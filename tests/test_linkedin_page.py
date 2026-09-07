@@ -990,7 +990,7 @@ class TestPendingInvitations:
         )
         lp = LinkedInPage(page)
         assert lp.get_pending_sent_invitations() is None
-        assert "invitation_profile_link" in lp.selector_misses
+        assert "withdraw_control" in lp.selector_misses
 
     def test_a_list_that_stops_changing_is_trusted(self):
         """Two identical reads mean the page finished rendering."""
@@ -1020,7 +1020,7 @@ class TestPendingInvitations:
         lp = LinkedInPage(page)
 
         assert lp.get_pending_sent_invitations() is None
-        assert "invitation_profile_link" in lp.selector_misses
+        assert "withdraw_control" in lp.selector_misses
 
     def test_no_count_at_all_is_also_unreadable(self):
         page = self._page_with([], main_text="something else entirely")

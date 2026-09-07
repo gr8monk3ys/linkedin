@@ -234,6 +234,9 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
                 env_file=env_file,
                 stdout_log=_app.data_dir.cron_out_log,
                 stderr_log=_app.data_dir.cron_err_log,
+                # Stated rather than inherited: repairing a missing schedule
+                # must never be how invitation sending gets switched on.
+                send_connections=False,
             )
             installed = install.install_schedule(spec, sync_env=False)
             if installed.error:
@@ -306,8 +309,8 @@ def automation_doctor(schedule_time, lock_ttl_minutes, webhook_url, fix, run_smo
 )
 @click.option(
     "--send-connections/--no-send-connections",
-    default=True,
-    help="After the plan, send its connection actions up to the daily budget",
+    default=False,
+    help="After the plan, send its connection actions up to the daily budget (off unless asked)",
 )
 @click.option("--adopt-existing/--no-adopt-existing", default=True, help="Replace unmanaged run-daily cron entries")
 @click.option(

@@ -128,3 +128,34 @@ def test_env_file_defaults_to_the_data_dir_at_call_time(runner):
     result = runner.invoke(cli, ["automation", "env", "status", "--json"])
     assert result.exit_code == 0, result.output
     assert json.loads(result.output)["path"] == str(_app.data_dir.root / "cron.env")
+
+
+def test_doctor_fix_installs_a_schedule_that_does_not_send(runner, monkeypatch, tmp_path):
+    """`doctor --fix` repairs a missing schedule. Repair must not be how
+    invitation sending gets switched on."""
+    from linkedin.scheduling import install
+
+    written: list[list[str]] = []
+    monkeypatch.setattr(install, "read_user_crontab_lines", lambda: ([], None))
+    monkeypatch.setattr(install, "write_user_crontab_lines", lambda lines: written.append(lines) or None)
+    monkeypatch.setattr("linkedin.services.diagnostics.launchd_job", lambda *a, **k: None)
+
+    result = runner.invoke(cli, ["automation", "doctor", "--fix", "--json", "--time", "09:00"])
+    assert result.exit_code == 0, result.output
+    installed = "\n".join(written[0]) if written else ""
+    assert "run-daily" in installed
+    assert "--send-connections" not in installed
+
+
+def test_automation_schedule_only_sends_when_asked(runner, monkeypatch, tmp_path):
+    from linkedin.scheduling import install
+
+    written: list[list[str]] = []
+    monkeypatch.setattr(install, "read_user_crontab_lines", lambda: ([], None))
+    monkeypatch.setattr(install, "write_user_crontab_lines", lambda lines: written.append(lines) or None)
+
+    runner.invoke(cli, ["automation", "schedule", "--time", "09:00", "--no-sync-env"])
+    assert "--send-connections" not in "\n".join(written[-1])
+
+    runner.invoke(cli, ["automation", "schedule", "--time", "09:00", "--no-sync-env", "--send-connections"])
+    assert "--send-connections" in "\n".join(written[-1])

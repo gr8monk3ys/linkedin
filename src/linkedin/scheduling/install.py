@@ -49,7 +49,13 @@ class ScheduleSpec:
     generate_drafts: bool = True
     save_drafts: bool = True
     collect_metrics: bool = True
-    send_connections: bool = True
+    #: Off by default. Every other outbound write in this tool is opt-in, and
+    #: this one is the most consequential: a schedule that sends invitations
+    #: acts under the user's real name, unattended, every morning. It also has
+    #: to be off here because `doctor --fix` builds a spec from defaults, and a
+    #: command whose job is repairing a broken schedule must not arm sending as
+    #: a side effect. `automation schedule --send-connections` turns it on.
+    send_connections: bool = False
     retry_attempts: int = 2
     retry_backoff_seconds: float = 10.0
     failure_streak_threshold: int = 3

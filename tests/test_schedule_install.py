@@ -108,3 +108,20 @@ def test_remove_schedule_reports_absence_and_errors():
     ):
         assert install.remove_schedule() == (True, None)
         assert write.call_args.args[0] == []
+
+
+def test_sending_invitations_is_off_unless_asked(tmp_path):
+    """The most consequential thing a schedule can do, so it is opt-in.
+
+    It also cannot default on because `doctor --fix` builds a spec from
+    defaults: repairing a missing schedule must not arm outbound sending.
+    """
+    assert _spec(tmp_path).send_connections is False
+    assert "--send-connections" not in _spec(tmp_path).run_tokens()
+    assert "--send-connections" in _spec(tmp_path, send_connections=True).run_tokens()
+
+
+def test_a_scheduled_job_line_carries_only_what_was_asked_for(tmp_path):
+    line = _spec(tmp_path).job_line()
+    assert "--trigger scheduled" in line
+    assert "--send-connections" not in line

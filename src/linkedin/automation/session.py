@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal
 
 from linkedin.automation.budget import Budget
+# WriteResult is the write contract, checked at runtime. Safe to import here:
+# `linkedin_page` imports without Playwright by invariant, and this is a plain
+# dataclass. `LinkedInPage` itself stays under TYPE_CHECKING.
+from linkedin.automation.linkedin_page import WriteResult
 from linkedin.automation.rate_limiter import RateLimiter
 
 if TYPE_CHECKING:
@@ -24,7 +28,7 @@ if TYPE_CHECKING:
     from linkedin.automation.linkedin_page import LinkedInPage
     from linkedin.data.paths import DataDir
 
-Status = Literal["ok", "skipped", "refused", "failed"]
+Status = Literal["ok", "skipped", "refused", "failed", "unconfirmed"]
 
 
 class AutomationUnavailable(RuntimeError):
@@ -41,7 +45,9 @@ class ActionResult:
 
     `ok`: it happened. `skipped`: a normal absence (no Connect button, already
     connected, LinkedIn's own empty state). `refused`: a rule said no (budget,
-    empty text). `failed`: a raise or a selector miss. Truthy only on `ok`.
+    empty text). `failed`: a raise or a selector miss. `unconfirmed`: the write
+    may not have happened and the page would not say, so it must not be counted
+    as done. Truthy only on `ok`.
     """
 
     status: Status
@@ -147,16 +153,26 @@ class LinkedInSession:
             done = act()
         except Exception as exc:  # a raise from the page object is a breakage, not an absence
             return _failed(f"{type(exc).__name__}: {exc}")
-        outcome = getattr(done, "outcome", "ok" if done else "not_applicable")
-        detail = getattr(done, "detail", "")
-        if outcome == "not_applicable":
-            return _skipped(detail or skipped_reason)
-        if outcome == "selector_missing":
-            return _failed(detail or "a selector matched nothing; LinkedIn markup may have changed")
+        if not isinstance(done, WriteResult):
+            # Every page write returns a WriteResult. The old truthy fallback
+            # accepted a bool, which nothing in production produces and which
+            # the doubles used to assert success while stepping over the
+            # confirmation and the URN read-back.
+            return _failed(f"page write returned {type(done).__name__}, not a WriteResult")
+        if done.outcome == "not_applicable":
+            return _skipped(done.detail or skipped_reason)
+        if done.outcome == "selector_missing":
+            return _failed(done.detail or "a selector matched nothing; LinkedIn markup may have changed")
+        # Spent before the outcome is read, including on `unconfirmed`: a write
+        # we cannot vouch for must be assumed to have happened, or the next run
+        # does it again.
         self.budget.spend(kind, n)
-        if outcome == "degraded":
-            return ActionResult("ok", detail, None)
-        return _ok(detail or None)
+        if done.outcome == "unconfirmed":
+            return ActionResult("unconfirmed", done.detail, None)
+        if done.outcome == "degraded":
+            # It happened; only the follow-up read failed. Still a success.
+            return ActionResult("ok", done.detail, None)
+        return _ok(done.detail or None)
 
     def _read(self, kind: str, act: Callable[[], Any]) -> ActionResult:
         """The preamble for a read: budget → pace → read. A dry run reads but does not spend."""

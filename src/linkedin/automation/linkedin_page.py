@@ -22,7 +22,7 @@ from linkedin.automation import selectors as sel
 if TYPE_CHECKING:
     from playwright.sync_api import Locator, Page
 
-Outcome = Literal["ok", "not_applicable", "selector_missing", "degraded"]
+Outcome = Literal["ok", "not_applicable", "selector_missing", "degraded", "unconfirmed"]
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,13 @@ class WriteResult:
     already liked, no About section. `selector_missing`: an affordance the
     page should have had is not there, and the miss is recorded for the
     health report. `degraded`: the write happened but something after it
-    could not be read. Truthy on `ok` and `degraded`.
+    could not be read, so it cannot be measured. `unconfirmed`: the write may
+    not have happened at all, and the page would not say.
+
+    Those last two used to be one word, which is how "a post we cannot measure"
+    and "an invitation that may never have been sent" became the same value and
+    the difference ended up carried in prose. Truthy on `ok` and `degraded`,
+    because both happened; never on `unconfirmed`.
     """
 
     outcome: Outcome
@@ -44,8 +50,8 @@ class WriteResult:
         return self.outcome in ("ok", "degraded")
 
 
-#: A send whose delivery the page would not confirm. The session maps `degraded`
-#: to `ok`, so callers that must not treat it as sent match on this.
+#: Why a send could not be confirmed. Carried as `detail` for the reader; the
+#: outcome itself is what callers branch on.
 INVITATION_UNCONFIRMED = "clicked Send but the invitation dialog is still open; delivery unconfirmed"
 
 
@@ -58,7 +64,13 @@ def _na(detail: str) -> WriteResult:
 
 
 def _degraded(detail: str) -> WriteResult:
+    """It happened; a follow-up read did not. A post with no URN."""
     return WriteResult("degraded", detail)
+
+
+def _unconfirmed(detail: str) -> WriteResult:
+    """It may not have happened, and the page would not say."""
+    return WriteResult("unconfirmed", detail)
 
 
 class LinkedInPage:
@@ -322,7 +334,7 @@ class LinkedInPage:
                 return _ok()
         except Exception:
             return _ok()
-        return _degraded(INVITATION_UNCONFIRMED)
+        return _unconfirmed(INVITATION_UNCONFIRMED)
 
     # -------------------------------------------------------------------------
     # Messaging

@@ -12,7 +12,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from linkedin.ai.client import ai_call
-from linkedin.automation.linkedin_page import INVITATION_UNCONFIRMED
 from linkedin.data.json_store import JsonProfileRepo
 from linkedin.services.planner import SEND_CONNECTION
 from linkedin.types import ProfileDict
@@ -185,22 +184,6 @@ Just write the comment, no explanations."""
 # -- invitations --------------------------------------------------------------------
 
 
-def invitation_confirmed(result) -> bool:
-    """True only when the page confirmed the invitation went out.
-
-    `session._write` flattens a `degraded` write to `ActionResult("ok", ...)`,
-    so truthiness alone says "we clicked Send", not "an invitation was sent".
-    Every caller that advances a contact goes through here; `automate connect`
-    did not, and reported "Connection request sent" for a send the page had
-    refused to confirm.
-
-    The budget is deliberately already spent by then. If we cannot tell whether
-    an invitation went out we must assume it did, or the next run sends a
-    second one to the same person.
-    """
-    return bool(result) and INVITATION_UNCONFIRMED not in (result.reason or "")
-
-
 def connection_note_for(contact_id: int, drafts: list[dict]) -> str:
     """The newest real connection draft for a contact, or an empty note.
 
@@ -269,9 +252,9 @@ def send_due_connections(
             continue
         attempts += 1
         result = session.connect(url, note=note_for(contact_id))
-        if result and not invitation_confirmed(result):
-            # Truthy, but the page would not confirm delivery. Do not advance the
-            # contact on a maybe, and stop: whatever is wrong is not per-contact.
+        if result.status == "unconfirmed":
+            # The page would not confirm delivery. Do not advance the contact on
+            # a maybe, and stop: whatever is wrong is not per-contact.
             unconfirmed.append({**row, "reason": result.reason})
             stopped = "a send could not be confirmed; stopping"
             break

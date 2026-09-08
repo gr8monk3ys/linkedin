@@ -33,6 +33,13 @@ def canonical(kind: str, *parts) -> str:
     return ":".join(out)
 
 
+def sel_top_card() -> str:
+    """The top-card CSS the page object scopes to, read from selectors."""
+    from linkedin.automation import selectors as sel
+
+    return sel.PROFILE_TOP_CARD
+
+
 class StrictModeViolation(Exception):
     """Playwright's strict-mode error, reproduced in the double."""
 
@@ -40,11 +47,15 @@ class StrictModeViolation(Exception):
 class FakeElement:
     """One matched element."""
 
-    def __init__(self, text="", attributes=None, href=None):
+    def __init__(self, text="", attributes=None, href=None, children=None):
         self.text = text
         self.attributes = dict(attributes or {})
         if href is not None:
             self.attributes["href"] = href
+        #: What a lookup *scoped to this element* can see, keyed by `canonical`.
+        #: Empty means a scoped lookup finds nothing, which is what scoping to a
+        #: container that does not hold the control looks like on a real page.
+        self.children = dict(children or {})
         self.clicked = 0
         self.filled: list[str] = []
         self.uploaded: list[str] = []
@@ -123,8 +134,7 @@ class FakeLocator:
             raise AssertionError("operated on an empty locator")
         if len(self._elements) > 1:
             raise StrictModeViolation(
-                f"locator resolved to {len(self._elements)} elements; "
-                "use .first or .nth(i) to pick one"
+                f"locator resolved to {len(self._elements)} elements; use .first or .nth(i) to pick one"
             )
         return self._elements[0]
 
@@ -153,32 +163,47 @@ class FakeLocator:
         if not self._elements:
             raise TimeoutError("locator never appeared")
 
-    # nested lookups scoped to this element (cards)
+    # -- nested lookups, scoped to what this locator matched -----------------
+    #
+    # A scoped lookup sees the scope's own children and NOTHING registered on
+    # the page. Falling back to the page registry is what made scoping
+    # untestable: `dialog.get_by_role("button", name="Send")` and
+    # `page.get_by_role("button", name="Send")` returned the same thing, so a
+    # page-wide search that clicked a stranger's control passed every test.
+    def _scoped(self, key):
+        found: list = []
+        for element in self._elements:
+            found.extend(getattr(element, "children", {}).get(key, []))
+        return FakeLocator(self._page, found)
+
     def locator(self, selector):
         if selector == VISIBLE:
             # The double has no layout, so every registered element counts as
             # visible; the filter exists so page-object code can express it.
             return self
-        return self._page._resolve(canonical("css", selector), scope=self)
+        return self._scoped(canonical("css", selector))
 
-    def get_by_role(self, role, name=None):
-        return self._page._resolve(canonical("role", role, name), scope=self)
+    def get_by_role(self, role, name=None, exact=False):
+        return self._scoped(canonical("role", role, name))
+
+    def get_by_label(self, name, exact=False):
+        return self._scoped(canonical("label", name))
 
 
 class FakeCard(FakeLocator):
-    """A feed/search card whose children are registered per-card."""
+    """A container whose children are registered per-card.
+
+    Kept as a named type because tests read better saying "card", but it is now
+    only a FakeLocator over one element that carries the children: scoping is
+    the base behaviour rather than this subclass's special case.
+    """
 
     def __init__(self, page, children=None):
-        super().__init__(page, [FakeElement()])
-        self.children = dict(children or {})
+        super().__init__(page, [FakeElement(children=children)])
 
-    def locator(self, selector):
-        if selector == VISIBLE:
-            return self
-        return FakeLocator(self._page, self.children.get(canonical("css", selector), []))
-
-    def get_by_role(self, role, name=None, exact=False):
-        return FakeLocator(self._page, self.children.get(canonical("role", role, name), []))
+    @property
+    def children(self):
+        return self._elements[0].children
 
 
 class FakePage:
@@ -213,6 +238,33 @@ class FakePage:
 
     def register_label(self, name, elements):
         return self.register(canonical("label", name), elements)
+
+    def close_dialog_on(self, element):
+        """Make `element`'s click remove the registered dialog, the way Send does."""
+        page = self
+
+        original = element.click
+
+        def click():
+            original()
+            page.registry.pop(canonical("role", "dialog", None), None)
+
+        element.click = click
+        return element
+
+    def register_top_card(self, roles=None):
+        """Put a profile top card on the page, holding only `roles`.
+
+        `roles` maps (role, name) to an element. A lookup scoped to the card
+        sees exactly these; a page-wide lookup does not see them at all. That
+        asymmetry is the point: LinkedIn puts an "Invite … to connect" button
+        on every "People you may know" card, so an unscoped search finds
+        strangers, and a double that ignores scope cannot tell the two apart.
+        """
+        children = {canonical("role", role, name): [element] for (role, name), element in (roles or {}).items()}
+        card = FakeCard(self, children)
+        self.register_css(sel_top_card(), card)
+        return card
 
     # -- Playwright Page surface --------------------------------------------
     def _resolve(self, key, scope=None):

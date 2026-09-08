@@ -107,7 +107,9 @@ class AnalyticsService:
         for stage in stages:
             count = pipeline.get(stage, 0)
             pct = f"{(cumulative / total * 100):.0f}%"
-            funnel.append({"stage": stage.replace("_", " ").title(), "count": count, "remaining": cumulative, "pct": pct})
+            funnel.append(
+                {"stage": stage.replace("_", " ").title(), "count": count, "remaining": cumulative, "pct": pct}
+            )
             cumulative -= count
 
         return funnel

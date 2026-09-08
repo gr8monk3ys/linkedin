@@ -23,8 +23,18 @@ class DataService:
         if fmt == "csv":
             output_file = output or "contacts_export.csv"
             fieldnames = [
-                "id", "name", "title", "company", "linkedin_url", "email",
-                "status", "source", "notes", "follow_up_date", "created_at", "company_id",
+                "id",
+                "name",
+                "title",
+                "company",
+                "linkedin_url",
+                "email",
+                "status",
+                "source",
+                "notes",
+                "follow_up_date",
+                "created_at",
+                "company_id",
             ]
             with open(output_file, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -45,8 +55,16 @@ class DataService:
         if fmt == "csv":
             output_file = output or "companies_export.csv"
             fieldnames = [
-                "id", "name", "industry", "size", "linkedin_url", "website",
-                "why_target", "priority", "notes", "created_at",
+                "id",
+                "name",
+                "industry",
+                "size",
+                "linkedin_url",
+                "website",
+                "why_target",
+                "priority",
+                "notes",
+                "created_at",
             ]
             with open(output_file, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -254,10 +272,12 @@ class DataService:
         result = []
         for backup in backups:
             stat = backup.stat()
-            result.append({
-                "name": backup.name,
-                "size_kb": stat.st_size / 1024,
-                "created": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
-            })
+            result.append(
+                {
+                    "name": backup.name,
+                    "size_kb": stat.st_size / 1024,
+                    "created": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M"),
+                }
+            )
 
         return result

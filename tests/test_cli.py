@@ -26,7 +26,9 @@ def temp_data_dir(isolated_data_dir):
 
 class TestContactRanking:
     def test_rank_lists_and_pin_exempts(self, runner, temp_data_dir):
-        runner.invoke(cli, ["profile", "setup"], input="Me\nEng\nSolutions Engineer\nPython\nExp\nUnique\nAI/ML\nSF\nn\n")
+        runner.invoke(
+            cli, ["profile", "setup"], input="Me\nEng\nSolutions Engineer\nPython\nExp\nUnique\nAI/ML\nSF\nn\n"
+        )
         runner.invoke(cli, ["contacts", "add"], input="Ann Analyst\nCredit Analyst\nBank\nu1\n\n")
         runner.invoke(cli, ["contacts", "add"], input="Hal Hiring\nEngineering Manager\nAcme\nu2\n\n")
         result = runner.invoke(cli, ["contacts", "rank"])
@@ -176,27 +178,6 @@ class TestContacts:
         result = runner.invoke(cli, ["contacts", "view", "1"])
         assert "connected" in result.output
 
-    def test_contacts_update_auto_records_template_outcome(self, runner, temp_data_dir):
-        """contacts update should auto-credit relevant template outcomes."""
-        runner.invoke(
-            cli,
-            ["contacts", "add"],
-            input="Alice\nManager\nCorp\nhttps://linkedin.com/in/alice\nNotes\n",
-        )
-        runner.invoke(
-            cli,
-            ["templates", "save", "--name", "Conn", "--type", "connection", "--content", "Hi {{name}}"],
-        )
-        runner.invoke(cli, ["templates", "use", "1", "1"])
-
-        result = runner.invoke(cli, ["contacts", "update", "1", "--status", "connected"])
-        assert result.exit_code == 0
-        assert "Auto-recorded template outcome" in result.output
-
-        result = runner.invoke(cli, ["templates", "suggest-best", "--type", "connection"])
-        assert result.exit_code == 0
-        assert "100.0%" in result.output
-
     def test_contacts_stats(self, runner, temp_data_dir):
         """contacts stats should show pipeline stats."""
         # Add contacts
@@ -284,35 +265,6 @@ class TestDrafts:
         assert "not found" in result.output
 
 
-class TestResearch:
-    """Tests for research commands."""
-
-    def test_research_engagement(self, runner, temp_data_dir):
-        """research engagement should show strategies."""
-        result = runner.invoke(cli, ["research", "engagement"])
-        assert result.exit_code == 0
-        assert "LinkedIn Engagement Strategies" in result.output
-        assert "Post Formats" in result.output
-
-    @patch("linkedin.ai.client.generate_with_ai")
-    def test_research_ideas(self, mock_ai, runner, temp_data_dir):
-        """research ideas should generate post ideas."""
-        mock_ai.return_value = "1. Post idea one\n2. Post idea two"
-
-        result = runner.invoke(cli, ["research", "ideas", "--topic", "AI"], input="n\n")
-        assert result.exit_code == 0
-        assert "Post idea" in result.output
-
-    @patch("linkedin.ai.client.generate_with_ai")
-    def test_research_hashtags(self, mock_ai, runner, temp_data_dir):
-        """research hashtags should generate hashtag suggestions."""
-        mock_ai.return_value = "#MachineLearning\n#AI\n#DataScience"
-
-        result = runner.invoke(cli, ["research", "hashtags", "machine learning"])
-        assert result.exit_code == 0
-        assert "Hashtag Recommendations" in result.output
-
-
 class TestDashboard:
     """Tests for dashboard command."""
 
@@ -366,28 +318,31 @@ class TestDashboard:
             ["contacts", "add"],
             input="Alice Smith\nEngineer\nAcme\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 
         runner.invoke(
             cli,
-            ["market", "add-posting", "--title", "Senior Engineer", "--company", "Acme", "--location", "San Francisco", "--skills", "Python, SQL"],
+            [
+                "postings",
+                "add",
+                "--title",
+                "Senior Engineer",
+                "--company",
+                "Acme",
+                "--location",
+                "San Francisco",
+                "--skills",
+                "Python, SQL",
+            ],
         )
-
-        runner.invoke(
-            cli,
-            ["templates", "save", "--name", "Msg A", "--type", "message", "--content", "Hi {{name}}", "--variant", "A"],
-        )
-        for _ in range(5):
-            runner.invoke(cli, ["templates", "use", "1", "1"])
-        runner.invoke(cli, ["templates", "record-response", "1", "--count", "2"])
 
         result = runner.invoke(cli, ["daily-plan"])
         assert result.exit_code == 0
         assert "Daily Plan" in result.output
         assert "Priority Actions" in result.output
         assert "Best-Match Opportunities" in result.output
-        assert "Best Templates" in result.output
 
     def test_daily_plan_save_recap(self, runner, temp_data_dir):
         """daily-plan should save markdown recap when requested."""
@@ -409,7 +364,6 @@ class TestDashboard:
         assert "generated_at" in payload
         assert "actions" in payload
         assert "postings" in payload
-        assert "templates" in payload
 
     def test_run_daily_once_json(self, runner, temp_data_dir):
         """run-daily should execute one cycle and emit JSON."""
@@ -418,27 +372,6 @@ class TestDashboard:
         payload = json.loads(result.output)
         assert "generated_at" in payload
         assert "drafts" in payload
-
-    def test_run_daily_watch_run_now_max_runs(self, runner, temp_data_dir):
-        """run-daily watch mode should support immediate bounded execution."""
-        result = runner.invoke(
-            cli,
-            ["run-daily", "--watch", "--run-now", "--max-runs", "1", "--json"],
-        )
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert "generated_at" in payload
-
-    def test_run_daily_watch_catch_up_runs_when_missed(self, runner, temp_data_dir):
-        """watch mode should catch up if today's schedule time already passed."""
-        result = runner.invoke(
-            cli,
-            ["run-daily", "--watch", "--time", "00:00", "--max-runs", "1", "--json"],
-        )
-        assert result.exit_code == 0
-        payload = json.loads(result.output)
-        assert payload["status"] == "success"
-        assert payload["trigger"] == "watch_catch_up"
 
     def test_run_daily_idempotency_key_skips_duplicates(self, runner, temp_data_dir):
         """run-daily should skip duplicate idempotency keys."""
@@ -450,6 +383,18 @@ class TestDashboard:
         assert second.exit_code == 0
         payload = json.loads(second.output)
         assert payload["status"] == "skipped_duplicate"
+
+    def test_scheduled_run_is_keyed_to_its_day_and_manual_is_not(self, runner, temp_data_dir):
+        """launchd firing twice must not run twice; typing run-daily twice must."""
+        first = runner.invoke(cli, ["run-daily", "--json", "--trigger", "scheduled"])
+        assert first.exit_code == 0, first.output
+        assert json.loads(first.output)["trigger"] == "scheduled"
+        second = runner.invoke(cli, ["run-daily", "--json", "--trigger", "scheduled"])
+        assert json.loads(second.output)["status"] == "skipped_duplicate"
+
+        manual = runner.invoke(cli, ["run-daily", "--json"])
+        payload = json.loads(manual.output)
+        assert payload["status"] == "success" and payload["trigger"] == "manual"
 
     def test_run_daily_writes_structured_log(self, runner, temp_data_dir):
         """run-daily should append a JSONL run log entry."""
@@ -471,6 +416,7 @@ class TestDashboard:
         every morning because the template counted as a generated draft.
         """
         from linkedin.ai.client import AIClientError
+
         mock_ai.side_effect = AIClientError("API unavailable")
         runner.invoke(
             cli,
@@ -482,6 +428,7 @@ class TestDashboard:
             ["contacts", "add"],
             input="John Doe\nEngineer\nTestCo\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 
@@ -580,10 +527,15 @@ class TestDashboard:
         """run-daily should escalate webhook payload when failure streak threshold is reached."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
         log_file = temp_data_dir / "run_daily.log.jsonl"
-        log_file.write_text("\n".join([
-            json.dumps({"status": "failed", "run_id": "f1", "finished_at": "2026-02-20T09:00:00"}),
-            json.dumps({"status": "failed", "run_id": "f2", "finished_at": "2026-02-21T09:00:00"}),
-        ]) + "\n")
+        log_file.write_text(
+            "\n".join(
+                [
+                    json.dumps({"status": "failed", "run_id": "f1", "finished_at": "2026-02-20T09:00:00"}),
+                    json.dumps({"status": "failed", "run_id": "f2", "finished_at": "2026-02-21T09:00:00"}),
+                ]
+            )
+            + "\n"
+        )
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = b"ok"
@@ -616,11 +568,16 @@ class TestDashboard:
         """run-daily should send recovery notification when success follows a failure streak."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
         log_file = temp_data_dir / "run_daily.log.jsonl"
-        log_file.write_text("\n".join([
-            json.dumps({"status": "failed", "run_id": "f1", "finished_at": "2026-02-19T09:00:00"}),
-            json.dumps({"status": "failed", "run_id": "f2", "finished_at": "2026-02-20T09:00:00"}),
-            json.dumps({"status": "failed", "run_id": "f3", "finished_at": "2026-02-21T09:00:00"}),
-        ]) + "\n")
+        log_file.write_text(
+            "\n".join(
+                [
+                    json.dumps({"status": "failed", "run_id": "f1", "finished_at": "2026-02-19T09:00:00"}),
+                    json.dumps({"status": "failed", "run_id": "f2", "finished_at": "2026-02-20T09:00:00"}),
+                    json.dumps({"status": "failed", "run_id": "f3", "finished_at": "2026-02-21T09:00:00"}),
+                ]
+            )
+            + "\n"
+        )
 
         mock_resp = MagicMock()
         mock_resp.read.return_value = b"ok"
@@ -688,7 +645,7 @@ class TestDashboard:
         assert payload["attempts"] == 3
         assert mock_run_reliable.call_count == 3
 
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_doctor_json_reports_schedule_and_api_key(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
         """doctor is the one check list (health was a second copy with its own names)."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -699,11 +656,13 @@ class TestDashboard:
         assert checks["schedule_time"]["status"] == "ok"
         assert checks["anthropic_api_key"]["status"] == "warn"
 
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_doctor_probe_ai_says_invalid_not_configured(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
         """The cron.env key was present and dead for five months while every check said ok."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-shell")
-        with patch("linkedin.ai.client.probe_api_key", return_value=(False, "AuthenticationError: 401 invalid x-api-key")):
+        with patch(
+            "linkedin.ai.client.probe_api_key", return_value=(False, "AuthenticationError: 401 invalid x-api-key")
+        ):
             result = runner.invoke(cli, ["automation", "doctor", "--json", "--probe-ai"])
         payload = json.loads(result.output)
         checks = {c["name"]: c for c in payload["checks"]}
@@ -715,7 +674,7 @@ class TestDashboard:
         """There is one check list now; a second command over it drifted once and would again."""
         assert runner.invoke(cli, ["health", "--json"]).exit_code != 0
 
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_doctor_detects_active_lock(self, _mock_read_cron, runner, temp_data_dir):
         """doctor should flag an active run lock."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
@@ -727,7 +686,17 @@ class TestDashboard:
         payload = json.loads(result.output)
         checks = {check["name"]: check for check in payload["checks"]}
         assert checks["run_lock"]["status"] == "warn"
-        assert {"data_dir", "schedule_time", "crontab", "env_file", "anthropic_api_key", "run_lock", "idempotency_state", "run_history", "notify_webhook"} <= set(checks)
+        assert {
+            "data_dir",
+            "schedule_time",
+            "crontab",
+            "env_file",
+            "anthropic_api_key",
+            "run_lock",
+            "idempotency_state",
+            "run_history",
+            "notify_webhook",
+        } <= set(checks)
 
     def test_run_history_empty(self, runner, temp_data_dir):
         """run-history should show empty-state guidance without logs."""
@@ -739,10 +708,25 @@ class TestDashboard:
         """run-history should filter entries by status in JSON mode."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
         log_file = temp_data_dir / "run_daily.log.jsonl"
-        log_file.write_text("\n".join([
-            json.dumps({"status": "success", "run_id": "a1", "trigger": "manual", "finished_at": "2026-02-20T09:00:00"}),
-            json.dumps({"status": "failed", "run_id": "b2", "trigger": "watch_scheduled", "finished_at": "2026-02-21T09:00:00", "error": "boom"}),
-        ]) + "\n")
+        log_file.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {"status": "success", "run_id": "a1", "trigger": "manual", "finished_at": "2026-02-20T09:00:00"}
+                    ),
+                    json.dumps(
+                        {
+                            "status": "failed",
+                            "run_id": "b2",
+                            "trigger": "scheduled",
+                            "finished_at": "2026-02-21T09:00:00",
+                            "error": "boom",
+                        }
+                    ),
+                ]
+            )
+            + "\n"
+        )
 
         result = runner.invoke(cli, ["run-history", "--json", "--status", "failed"])
         assert result.exit_code == 0
@@ -750,7 +734,7 @@ class TestDashboard:
         assert payload["total_matching"] == 1
         assert payload["entries"][0]["status"] == "failed"
 
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_automation_status_unconfigured(self, _mock_read_cron, runner, temp_data_dir):
         """automation status should report when no managed schedule exists."""
         result = runner.invoke(cli, ["automation", "status", "--json"])
@@ -760,7 +744,7 @@ class TestDashboard:
         assert payload["configured"] is False
         assert payload["crontab_error"] == ""
 
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
     def test_automation_env_sync(self, _mock_read_cron, runner, temp_data_dir, monkeypatch):
         """automation env sync should persist shell env keys into env file."""
         env_file = temp_data_dir / "cron.env"
@@ -776,9 +760,11 @@ class TestDashboard:
         assert payload["status"]["exists"] is True
         assert payload["status"]["has_anthropic_api_key"] is True
 
-    @patch("linkedin.cli.write_user_crontab_lines", return_value=None)
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=([], None))
-    def test_automation_doctor_fix_installs_schedule(self, _mock_read_cron, _mock_write_cron, runner, temp_data_dir, monkeypatch):
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=([], None))
+    def test_automation_doctor_fix_installs_schedule(
+        self, _mock_read_cron, _mock_write_cron, runner, temp_data_dir, monkeypatch
+    ):
         """automation doctor --fix should install managed schedule and sync env file."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "doctor-key")
         result = runner.invoke(cli, ["automation", "doctor", "--fix", "--json", "--time", "09:00"])
@@ -788,7 +774,7 @@ class TestDashboard:
         assert any(check["name"] == "schedule_fix" for check in payload["checks"])
 
     @patch(
-        "linkedin.cli.read_user_crontab_lines",
+        "linkedin.scheduling.install.read_user_crontab_lines",
         return_value=(
             ["0 9 * * * /bin/zsh -lc 'cd /tmp && linkedin-cli run-daily --json'"],
             None,
@@ -804,8 +790,8 @@ class TestDashboard:
         assert payload["schedule_time"] == "09:00"
         assert len(payload["unmanaged_jobs"]) == 1
 
-    @patch("linkedin.cli.write_user_crontab_lines", return_value=None)
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
     def test_automation_schedule_installs_managed_block(self, mock_read_cron, mock_write_cron, runner, temp_data_dir):
         """automation schedule should install an idempotent managed cron block."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
@@ -847,9 +833,9 @@ class TestDashboard:
         cron_lines = [line for line in written_lines if "run-daily" in line and line.strip().startswith("30 9")]
         assert len(cron_lines) == 1
 
-    @patch("linkedin.cli.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
     @patch(
-        "linkedin.cli.read_user_crontab_lines",
+        "linkedin.scheduling.install.read_user_crontab_lines",
         return_value=(
             [
                 "MAILTO=test@example.com",
@@ -860,7 +846,9 @@ class TestDashboard:
             None,
         ),
     )
-    def test_automation_schedule_adopts_existing_unmanaged_jobs(self, _mock_read_cron, mock_write_cron, runner, temp_data_dir):
+    def test_automation_schedule_adopts_existing_unmanaged_jobs(
+        self, _mock_read_cron, mock_write_cron, runner, temp_data_dir
+    ):
         """automation schedule should replace old unmanaged run-daily cron entries by default."""
         temp_data_dir.mkdir(parents=True, exist_ok=True)
         result = runner.invoke(
@@ -908,9 +896,9 @@ class TestDashboard:
         assert result.exit_code == 0
         assert "Invalid --runner value" in result.output
 
-    @patch("linkedin.cli.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
     @patch(
-        "linkedin.cli.read_user_crontab_lines",
+        "linkedin.scheduling.install.read_user_crontab_lines",
         return_value=(
             [
                 "MAILTO=test@example.com",
@@ -932,8 +920,8 @@ class TestDashboard:
         written_lines = mock_write_cron.call_args.args[0]
         assert written_lines == ["MAILTO=test@example.com"]
 
-    @patch("linkedin.cli.write_user_crontab_lines", return_value=None)
-    @patch("linkedin.cli.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
+    @patch("linkedin.scheduling.install.write_user_crontab_lines", return_value=None)
+    @patch("linkedin.scheduling.install.read_user_crontab_lines", return_value=(["MAILTO=test@example.com"], None))
     def test_automation_unschedule_noop_when_missing(self, _mock_read_cron, mock_write_cron, runner, temp_data_dir):
         """automation unschedule should no-op when no managed block exists."""
         result = runner.invoke(cli, ["automation", "unschedule", "--json"])
@@ -1150,6 +1138,7 @@ class TestEnhancedContacts:
             ["contacts", "add"],
             input="John Doe\nEngineer\nTestCo\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 
@@ -1171,6 +1160,7 @@ class TestEnhancedContacts:
             ["contacts", "add"],
             input="John Doe\nEngineer\nTestCo\nurl\nNotes\n",
         )
+        runner.invoke(cli, ["contacts", "update", "1", "--status", "messaged"])
         yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
         runner.invoke(cli, ["contacts", "remind", "1", "--date", yesterday])
 
@@ -1214,64 +1204,6 @@ class TestEnhancedContacts:
         result = runner.invoke(cli, ["contacts", "view", "2"])
         assert result.exit_code == 0
         assert "not found" in result.output
-
-
-class TestCampaigns:
-    """Tests for campaign sequencing commands."""
-
-    def test_campaigns_enroll_status_and_due(self, runner, temp_data_dir):
-        """campaign enrollment should appear in status and due views."""
-        runner.invoke(
-            cli,
-            ["contacts", "add"],
-            input="Alice Doe\nEngineer\nAcme\nurl\nNotes\n",
-        )
-
-        enroll = runner.invoke(cli, ["campaigns", "enroll", "1", "--name", "networking_21d"])
-        assert enroll.exit_code == 0
-        assert "Enrolled #1" in enroll.output
-
-        status = runner.invoke(cli, ["campaigns", "status", "1", "--json"])
-        assert status.exit_code == 0
-        status_payload = json.loads(status.output)
-        assert status_payload["campaign_name"] == "networking_21d"
-        assert status_payload["active"] is True
-
-        due = runner.invoke(cli, ["campaigns", "due", "--json"])
-        assert due.exit_code == 0
-        due_payload = json.loads(due.output)
-        assert due_payload["count"] == 1
-        assert due_payload["due_steps"][0]["contact_id"] == 1
-
-    def test_campaigns_advance_and_complete(self, runner, temp_data_dir):
-        """campaign advance should progress and complete the sequence."""
-        runner.invoke(
-            cli,
-            ["contacts", "add"],
-            input="Alice Doe\nEngineer\nAcme\nurl\nNotes\n",
-        )
-        runner.invoke(cli, ["campaigns", "enroll", "1", "--name", "networking_21d"])
-
-        for _ in range(4):
-            result = runner.invoke(cli, ["campaigns", "advance", "1"])
-            assert result.exit_code == 0
-
-        status = runner.invoke(cli, ["campaigns", "status", "1", "--json"])
-        assert status.exit_code == 0
-        payload = json.loads(status.output)
-        assert payload["active"] is False
-        assert payload["completed_at"] is not None
-
-    def test_campaigns_unknown_name(self, runner, temp_data_dir):
-        """campaign enrollment should reject unknown campaign names."""
-        runner.invoke(
-            cli,
-            ["contacts", "add"],
-            input="Alice Doe\nEngineer\nAcme\nurl\nNotes\n",
-        )
-        result = runner.invoke(cli, ["campaigns", "enroll", "1", "--name", "unknown_campaign"])
-        assert result.exit_code == 0
-        assert "Unknown campaign" in result.output
 
 
 class TestEnhancedDrafts:
@@ -1332,52 +1264,6 @@ class TestEnhancedDrafts:
         result = runner.invoke(cli, ["drafts", "follow-up", "1", "--attempt", "1"], input="n\n")
         assert result.exit_code == 0
         assert "Follow-up" in result.output
-
-
-class TestDiscover:
-    """Tests for discover commands."""
-
-    def test_discover_contacts_no_args(self, runner, temp_data_dir):
-        """discover contacts should require --company or --role."""
-        runner.invoke(
-            cli,
-            ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
-        )
-
-        result = runner.invoke(cli, ["discover", "contacts"])
-        assert result.exit_code == 0
-        assert "Specify --company or --role" in result.output
-
-    @patch("linkedin.ai.client.generate_with_ai")
-    def test_discover_contacts_with_company(self, mock_ai, runner, temp_data_dir):
-        """discover contacts should generate suggestions for a company."""
-        mock_ai.return_value = "1. Engineering Manager\n2. Developer Advocate"
-
-        runner.invoke(
-            cli,
-            ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
-        )
-
-        result = runner.invoke(cli, ["discover", "contacts", "--company", "LangChain"])
-        assert result.exit_code == 0
-        assert "Contact Discovery" in result.output
-
-    @patch("linkedin.ai.client.generate_with_ai")
-    def test_discover_companies(self, mock_ai, runner, temp_data_dir):
-        """discover companies should generate company suggestions."""
-        mock_ai.return_value = "1. Company A\n2. Company B"
-
-        runner.invoke(
-            cli,
-            ["profile", "setup"],
-            input="Lorenzo\nAI Engineer\nML Role\nPython\nBuilt AI\nUnique\nTech\nSF\nn\n",
-        )
-
-        result = runner.invoke(cli, ["discover", "companies"], input="n\n")
-        assert result.exit_code == 0
-        assert "Company Discovery" in result.output
 
 
 class TestDataManagement:
@@ -1459,44 +1345,6 @@ class TestDataManagement:
         assert "Dry-run passed" in dry_run_result.output
 
 
-class TestTemplateCommands:
-    """Tests for template experiment commands."""
-
-    def test_templates_dashboard_and_suggest_best(self, runner, temp_data_dir):
-        runner.invoke(
-            cli,
-            ["contacts", "add"],
-            input="Alice Smith\nEngineer\nAcme\nurl\nNotes\n",
-        )
-
-        runner.invoke(
-            cli,
-            ["templates", "save", "--name", "Conn-A", "--type", "connection", "--content", "Hi {{name}}", "--variant", "A"],
-        )
-        runner.invoke(
-            cli,
-            ["templates", "save", "--name", "Conn-B", "--type", "connection", "--content", "Hello {{name}}", "--variant", "B"],
-        )
-
-        for _ in range(10):
-            runner.invoke(cli, ["templates", "use", "1", "1"])
-        for _ in range(10):
-            runner.invoke(cli, ["templates", "use", "2", "1"])
-
-        runner.invoke(cli, ["templates", "record-response", "1", "--count", "2"])
-        runner.invoke(cli, ["templates", "record-response", "2", "--count", "5"])
-
-        result = runner.invoke(cli, ["templates", "suggest-best", "--type", "connection"])
-        assert result.exit_code == 0
-        assert "Best template" in result.output
-        assert "Conn-B" in result.output
-
-        result = runner.invoke(cli, ["templates", "dashboard"])
-        assert result.exit_code == 0
-        assert "Template Experiments" in result.output
-        assert "By Template Type" in result.output
-
-
 class TestMarketCommands:
     """Tests for market posting tracking commands."""
 
@@ -1504,8 +1352,8 @@ class TestMarketCommands:
         result = runner.invoke(
             cli,
             [
-                "market",
-                "add-posting",
+                "postings",
+                "add",
                 "--title",
                 "Senior Engineer",
                 "--company",
@@ -1519,7 +1367,7 @@ class TestMarketCommands:
         assert result.exit_code == 0
         assert "Added posting" in result.output
 
-        result = runner.invoke(cli, ["market", "postings"])
+        result = runner.invoke(cli, ["postings", "list"])
         assert result.exit_code == 0
         assert "Senior Engineer" in result.output
         assert "Acme" in result.output
@@ -1527,9 +1375,9 @@ class TestMarketCommands:
     def test_market_import_postings_csv(self, runner, temp_data_dir):
         temp_data_dir.mkdir(parents=True, exist_ok=True)
         csv_file = temp_data_dir / "postings.csv"
-        csv_file.write_text("title,company,location,skills_required\nML Engineer,Beta,Remote,\"Python, ML\"\n")
+        csv_file.write_text('title,company,location,skills_required\nML Engineer,Beta,Remote,"Python, ML"\n')
 
-        result = runner.invoke(cli, ["market", "import-postings", str(csv_file)])
+        result = runner.invoke(cli, ["postings", "import", str(csv_file)])
         assert result.exit_code == 0
         assert "Imported 1 posting" in result.output
 
@@ -1544,9 +1392,7 @@ class TestAIGeneration:
 
         mock_client = MagicMock()
         mock_anthropic_class.return_value = mock_client
-        mock_client.messages.create.return_value = MagicMock(
-            content=[MagicMock(text="Generated text")]
-        )
+        mock_client.messages.create.return_value = MagicMock(content=[MagicMock(text="Generated text")])
 
         result = generate_with_ai("Test prompt")
         assert result == "Generated text"

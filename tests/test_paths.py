@@ -37,5 +37,10 @@ def test_cli_import_does_not_touch_disk(monkeypatch, tmp_path):
     import linkedin.cli as cli_mod
 
     monkeypatch.setenv("LINKEDIN_DATA_DIR", str(tmp_path / "never-created"))
+    for name in ("automation", "automate", "daily"):
+        importlib.reload(importlib.import_module(f"linkedin.cli.{name}"))
     importlib.reload(cli_mod)
     assert not (tmp_path / "never-created").exists()
+    # Nor is the App built: an option default computed from `_app` at import
+    # bakes in whatever data dir was set then and ignores every later one.
+    assert cli_mod._app._app is None

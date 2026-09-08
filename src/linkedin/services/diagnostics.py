@@ -93,13 +93,26 @@ def diagnostics(
     facts["launchd_job"] = launchd_job(launch_agents_dir)
     if facts["launchd_job"]:
         job = facts["launchd_job"]
-        checks.append(check("schedule", "ok", f"launchd: {job['label']} at {job['time'] or 'custom'}" + (" (collects metrics)" if job["collect_metrics"] else " (no --collect-metrics)")))
+        checks.append(
+            check(
+                "schedule",
+                "ok",
+                f"launchd: {job['label']} at {job['time'] or 'custom'}"
+                + (" (collects metrics)" if job["collect_metrics"] else " (no --collect-metrics)"),
+            )
+        )
     if facts["cron_error"]:
         checks.append(check("crontab", "warn", f"Could not inspect crontab: {facts['cron_error']}"))
     elif facts["managed_job"]:
         checks.append(check("crontab", "ok", f"Managed schedule active ({facts['schedule_time'] or 'custom'})."))
     elif facts["unmanaged_jobs"]:
-        checks.append(check("crontab", "warn", f"Unmanaged run-daily cron detected ({facts['schedule_time'] or 'custom'}). Run: linkedin-cli automation schedule"))
+        checks.append(
+            check(
+                "crontab",
+                "warn",
+                f"Unmanaged run-daily cron detected ({facts['schedule_time'] or 'custom'}). Run: linkedin-cli automation schedule",
+            )
+        )
     elif facts["launchd_job"]:
         checks.append(check("crontab", "ok", "No cron job; the schedule is the launchd job above."))
     else:
@@ -108,7 +121,13 @@ def diagnostics(
     env = facts["env_status"]
     if env.get("exists"):
         has_key = bool(env.get("has_anthropic_api_key"))
-        checks.append(check("env_file", "ok" if has_key else "warn", f"{env.get('path')} ({'has' if has_key else 'missing'} ANTHROPIC_API_KEY, mode={env.get('mode') or 'unknown'})"))
+        checks.append(
+            check(
+                "env_file",
+                "ok" if has_key else "warn",
+                f"{env.get('path')} ({'has' if has_key else 'missing'} ANTHROPIC_API_KEY, mode={env.get('mode') or 'unknown'})",
+            )
+        )
     else:
         checks.append(check("env_file", "warn", f"{env.get('path')} not found."))
 
@@ -117,7 +136,13 @@ def diagnostics(
     shell_key = bool(os.environ.get("ANTHROPIC_API_KEY", "").strip())
     cron_key = bool(env.get("has_anthropic_api_key"))
     if not ai_enabled(d):
-        checks.append(check("anthropic_api_key", "ok", "AI disabled by choice (settings.json ai_enabled: false); drafts are written by hand."))
+        checks.append(
+            check(
+                "anthropic_api_key",
+                "ok",
+                "AI disabled by choice (settings.json ai_enabled: false); drafts are written by hand.",
+            )
+        )
         probe_ai = False
     elif shell_key and cron_key:
         checks.append(check("anthropic_api_key", "ok", "Configured in shell and cron env file."))
@@ -126,12 +151,17 @@ def diagnostics(
     elif cron_key:
         checks.append(check("anthropic_api_key", "ok", "Configured in cron env file."))
     else:
-        checks.append(check("anthropic_api_key", "warn", "Missing. Use: linkedin-cli automation env sync (or set key manually)."))
+        checks.append(
+            check("anthropic_api_key", "warn", "Missing. Use: linkedin-cli automation env sync (or set key manually).")
+        )
 
     if probe_ai:
         # Presence is not validity. Probe the key scheduled runs will actually use
         # (cron.env) and, separately, the shell's, so the two cannot disagree silently.
-        for label, key in (("cron env file", extract_exported_env_vars(facts["env_file"]).get("ANTHROPIC_API_KEY", "")), ("shell", os.environ.get("ANTHROPIC_API_KEY", ""))):
+        for label, key in (
+            ("cron env file", extract_exported_env_vars(facts["env_file"]).get("ANTHROPIC_API_KEY", "")),
+            ("shell", os.environ.get("ANTHROPIC_API_KEY", "")),
+        ):
             if not key:
                 checks.append(check(f"ai_probe_{label.split()[0]}", "warn", f"No key in {label}."))
                 continue
@@ -142,13 +172,21 @@ def diagnostics(
 
     try:
         completed = load_run_state(d).get("completed_idempotency_keys", [])
-        checks.append(check("idempotency_state", "ok", f"{len(completed) if isinstance(completed, list) else 0} key(s) tracked."))
+        checks.append(
+            check("idempotency_state", "ok", f"{len(completed) if isinstance(completed, list) else 0} key(s) tracked.")
+        )
     except Exception as exc:
         checks.append(check("idempotency_state", "warn", f"Could not load state: {exc}"))
 
     history = load_run_history_entries(d)
     if history:
-        checks.append(check("run_history", "ok", f"{len(history)} runs logged; latest status={history[-1].get('status', 'unknown')}."))
+        checks.append(
+            check(
+                "run_history",
+                "ok",
+                f"{len(history)} runs logged; latest status={history[-1].get('status', 'unknown')}.",
+            )
+        )
     else:
         checks.append(check("run_history", "warn", "No run history yet."))
 

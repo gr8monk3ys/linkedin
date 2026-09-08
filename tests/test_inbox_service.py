@@ -82,9 +82,7 @@ def test_reply_newer_than_last_contact_proposes_responded():
 def test_reply_older_than_last_contact_is_not_a_new_signal():
     """A thread we already knew about must not re-propose forever."""
     svc = InboxService()
-    proposals = svc.propose_transitions(
-        [thread(timestamp="2026-08-20T09:00:00")], [], [contact()]
-    )
+    proposals = svc.propose_transitions([thread(timestamp="2026-08-20T09:00:00")], [], [contact()])
     assert proposals == []
 
 
@@ -118,18 +116,14 @@ def test_contact_already_responded_is_not_re_proposed():
 def test_url_match_wins_over_a_conflicting_name():
     """The URL is the identity; a display name that differs must not split it."""
     svc = InboxService()
-    proposals = svc.propose_transitions(
-        [thread(name="Ryan B.")], [], [contact()]
-    )
+    proposals = svc.propose_transitions([thread(name="Ryan B.")], [], [contact()])
     assert len(proposals) == 1
     assert proposals[0]["confidence"] == "high"
 
 
 def test_name_only_match_is_low_confidence():
     svc = InboxService()
-    proposals = svc.propose_transitions(
-        [thread(url="")], [], [contact()]
-    )
+    proposals = svc.propose_transitions([thread(url="")], [], [contact()])
     assert len(proposals) == 1
     assert proposals[0]["confidence"] == "low"
     assert "name" in proposals[0]["evidence"].lower()
@@ -234,18 +228,21 @@ def test_malformed_thread_is_skipped_not_fatal(missing):
 TODAY = _dt.date(2026, 8, 30)
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("Aug 29", _dt.date(2026, 8, 29)),
-    ("Jul 1", _dt.date(2026, 7, 1)),
-    ("May 26", _dt.date(2026, 5, 26)),
-    ("Aug 30", _dt.date(2026, 8, 30)),
-])
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("Aug 29", _dt.date(2026, 8, 29)),
+        ("Jul 1", _dt.date(2026, 7, 1)),
+        ("May 26", _dt.date(2026, 5, 26)),
+        ("Aug 30", _dt.date(2026, 8, 30)),
+    ],
+)
 def test_parses_month_day_as_the_most_recent_occurrence(raw, expected):
     assert parse_thread_timestamp(raw, today=TODAY) == expected
 
 
 def test_month_day_that_would_be_in_the_future_belongs_to_last_year():
-    """"Dec 25" seen in August means last December, not four months from now."""
+    """ "Dec 25" seen in August means last December, not four months from now."""
     assert parse_thread_timestamp("Dec 25", today=TODAY) == _dt.date(2025, 12, 25)
 
 
@@ -275,8 +272,11 @@ def test_reply_with_a_linkedin_timestamp_produces_a_proposal():
     """End to end on the real shape: 'Aug 29' against a contact last touched Aug 27."""
     svc = InboxService()
     threads = [thread(url="", timestamp="Aug 29", name="Kobie Nikka")]
-    contacts = [contact(id=4, name="Kobie Nikka", company="SpaceX",
-                        status="connection_sent", last_contact="2026-08-27T00:00:00")]
+    contacts = [
+        contact(
+            id=4, name="Kobie Nikka", company="SpaceX", status="connection_sent", last_contact="2026-08-27T00:00:00"
+        )
+    ]
 
     proposals = svc.propose_transitions(threads, [], contacts, today=TODAY)
 
@@ -289,7 +289,13 @@ def test_reply_with_a_linkedin_timestamp_produces_a_proposal():
 
 
 def proposal(**overrides):
-    base = {"contact_id": 1, "name": "Ryan Barner", "from_status": "messaged", "to_status": "responded", "confidence": "high"}
+    base = {
+        "contact_id": 1,
+        "name": "Ryan Barner",
+        "from_status": "messaged",
+        "to_status": "responded",
+        "confidence": "high",
+    }
     base.update(overrides)
     return base
 
@@ -309,7 +315,7 @@ def test_review_drops_a_proposal_whose_contact_moved_on():
     """A status changed by hand since the sync wins over the proposal."""
     review = review_proposals([proposal()], [contact(status="call_scheduled")], confirm=lambda p, low: True)
     assert review.apply == [] and review.kept == []
-    (dropped, why), = review.dropped
+    ((dropped, why),) = review.dropped
     assert "call_scheduled" in why
 
 
@@ -358,7 +364,13 @@ def test_index_records_identity_and_timing_but_no_body():
 def test_index_merges_by_identity_and_keeps_first_seen():
     first = update_thread_index([], [thread()], [contact()], today=IDX_TODAY, now=IDX_NOW)
     later = _dt.datetime(2026, 9, 5, 9, 0, 0)
-    rows = update_thread_index(first, [thread(timestamp="2026-09-04", url="https://www.linkedin.com/in/ryanbarner?trk=x")], [contact()], today=later.date(), now=later)
+    rows = update_thread_index(
+        first,
+        [thread(timestamp="2026-09-04", url="https://www.linkedin.com/in/ryanbarner?trk=x")],
+        [contact()],
+        today=later.date(),
+        now=later,
+    )
     (row,) = rows
     assert row["first_seen"] == "2026-09-02T09:00:00"
     assert row["last_seen"] == "2026-09-05T09:00:00"
@@ -379,7 +391,9 @@ def test_index_uses_linkedin_timestamps():
 def test_strangers_are_non_contacts_who_had_the_last_word_in_the_window():
     threads = [
         thread(name="Sam Stranger", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30"),
-        thread(name="Echo Stranger", url="https://www.linkedin.com/in/echo", timestamp="2026-08-30", last_from_them=False),
+        thread(
+            name="Echo Stranger", url="https://www.linkedin.com/in/echo", timestamp="2026-08-30", last_from_them=False
+        ),
         thread(name="Old Stranger", url="https://www.linkedin.com/in/old", timestamp="2026-06-01"),
         thread(),  # a contact
     ]
@@ -389,7 +403,19 @@ def test_strangers_are_non_contacts_who_had_the_last_word_in_the_window():
 
 
 def test_a_stranger_who_becomes_a_contact_stops_counting():
-    index = update_thread_index([], [thread(name="Sam", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30")], [], today=IDX_TODAY, now=IDX_NOW)
+    index = update_thread_index(
+        [],
+        [thread(name="Sam", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30")],
+        [],
+        today=IDX_TODAY,
+        now=IDX_NOW,
+    )
     assert len(inbound_from_strangers(index, IDX_TODAY - _dt.timedelta(days=30))) == 1
-    index = update_thread_index(index, [thread(name="Sam", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30")], [contact(id=2, name="Sam", linkedin_url="https://www.linkedin.com/in/sam")], today=IDX_TODAY, now=IDX_NOW)
+    index = update_thread_index(
+        index,
+        [thread(name="Sam", url="https://www.linkedin.com/in/sam", timestamp="2026-08-30")],
+        [contact(id=2, name="Sam", linkedin_url="https://www.linkedin.com/in/sam")],
+        today=IDX_TODAY,
+        now=IDX_NOW,
+    )
     assert inbound_from_strangers(index, IDX_TODAY - _dt.timedelta(days=30)) == []

@@ -48,7 +48,9 @@ def test_load_seeds_limits_and_persists_usage_per_day(tmp_path):
     b = Budget.load(d)
     assert json.loads(d.limits.read_text()) == DEFAULT_CAPS
     b.spend("search", 2)
-    assert json.loads(d.automation_usage.read_text()) == {date.today().isoformat(): {**{k: 0 for k in KINDS}, "search": 2}}
+    assert json.loads(d.automation_usage.read_text()) == {
+        date.today().isoformat(): {**{k: 0 for k in KINDS}, "search": 2}
+    }
     assert Budget.load(d).used["search"] == 2
 
 
@@ -61,7 +63,9 @@ def test_other_days_are_ignored(tmp_path):
 def test_legacy_counter_names_carry_over(tmp_path):
     """The previous usage file used `connections_sent` etc.; today's counts must not reset on upgrade."""
     d = DataDir(tmp_path)
-    d.automation_usage.write_text(json.dumps({date.today().isoformat(): {"connections_sent": 3, "easy_applies": 1, "searches": 13}}))
+    d.automation_usage.write_text(
+        json.dumps({date.today().isoformat(): {"connections_sent": 3, "easy_applies": 1, "searches": 13}})
+    )
     b = Budget.load(d)
     assert b.used["connection"] == 3 and b.used["easy_apply"] == 1 and b.used["search"] == 13
 

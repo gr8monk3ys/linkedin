@@ -10,12 +10,9 @@ from linkedin.types import (
     CompanyDict,
     ContactDict,
     ContentPostDict,
-    ConversationDict,
     DraftDict,
-    InterviewPrepDict,
     PostDict,
     ProfileDict,
-    ResearchDict,
 )
 
 
@@ -180,14 +177,6 @@ class JsonDraftRepo(_JsonRepo):
         return True
 
 
-class JsonResearchRepo(_JsonRepo):
-    def get(self) -> ResearchDict:
-        return load_json(self.path, {"ideas": []})
-
-    def save(self, data: ResearchDict) -> None:
-        save_json(self.path, data)
-
-
 class JsonApplicationRepo(_JsonRepo):
     def list_all(self) -> list[ApplicationDict]:
         return load_json(self.path)
@@ -221,24 +210,6 @@ class JsonApplicationRepo(_JsonRepo):
         return _next_id(self.list_all())
 
 
-class JsonConversationRepo(_JsonRepo):
-    def list_all(self) -> list[ConversationDict]:
-        return load_json(self.path)
-
-    def get_by_contact(self, contact_id: int) -> ConversationDict | None:
-        return next((c for c in self.list_all() if c["contact_id"] == contact_id), None)
-
-    def upsert(self, conversation: ConversationDict) -> None:
-        convs = self.list_all()
-        for i, c in enumerate(convs):
-            if c["contact_id"] == conversation["contact_id"]:
-                convs[i] = conversation
-                save_json(self.path, convs)
-                return
-        convs.append(conversation)
-        save_json(self.path, convs)
-
-
 class JsonCalendarRepo(_JsonRepo):
     def list_all(self) -> list[ContentPostDict]:
         return load_json(self.path)
@@ -270,22 +241,6 @@ class JsonCalendarRepo(_JsonRepo):
 
     def next_id(self) -> int:
         return _next_id(self.list_all())
-
-
-class JsonInterviewPrepRepo(_JsonRepo):
-    def get_by_application(self, application_id: int) -> InterviewPrepDict | None:
-        all_prep = load_json(self.path)
-        return next((p for p in all_prep if p["application_id"] == application_id), None)
-
-    def upsert(self, prep: InterviewPrepDict) -> None:
-        all_prep = load_json(self.path)
-        for i, p in enumerate(all_prep):
-            if p["application_id"] == prep["application_id"]:
-                all_prep[i] = prep
-                save_json(self.path, all_prep)
-                return
-        all_prep.append(prep)
-        save_json(self.path, all_prep)
 
 
 class JsonPostRepo(_JsonRepo):

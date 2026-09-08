@@ -27,6 +27,7 @@ TERMINAL_STATUSES = frozenset({"hired", "rejected"})
 FOLLOW_UP_OVERDUE = "follow_up_overdue"
 FOLLOW_UP_TODAY = "follow_up_today"
 REPAIR_CONTACT = "repair_contact"
+SEND_CONNECTION = "send_connection"
 DATE_DRIVEN_CONTACT_ACTIONS = frozenset({FOLLOW_UP_OVERDUE, FOLLOW_UP_TODAY, REPAIR_CONTACT})
 
 # One row per pipeline status: how long to wait before the contact is due

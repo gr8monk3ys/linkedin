@@ -233,7 +233,9 @@ class DraftService:
         first = self._first_name(contact)
         role = profile.get("target_role", "my search")
         if attempt >= 3:
-            return f"Hi {first}, closing the loop for now. If timing improves, I’d still value connecting around {role}."
+            return (
+                f"Hi {first}, closing the loop for now. If timing improves, I’d still value connecting around {role}."
+            )
         if attempt == 2:
             return (
                 f"Hi {first}, quick follow-up in case my last note got buried. If there’s a better person to speak with "
@@ -248,17 +250,17 @@ class DraftService:
         return f"""Write a LinkedIn connection request message (max 300 characters) from me to this person.
 
 MY PROFILE:
-- Name: {profile.get('name', 'N/A')}
-- Current Role: {profile.get('headline', 'N/A')}
-- Target Role: {profile.get('target_role', 'N/A')}
-- Key Skills: {profile.get('skills', 'N/A')}
-- What Makes Me Unique: {profile.get('unique_value', 'N/A')}
+- Name: {profile.get("name", "N/A")}
+- Current Role: {profile.get("headline", "N/A")}
+- Target Role: {profile.get("target_role", "N/A")}
+- Key Skills: {profile.get("skills", "N/A")}
+- What Makes Me Unique: {profile.get("unique_value", "N/A")}
 
 THEIR PROFILE:
-- Name: {contact['name']}
-- Title: {contact['title']}
-- Company: {contact['company']}
-- Why I want to connect: {contact.get('notes', 'Interested in their work')}
+- Name: {contact["name"]}
+- Title: {contact["title"]}
+- Company: {contact["company"]}
+- Why I want to connect: {contact.get("notes", "Interested in their work")}
 
 Write a warm, personalized connection request that:
 1. Shows I've looked at their profile
@@ -273,20 +275,20 @@ Just write the message, no explanations."""
         return f"""Write a LinkedIn message from me to this person we're already connected with.
 
 MY PROFILE:
-- Name: {profile.get('name', 'N/A')}
-- Target Role: {profile.get('target_role', 'N/A')}
-- Experience: {profile.get('experience_summary', 'N/A')}
-- Key Skills: {profile.get('skills', 'N/A')}
-- Unique Value: {profile.get('unique_value', 'N/A')}
+- Name: {profile.get("name", "N/A")}
+- Target Role: {profile.get("target_role", "N/A")}
+- Experience: {profile.get("experience_summary", "N/A")}
+- Key Skills: {profile.get("skills", "N/A")}
+- Unique Value: {profile.get("unique_value", "N/A")}
 
 THEIR PROFILE:
-- Name: {contact['name']}
-- Title: {contact['title']}
-- Company: {contact['company']}
-- Our history: {contact.get('notes', 'Just connected')}
-- Current status: {contact['status']}
+- Name: {contact["name"]}
+- Title: {contact["title"]}
+- Company: {contact["company"]}
+- Our history: {contact.get("notes", "Just connected")}
+- Current status: {contact["status"]}
 
-ADDITIONAL CONTEXT: {context if context else 'None provided'}
+ADDITIONAL CONTEXT: {context if context else "None provided"}
 
 Write a professional but warm message that:
 1. References our connection or something about them
@@ -301,21 +303,21 @@ Keep it under 500 words. Sound human, not like a template."""
         return f"""Write a LinkedIn message asking someone to introduce me to another person.
 
 MY PROFILE:
-- Name: {profile.get('name', 'N/A')}
-- Target Role: {profile.get('target_role', 'N/A')}
-- Key Skills: {profile.get('skills', 'N/A')}
+- Name: {profile.get("name", "N/A")}
+- Target Role: {profile.get("target_role", "N/A")}
+- Key Skills: {profile.get("skills", "N/A")}
 
 ASKING (the person I'm messaging):
-- Name: {contact['name']}
-- Title: {contact['title']}
-- Company: {contact['company']}
-- Our relationship: {contact.get('notes', 'We are connected on LinkedIn')}
+- Name: {contact["name"]}
+- Title: {contact["title"]}
+- Company: {contact["company"]}
+- Our relationship: {contact.get("notes", "We are connected on LinkedIn")}
 
 BEING INTRODUCED TO:
-- Name: {target['name']}
-- Title: {target['title']}
-- Company: {target['company']}
-- Why I want to meet them: {target.get('notes', 'Interested in their work')}
+- Name: {target["name"]}
+- Title: {target["title"]}
+- Company: {target["company"]}
+- Why I want to meet them: {target.get("notes", "Interested in their work")}
 
 Write a message that:
 1. Acknowledges my relationship with the person I'm asking
@@ -331,16 +333,16 @@ Just write the message, no explanations."""
         return f"""Write a LinkedIn thank you message after a networking call or meeting.
 
 MY PROFILE:
-- Name: {profile.get('name', 'N/A')}
-- Target Role: {profile.get('target_role', 'N/A')}
+- Name: {profile.get("name", "N/A")}
+- Target Role: {profile.get("target_role", "N/A")}
 
 THEIR PROFILE:
-- Name: {contact['name']}
-- Title: {contact['title']}
-- Company: {contact['company']}
-- Our history: {contact.get('notes', 'Had a call')}
+- Name: {contact["name"]}
+- Title: {contact["title"]}
+- Company: {contact["company"]}
+- Our history: {contact.get("notes", "Had a call")}
 
-CONTEXT: {context if context else 'A networking call to discuss career opportunities'}
+CONTEXT: {context if context else "A networking call to discuss career opportunities"}
 
 Write a thank you message that:
 1. Thanks them specifically for their time
@@ -360,15 +362,15 @@ Just write the message, no explanations."""
         return f"""Write a LinkedIn follow-up message after not hearing back.
 
 MY PROFILE:
-- Name: {profile.get('name', 'N/A')}
-- Target Role: {profile.get('target_role', 'N/A')}
+- Name: {profile.get("name", "N/A")}
+- Target Role: {profile.get("target_role", "N/A")}
 
 THEIR PROFILE:
-- Name: {contact['name']}
-- Title: {contact['title']}
-- Company: {contact['company']}
-- Our status: {contact['status'].replace('_', ' ')}
-- Previous interaction: {contact.get('notes', 'Reached out previously')}
+- Name: {contact["name"]}
+- Title: {contact["title"]}
+- Company: {contact["company"]}
+- Our status: {contact["status"].replace("_", " ")}
+- Previous interaction: {contact.get("notes", "Reached out previously")}
 
 FOLLOW-UP CONTEXT:
 {guidance}

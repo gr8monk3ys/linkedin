@@ -40,7 +40,7 @@ def extract_exported_env_vars(path: Path) -> dict[str, str]:
             continue
 
         if line.startswith("export "):
-            line = line[len("export "):].strip()
+            line = line[len("export ") :].strip()
         if "=" not in line:
             continue
 
@@ -128,10 +128,7 @@ def build_managed_cron_job_line(
     stderr_log: Path,
 ) -> str:
     hour, minute = parse_schedule_time(schedule_time)
-    return (
-        f"{minute} {hour} * * * {cron_command} "
-        f">> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
-    )
+    return f"{minute} {hour} * * * {cron_command} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
 
 
 def build_managed_cron_block(job_line: str) -> list[str]:
@@ -307,5 +304,7 @@ def write_user_crontab_lines(lines: list[str]) -> str | None:
         return "crontab command not found."
 
     if result.returncode != 0:
-        return (result.stderr or result.stdout or "").strip() or f"crontab install failed with exit code {result.returncode}."
+        return (
+            result.stderr or result.stdout or ""
+        ).strip() or f"crontab install failed with exit code {result.returncode}."
     return None

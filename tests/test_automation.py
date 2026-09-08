@@ -16,7 +16,12 @@ class TestAutomationConfig:
 
     def test_only_fields_something_reads(self):
         """Caps, delays and dry_run were declared here and read by nothing."""
-        assert set(AutomationConfig.__dataclass_fields__) == {"headless", "browser_type", "cookies_path", "page_timeout_ms"}
+        assert set(AutomationConfig.__dataclass_fields__) == {
+            "headless",
+            "browser_type",
+            "cookies_path",
+            "page_timeout_ms",
+        }
 
 
 class TestRateLimiter:
@@ -50,5 +55,3 @@ class TestRateLimiter:
         elapsed = time.time() - start
         # Should have waited at least min_delay for the second call
         assert elapsed >= 0.01
-
-

@@ -35,21 +35,25 @@ def contact(runner):
 
 
 def _run(runner, args, fake_session, threads=None, pending=None, jobs=None, status="ok", input=None):
-    fake_session.results["inbox"] = ActionResult(status, data={"threads": threads or [], "pending_invitations": pending})
+    fake_session.results["inbox"] = ActionResult(
+        status, data={"threads": threads or [], "pending_invitations": pending}
+    )
     fake_session.results["jobs"] = ActionResult(status, data=jobs or [])
     return runner.invoke(cli, args, input=input)
 
 
 class TestInboxSync:
     def test_sync_saves_a_proposal_from_a_reply(self, runner, contact, fake_session):
-        threads = [{
-            "name": "Ryan Barner",
-            "url": "https://www.linkedin.com/in/ryanbarner",
-            "snippet": "Happy to chat next week.",
-            "timestamp": "2026-08-29T09:00:00",
-            "unread": True,
-            "last_from_them": True,
-        }]
+        threads = [
+            {
+                "name": "Ryan Barner",
+                "url": "https://www.linkedin.com/in/ryanbarner",
+                "snippet": "Happy to chat next week.",
+                "timestamp": "2026-08-29T09:00:00",
+                "unread": True,
+                "last_from_them": True,
+            }
+        ]
         result = _run(runner, ["inbox", "sync"], fake_session, threads=threads, pending=[])
 
         assert result.exit_code == 0
@@ -71,8 +75,22 @@ class TestInboxSync:
         from linkedin.data.json_store import load_json
 
         threads = [
-            {"name": "Ryan Barner", "url": "https://www.linkedin.com/in/ryanbarner", "snippet": "hi", "timestamp": "Yesterday", "unread": False, "last_from_them": True},
-            {"name": "Sam Stranger", "url": "https://www.linkedin.com/in/sam", "snippet": "Are you open to a role?", "timestamp": "Yesterday", "unread": True, "last_from_them": True},
+            {
+                "name": "Ryan Barner",
+                "url": "https://www.linkedin.com/in/ryanbarner",
+                "snippet": "hi",
+                "timestamp": "Yesterday",
+                "unread": False,
+                "last_from_them": True,
+            },
+            {
+                "name": "Sam Stranger",
+                "url": "https://www.linkedin.com/in/sam",
+                "snippet": "Are you open to a role?",
+                "timestamp": "Yesterday",
+                "unread": True,
+                "last_from_them": True,
+            },
         ]
         result = _run(runner, ["inbox", "sync"], fake_session, threads=threads, pending=[])
         assert result.exit_code == 0, result.output
@@ -101,17 +119,21 @@ class TestInboxReview:
     def proposal(self):
         from linkedin.cli import save_inbox_proposals
 
-        save_inbox_proposals([{
-            "contact_id": 1,
-            "name": "Ryan Barner",
-            "company": "Netflix",
-            "from_status": "messaged",
-            "to_status": "responded",
-            "source": "messaging",
-            "confidence": "high",
-            "evidence": 'Replied: "Happy to chat"',
-            "detected_at": "2026-08-30T20:00:00",
-        }])
+        save_inbox_proposals(
+            [
+                {
+                    "contact_id": 1,
+                    "name": "Ryan Barner",
+                    "company": "Netflix",
+                    "from_status": "messaged",
+                    "to_status": "responded",
+                    "source": "messaging",
+                    "confidence": "high",
+                    "evidence": 'Replied: "Happy to chat"',
+                    "detected_at": "2026-08-30T20:00:00",
+                }
+            ]
+        )
 
     def test_confirming_applies_the_transition(self, runner, contact, proposal):
         from linkedin.cli import _app, load_inbox_proposals
@@ -156,15 +178,19 @@ class TestInboxReview:
         """--yes must not silently apply a match made on display name alone."""
         from linkedin.cli import _app, save_inbox_proposals
 
-        save_inbox_proposals([{
-            "contact_id": 1,
-            "name": "Ryan Barner",
-            "from_status": "messaged",
-            "to_status": "responded",
-            "source": "messaging",
-            "confidence": "low",
-            "evidence": "matched on name only",
-        }])
+        save_inbox_proposals(
+            [
+                {
+                    "contact_id": 1,
+                    "name": "Ryan Barner",
+                    "from_status": "messaged",
+                    "to_status": "responded",
+                    "source": "messaging",
+                    "confidence": "low",
+                    "evidence": "matched on name only",
+                }
+            ]
+        )
 
         result = runner.invoke(cli, ["inbox", "review", "--yes"], input="n\n")
 
@@ -193,7 +219,7 @@ class TestAutomateJobs:
         assert result.exit_code == 0, result.output
         assert "ML Engineer" in result.output
         assert "Imported 1 posting" in result.output
-        assert _app.market_svc.list_postings()[0]["company"] == "Netflix"
+        assert _app.posting_svc.list_postings()[0]["company"] == "Netflix"
         assert fake_session.calls_to("jobs") == [(("ML Engineer",), {"location": "", "limit": 25})]
 
     def test_dry_run_does_not_import(self, runner, fake_session):
@@ -202,7 +228,7 @@ class TestAutomateJobs:
         result = _run(runner, ["automate", "jobs", "-q", "ML Engineer", "--dry-run"], fake_session, jobs=[self.JOB])
 
         assert "not imported" in result.output
-        assert _app.market_svc.list_postings() == []
+        assert _app.posting_svc.list_postings() == []
         assert fake_session.opened_with["dry_run"] is True
 
     def test_no_results_says_so(self, runner, fake_session):
@@ -214,7 +240,18 @@ class TestRunDailyCollectsMetrics:
     def test_run_daily_collect_metrics_records_a_row(self, runner, fake_session):
         from linkedin.cli import _app
 
-        fake_session.results["metrics"] = ActionResult("ok", data={"followers": 2498, "connections": 2506, "profile_views": 46, "post_impressions": 0, "search_appearances": 70, "ssi": None, "posts": {}})
+        fake_session.results["metrics"] = ActionResult(
+            "ok",
+            data={
+                "followers": 2498,
+                "connections": 2506,
+                "profile_views": 46,
+                "post_impressions": 0,
+                "search_appearances": 70,
+                "ssi": None,
+                "posts": {},
+            },
+        )
         result = runner.invoke(cli, ["run-daily", "--json", "--collect-metrics"])
         assert result.exit_code == 0, result.output
         payload = __import__("json").loads(result.output)

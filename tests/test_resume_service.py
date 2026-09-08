@@ -182,10 +182,19 @@ def test_import_decodes_html_entities_in_scraped_text(resume_repo):
     "LA28 Olympic &amp; Paralympic Games" is a company name the user reads in
     their own pipeline, and it would be carried into a cover letter verbatim.
     """
-    _seed_autoapply_db(resume_repo, [(
-        "LA28 Olympic &amp; Paralympic Games", "Data &amp; Analytics Lead",
-        "https://x/1", "Work with R&amp;D", "submitted", "",
-    )])
+    _seed_autoapply_db(
+        resume_repo,
+        [
+            (
+                "LA28 Olympic &amp; Paralympic Games",
+                "Data &amp; Analytics Lead",
+                "https://x/1",
+                "Work with R&amp;D",
+                "submitted",
+                "",
+            )
+        ],
+    )
 
     entries = import_autoapply_applications(repo_root=str(resume_repo))
 
@@ -201,10 +210,19 @@ def test_import_falls_back_to_discovery_date_when_submission_date_is_missing(res
     job applied to weeks ago would not come up for chasing until ten days after
     the *import* — the planner would be timing the wrong event.
     """
-    _seed_autoapply_db(resume_repo, [(
-        "stripe", "Technical Solutions Engineer", "https://x/1", "jd",
-        "submitted", "",
-    )])
+    _seed_autoapply_db(
+        resume_repo,
+        [
+            (
+                "stripe",
+                "Technical Solutions Engineer",
+                "https://x/1",
+                "jd",
+                "submitted",
+                "",
+            )
+        ],
+    )
     _set_discovered_at(resume_repo, "2026-08-10T03:02:32")
 
     entries = import_autoapply_applications(repo_root=str(resume_repo))
@@ -214,10 +232,21 @@ def test_import_falls_back_to_discovery_date_when_submission_date_is_missing(res
 
 
 def test_a_real_submission_date_wins_over_discovery(resume_repo):
-    _seed_autoapply_db(resume_repo, [(
-        "stripe", "Technical Solutions Engineer", "https://x/1", "jd",
-        "submitted", "", "", "2026-08-25T10:00:00",
-    )])
+    _seed_autoapply_db(
+        resume_repo,
+        [
+            (
+                "stripe",
+                "Technical Solutions Engineer",
+                "https://x/1",
+                "jd",
+                "submitted",
+                "",
+                "",
+                "2026-08-25T10:00:00",
+            )
+        ],
+    )
     _set_discovered_at(resume_repo, "2026-08-10T03:02:32")
 
     entries = import_autoapply_applications(repo_root=str(resume_repo))

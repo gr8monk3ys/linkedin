@@ -72,8 +72,24 @@ def test_cli_settings_and_hand_written_entry_points():
     pending = _app.content_svc.pending_candidates()
     assert len(pending) == 1 and pending[0]["content"] == "A post typed by hand." and pending[0]["source"] == "ai"
 
-    import linkedin.cli as cli_mod
+    import linkedin.cli.posts as posts_mod
 
-    with patch.object(cli_mod, "collect_fleet_facts", lambda days=7: {"since": "a", "until": "b", "window_days": 7, "public_repos": 0, "merged_total": 0, "merged_by_human": 0, "merged_by_bots": 0, "repos_touched": 0, "top_repos": [], "recently_pushed": [], "sample_titles": []}):
+    with patch.object(
+        posts_mod,
+        "collect_fleet_facts",
+        lambda days=7: {
+            "since": "a",
+            "until": "b",
+            "window_days": 7,
+            "public_repos": 0,
+            "merged_total": 0,
+            "merged_by_human": 0,
+            "merged_by_bots": 0,
+            "repos_touched": 0,
+            "top_repos": [],
+            "recently_pushed": [],
+            "sample_titles": [],
+        },
+    ):
         result = runner.invoke(cli, ["posts", "draft-week", "--count", "1"])
     assert result.exit_code == 1 and "No candidates" in result.output and "disabled" in result.output

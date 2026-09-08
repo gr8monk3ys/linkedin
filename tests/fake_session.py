@@ -16,7 +16,21 @@ from unittest.mock import MagicMock
 from linkedin.automation.budget import Budget
 from linkedin.automation.session import ActionResult
 
-VERBS = ("connect", "message", "post", "like_post", "comment", "react", "sync_profile", "easy_apply", "search", "jobs", "scrape", "inbox", "metrics")
+VERBS = (
+    "connect",
+    "message",
+    "post",
+    "like_post",
+    "comment",
+    "react",
+    "sync_profile",
+    "easy_apply",
+    "search",
+    "jobs",
+    "scrape",
+    "inbox",
+    "metrics",
+)
 
 
 class FakeSession:
@@ -64,7 +78,12 @@ def install(monkeypatch, fake: FakeSession) -> FakeSession:
 
     @contextmanager
     def fake_open(data_dir, *, headless=False, dry_run=False, on_login_needed=None):
-        fake.opened_with = {"data_dir": data_dir, "headless": headless, "dry_run": dry_run, "on_login_needed": on_login_needed}
+        fake.opened_with = {
+            "data_dir": data_dir,
+            "headless": headless,
+            "dry_run": dry_run,
+            "on_login_needed": on_login_needed,
+        }
         fake.dry_run = dry_run
         try:
             yield fake

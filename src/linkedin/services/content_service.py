@@ -40,9 +40,9 @@ def build_prompt(profile: dict | None, facts: dict, style: str) -> str:
     profile = profile or {}
     return f"""You write LinkedIn posts for an engineer who builds in public.
 
-Author: {profile.get('headline', 'Software engineer')}
+Author: {profile.get("headline", "Software engineer")}
 Audience: other engineers, who reshare and comment.
-Angle: {_STYLE_NOTE.get(style, _STYLE_NOTE['story'])}.
+Angle: {_STYLE_NOTE.get(style, _STYLE_NOTE["story"])}.
 
 Everything you may say about the author's work is inside the DATA fence below.
 It is a record of public GitHub activity. Use only numbers and names that appear
@@ -70,7 +70,9 @@ class ContentService:
 
     # -- Sunday batch: candidates --------------------------------------------------
 
-    def draft_candidates(self, facts: dict, *, count: int = 3, styles: tuple[str, ...] = STYLES) -> list[tuple[str, AIResult]]:
+    def draft_candidates(
+        self, facts: dict, *, count: int = 3, styles: tuple[str, ...] = STYLES
+    ) -> list[tuple[str, AIResult]]:
         """(style, result) per candidate. No fallback: a template is never a post."""
         out = []
         for i in range(count):
@@ -78,13 +80,21 @@ class ContentService:
             out.append((style, ai_call(build_prompt(self.profiles.get(), facts, style), max_tokens=600)))
         return out
 
-    def save_candidate(self, text: str, style: str, facts: dict) -> dict:
+    def save_candidate(self, text: str, style: str, facts: dict, *, hand_written: bool = False) -> dict:
+        """Queue a candidate for review.
+
+        `source` is "ai" either way: it records that the text is real writing
+        rather than an offline template, which is what `automate post` refuses.
+        `generated_from` is what separates a model's draft from one typed by
+        hand, so the two are not silently the same row.
+        """
         draft = {
             "id": self.drafts.next_id(),
             "contact_id": None,
             "type": DRAFT_TYPE,
             "content": text.strip(),
             "source": "ai",
+            "generated_from": "hand-written" if hand_written else "model",
             "topic": f"fleet week {facts.get('since')}..{facts.get('until')} ({style})",
             "review": "pending",
             "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -92,7 +102,9 @@ class ContentService:
         return self.drafts.add(draft)
 
     def pending_candidates(self) -> list[dict]:
-        return [d for d in self.drafts.list_all() if d.get("type") == DRAFT_TYPE and d.get("review", "pending") == "pending"]
+        return [
+            d for d in self.drafts.list_all() if d.get("type") == DRAFT_TYPE and d.get("review", "pending") == "pending"
+        ]
 
     # -- review ----------------------------------------------------------------------
 
@@ -116,6 +128,16 @@ class ContentService:
         }
         return self.calendar.add(entry)
 
+    def mark_posted(self, entry_id: int, posted_date: str | None = None) -> dict | None:
+        """Close a calendar entry once its post is live."""
+        entry = self.calendar.get(entry_id)
+        if not entry:
+            return None
+        entry["status"] = "posted"
+        entry["actual_posted_date"] = posted_date or date.today().isoformat()
+        self.calendar.update(entry)
+        return entry
+
     def reject(self, draft_id: int) -> bool:
         draft = self.drafts.get(draft_id)
         if not draft:
@@ -128,7 +150,11 @@ class ContentService:
 
     def due_entries(self, today: date | None = None) -> list[dict]:
         today = (today or date.today()).isoformat()
-        return [e for e in self.calendar.list_all() if e.get("status") == "scheduled" and e.get("scheduled_date", "") <= today and e.get("draft_id") is not None]
+        return [
+            e
+            for e in self.calendar.list_all()
+            if e.get("status") == "scheduled" and e.get("scheduled_date", "") <= today and e.get("draft_id") is not None
+        ]
 
     def underperformance(self, recent: int = 3) -> str | None:
         """The skip-by-default rule. A reason to skip, or None to go ahead.
@@ -137,7 +163,11 @@ class ContentService:
         than the median of the measured posts before them. With fewer than
         `recent` + 1 measured posts there is nothing to compare, so post.
         """
-        measured = [p for p in sorted(self.posts.list_all(), key=lambda p: p.get("posted_at", "")) if p.get("impressions") is not None]
+        measured = [
+            p
+            for p in sorted(self.posts.list_all(), key=lambda p: p.get("posted_at", ""))
+            if p.get("impressions") is not None
+        ]
         if len(measured) < recent + 1:
             return None
         earlier, last = measured[:-recent], measured[-recent:]

@@ -9,24 +9,6 @@ class ActivityDict(TypedDict, total=False):
     note: str
 
 
-class TemplateUsageDict(TypedDict, total=False):
-    template_id: int
-    template_type: str
-    used_at: str
-    response_recorded: bool
-    response_status: str
-    response_recorded_at: str
-
-
-class CampaignStateDict(TypedDict, total=False):
-    name: str
-    active: bool
-    step_index: int
-    enrolled_at: str
-    completed_at: str | None
-    last_advanced_at: str | None
-
-
 class ContactDict(TypedDict, total=False):
     id: int
     name: str
@@ -45,8 +27,6 @@ class ContactDict(TypedDict, total=False):
     activities: list[ActivityDict]
     last_template_id: int | None
     last_template_type: str
-    template_usage_history: list[TemplateUsageDict]
-    campaign: CampaignStateDict
     #: Exempt from ranking: always first, never in the bottom list.
     pinned: bool
 
@@ -91,10 +71,6 @@ class DraftDict(TypedDict, total=False):
     created_at: str
 
 
-class ResearchDict(TypedDict, total=False):
-    ideas: list[dict]
-
-
 class ApplicationEventDict(TypedDict, total=False):
     status: str
     date: str
@@ -107,7 +83,7 @@ class ApplicationDict(TypedDict, total=False):
     title: str
     url: str
     jd_text: str
-    status: str          # saved|applied|phone_screen|technical|onsite|offer_received|accepted|rejected|ghosted
+    status: str  # saved|applied|phone_screen|technical|onsite|offer_received|accepted|rejected|ghosted
     applied_date: str | None
     contact_id: int | None
     notes: str
@@ -116,27 +92,15 @@ class ApplicationDict(TypedDict, total=False):
     resume_variant: str
     resume_path: str
     cover_letter_path: str
-    source: str          # manual|autoapply|linkedin_easy_apply
-
-
-class MessageDict(TypedDict, total=False):
-    sender: str          # "me" or "them"
-    text: str
-    timestamp: str
-
-
-class ConversationDict(TypedDict, total=False):
-    contact_id: int
-    messages: list[MessageDict]
-    updated_at: str
+    source: str  # manual|autoapply|linkedin_easy_apply
 
 
 class ContentPostDict(TypedDict, total=False):
     id: int
     title: str
     scheduled_date: str
-    status: str          # scheduled|posted|skipped
-    platform: str        # "linkedin"
+    status: str  # scheduled|posted|skipped
+    platform: str  # "linkedin"
     draft_id: int | None
     actual_posted_date: str | None
     created_at: str
@@ -152,12 +116,3 @@ class PostDict(TypedDict, total=False):
     posted_at: str
     draft_id: int | None
     calendar_id: int | None
-
-
-class InterviewPrepDict(TypedDict, total=False):
-    application_id: int
-    questions: list[str]
-    star_answers: list[str]
-    company_research: str
-    questions_to_ask: list[str]
-    updated_at: str

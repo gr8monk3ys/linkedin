@@ -205,15 +205,21 @@ def connection_note_for(contact_id: int, drafts: list[dict]) -> str:
 def send_due_connections(
     session: LinkedInSession,
     actions: list[dict],
+    contacts,
+    drafts,
+    contact_svc,
     *,
-    url_for: Callable[[int], str],
-    note_for: Callable[[int], str],
-    on_sent: Callable[[int], None],
     limit: int | None = None,
     max_consecutive_failures: int = 3,
 ) -> dict:
     """Send the day's invitations: every `send_connection` action, in priority
     order, until the run stops.
+
+    Takes the three collaborators it uses rather than four closures built by
+    its one caller: the contact repo for the profile URL, the draft repo for
+    the note, and the contact module to advance a contact that was invited.
+    Four callbacks with a single adapter is a hypothetical seam, and it left
+    the CRM write, the part that matters, outside anything tested.
 
     The planner has already ranked the actions, so the first one is the
     contact the day's scarce invitations should go to. Each result lands in
@@ -232,6 +238,7 @@ def send_due_connections(
       breakage, not a property of the contact. The first few say everything
       the next twenty-five would.
     """
+    draft_rows = drafts.list_all()
     sent: list[dict] = []
     skipped: list[dict] = []
     failed: list[dict] = []
@@ -247,12 +254,12 @@ def send_due_connections(
             break
         contact_id = action["contact_id"]
         row = {"contact_id": contact_id, "name": action.get("name", "")}
-        url = url_for(contact_id)
+        url = str((contacts.get(contact_id) or {}).get("linkedin_url") or "")
         if not url:
             skipped.append({**row, "reason": "no linkedin_url"})
             continue
         attempts += 1
-        result = session.connect(url, note=note_for(contact_id))
+        result = session.connect(url, note=connection_note_for(contact_id, draft_rows))
         if result.status == "unconfirmed":
             # The page would not confirm delivery. Do not advance the contact on
             # a maybe, and stop: whatever is wrong is not per-contact.
@@ -262,7 +269,10 @@ def send_due_connections(
         if result:
             consecutive_failures = 0
             sent.append(row)
-            on_sent(contact_id)
+            if not session.dry_run:
+                # The advance lives here, inside what the tests drive, rather
+                # than in a closure the caller supplied and nothing covered.
+                contact_svc.update_contact(contact_id, status="connection_sent")
         elif result.status == "refused":
             stopped = result.reason
             break

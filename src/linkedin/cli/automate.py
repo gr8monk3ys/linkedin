@@ -7,7 +7,6 @@ from rich.table import Table
 
 from linkedin.cli._common import _app, _exit_unless_ok, cli, console
 from linkedin.services.automation_service import (
-    connection_note_for,
     publish_unreviewed,
     send_due_connections,
 )
@@ -262,25 +261,8 @@ def automate_connect(contact_id, note, draft_id, dry_run, headless):
 
 
 def _send_due_connections(session, actions: list[dict], limit: int | None = None) -> dict:
-    """The sender over this process's App: URLs and notes from the CRM, status updates on success."""
-    drafts = _app.draft_repo.list_all()
-
-    def url_for(contact_id: int) -> str:
-        contact = _app.contact_repo.get(contact_id) or {}
-        return str(contact.get("linkedin_url") or "")
-
-    def on_sent(contact_id: int) -> None:
-        if not session.dry_run:
-            _app.contact_svc.update_contact(contact_id, status="connection_sent")
-
-    return send_due_connections(
-        session,
-        actions,
-        url_for=url_for,
-        note_for=lambda cid: connection_note_for(cid, drafts),
-        on_sent=on_sent,
-        limit=limit,
-    )
+    """The sender over this process's App."""
+    return send_due_connections(session, actions, _app.contact_repo, _app.draft_repo, _app.contact_svc, limit=limit)
 
 
 @automate.command("connect-due")

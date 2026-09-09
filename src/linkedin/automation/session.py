@@ -174,6 +174,15 @@ class LinkedInSession:
             return ActionResult("ok", done.detail, None)
         return _ok(done.detail or None)
 
+    def _spend(self, kind: str, n: int = 1) -> None:
+        """Record the cost of something that happened. A dry run costs nothing.
+
+        Verbs that do not go through `_write` or `_read` were each re-deriving
+        this, and disagreeing about it.
+        """
+        if not self.dry_run:
+            self.budget.spend(kind, n)
+
     def _read(self, kind: str, act: Callable[[], Any]) -> ActionResult:
         """The preamble for a read: budget → pace → read. A dry run reads but does not spend."""
         if not self.budget.can(kind):
@@ -183,8 +192,7 @@ class LinkedInSession:
             data = act()
         except Exception as exc:
             return _failed(f"{type(exc).__name__}: {exc}")
-        if not self.dry_run:
-            self.budget.spend(kind)
+        self._spend(kind)
         return _ok(data)
 
     # -- writes -------------------------------------------------------------
@@ -233,23 +241,27 @@ class LinkedInSession:
         if count <= 0:
             return _refused("daily reaction limit reached", data=0)
         self.pacer.wait()
-        if profile_url:
-            self.page.goto_recent_activity(profile_url)
-        else:
-            self.page.goto_feed()
-        if self.dry_run:
-            return _ok(count, reason="dry_run")
         try:
+            # Navigation inside the try: a raise here is a breakage like any
+            # other, and used to escape the verb instead of becoming `failed`.
+            if profile_url:
+                self.page.goto_recent_activity(profile_url)
+            else:
+                self.page.goto_feed()
+            if self.dry_run:
+                return _ok(count, reason="dry_run")
             liked = int(self.page.like_visible_posts(count))
         except Exception as exc:
             return _failed(f"{type(exc).__name__}: {exc}", data=0)
-        self.budget.spend("reaction", liked)
+        self._spend("reaction", liked)
         return _ok(liked) if liked else _skipped("no posts to like", data=0)
 
     def sync_profile(self, headline: str = "", about: str = "") -> ActionResult:
         """Push headline and/or About. `data` is {field: "updated" | "failed" | "dry_run"} for the fields given."""
         if not headline and not about:
             return _refused("nothing to sync")
+        if not self.budget.can("profile_update"):
+            return _refused("daily profile_update limit reached")
         self.pacer.wait()
         results: dict[str, str] = {}
         for field, value, update in (("headline", headline, self.page.update_headline), ("about", about, self.page.update_about)):
@@ -259,11 +271,13 @@ class LinkedInSession:
                 results[field] = "dry_run"
                 continue
             try:
-                results[field] = "updated" if update(value) else "failed"
+                written = update(value)
+                results[field] = "updated" if written.outcome == "ok" else "failed"
             except Exception as exc:
                 results[field] = f"failed: {type(exc).__name__}"
         if self.dry_run:
             return _ok(results, reason="dry_run")
+        self._spend("profile_update")
         if any(v != "updated" for v in results.values()):
             return _failed("LinkedIn's profile editor did not accept every change", data=results)
         return _ok(results)
@@ -353,8 +367,7 @@ class LinkedInSession:
             row["posts"] = posts
         except Exception as exc:
             return _failed(f"{type(exc).__name__}: {exc}", data=row)
-        if not self.dry_run:
-            self.budget.spend("metrics")
+        self._spend("metrics")
         return _ok(row)
 
     def inbox(self, thread_limit: int = 25) -> ActionResult:
@@ -381,8 +394,7 @@ class LinkedInSession:
             data = act()
         except Exception as exc:
             return _failed(f"{type(exc).__name__}: {exc}", data={"threads": [], "pending_invitations": None})
-        if not self.dry_run:
-            self.budget.spend("search")
+        self._spend("search")
         return _ok(data)
 
 

@@ -428,3 +428,37 @@ def test_a_page_write_that_is_not_a_write_result_is_a_failure():
     page.send_connection_request.return_value = True
     r = s.connect("https://li/in/a")
     assert r.status == "failed" and "WriteResult" in r.reason
+
+
+def test_navigation_failures_inside_react_are_failed_not_raised():
+    """`react` navigated outside its try, so a raise there escaped the verb
+    instead of becoming the `failed` every other verb returns."""
+    s, page = make({"reaction": 5})
+    page.goto_feed.side_effect = RuntimeError("navigation blew up")
+    r = s.react(3)
+    assert r.status == "failed" and "RuntimeError" in r.reason
+
+
+def test_editing_the_public_profile_costs_budget():
+    """The widest-blast-radius write had no cap at all, which made CONTEXT's
+    "there is no 'no budget'" false for exactly that verb."""
+    s, page = make({"profile_update": 1})
+    page.update_headline.return_value = WriteResult("ok")
+
+    assert s.sync_profile(headline="h").status == "ok"
+    assert s.budget.remaining("profile_update") == 0
+    assert s.sync_profile(headline="h").status == "refused"
+
+
+def test_a_dry_run_spends_nothing_anywhere():
+    """One place derives it now, so this holds for every verb rather than the
+    ones that remembered to check."""
+    s, page = make({"reaction": 5, "metrics": 3, "profile_update": 2}, dry_run=True)
+    page.update_headline.return_value = WriteResult("ok")
+
+    s.react(2)
+    s.sync_profile(headline="h")
+    s.metrics()
+    assert s.budget.remaining("reaction") == 5
+    assert s.budget.remaining("metrics") == 3
+    assert s.budget.remaining("profile_update") == 2

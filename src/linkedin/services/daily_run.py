@@ -27,6 +27,7 @@ from linkedin.data.json_store import load_json
 from linkedin.services.automation_service import CONNECTION_OUTCOMES, empty_connection_outcome
 from linkedin.services.planner import SEND_CONNECTION, command_for, label_for
 from linkedin.services.run_state import (
+    acquire_run_lock,
     append_run_log,
     effective_idempotency_key,
     failure_streak,
@@ -34,6 +35,7 @@ from linkedin.services.run_state import (
     idempotency_key_seen,
     load_run_history_entries,
     record_idempotency_key,
+    release_run_lock,
     send_run_notification,
     set_last_failure_streak_notified,
 )
@@ -58,6 +60,9 @@ class RunConfig:
     notify_on_success: bool = False
     failure_streak_threshold: int = 3
     notify_on_recovery: bool = True
+    #: Minutes before an existing lock is treated as stale. The lock is part of
+    #: the run's lifecycle, like idempotency and the retry policy.
+    lock_ttl_minutes: int = 180
     retry_attempts: int = 1
     retry_backoff_seconds: float = 5.0
     #: Read the account's metrics (headless browser) before the plan. Never fails the run.
@@ -363,7 +368,31 @@ class DailyRun:
     # -- lifecycle --------------------------------------------------------------
 
     def execute(self, trigger: str, run_at: datetime, *, scheduled: bool = False) -> dict:
-        """Run with retries. The result carries `attempts` and, on recovery, `recovered_after_retries`."""
+        """Run with retries, under the run lock.
+
+        The result carries `attempts` and, on recovery, `recovered_after_retries`.
+        A run that cannot take the lock returns `skipped_locked` like any other
+        status. That used to be built by hand in the CLI, which made it the one
+        run-log entry written outside this module and unreachable from its tests.
+        """
+        acquired, lock_error = acquire_run_lock(self.app.data_dir, lock_ttl_minutes=self.config.lock_ttl_minutes)
+        if not acquired:
+            now = datetime.now().isoformat(timespec="seconds")
+            skipped = {
+                "status": "skipped_locked",
+                "trigger": trigger,
+                "reason": lock_error,
+                "started_at": now,
+                "finished_at": now,
+            }
+            append_run_log(self.app.data_dir, skipped)
+            return skipped
+        try:
+            return self._execute_with_retries(trigger, run_at, scheduled=scheduled)
+        finally:
+            release_run_lock(self.app.data_dir)
+
+    def _execute_with_retries(self, trigger: str, run_at: datetime, *, scheduled: bool) -> dict:
         cfg = self.config
         max_attempts = max(1, cfg.retry_attempts + 1)
         result: dict = {}

@@ -3,6 +3,8 @@
 from datetime import datetime
 from unittest.mock import patch
 
+import pytest
+
 from linkedin.app import App
 from linkedin.data.paths import DataDir
 from linkedin.services.daily_run import DailyRun, RunConfig, build_plan
@@ -169,3 +171,49 @@ def test_metrics_are_not_collected_unless_asked(tmp_path):
     app = App(DataDir(tmp_path))
     run = DailyRun(app, RunConfig(), sleep=lambda s: None, metrics_collector=lambda: {"recorded": "x"})
     assert "metrics_collected" not in run.cycle()
+
+
+def test_a_locked_run_is_skipped_and_logged_without_a_cli(tmp_path):
+    """`skipped_locked` used to be built by hand in the CLI, which made it the
+    one run-log entry written outside this module and unreachable from here."""
+    from linkedin.services.run_state import acquire_run_lock, load_run_history_entries
+
+    app = App(DataDir(tmp_path))
+    held, _ = acquire_run_lock(app.data_dir, lock_ttl_minutes=180)
+    assert held, "the first holder takes the lock"
+
+    result = DailyRun(app, RunConfig()).execute("scheduled", datetime(2026, 9, 9, 9, 0))
+
+    assert result["status"] == "skipped_locked"
+    assert result["trigger"] == "scheduled"
+    assert result["reason"]
+    logged = load_run_history_entries(app.data_dir)
+    assert logged[-1]["status"] == "skipped_locked", "one writer, and it is this module"
+
+
+def test_the_lock_is_released_even_when_the_run_raises(tmp_path):
+    from linkedin.services.run_state import acquire_run_lock
+
+    app = App(DataDir(tmp_path))
+    run = DailyRun(app, RunConfig())
+    with patch.object(DailyRun, "_execute_with_retries", side_effect=RuntimeError("boom")):
+        with pytest.raises(RuntimeError):
+            run.execute("manual", datetime(2026, 9, 9, 9, 0))
+
+    held, _ = acquire_run_lock(app.data_dir, lock_ttl_minutes=180)
+    assert held, "a raise must not leave the lock behind"
+
+
+def test_a_stale_lock_does_not_block_forever(tmp_path):
+    """The TTL is config-shaped, like every other lifecycle knob. It is floored
+    at a minute on purpose, so a zero cannot make every lock instantly stale."""
+    import json
+    from datetime import timedelta
+
+    app = App(DataDir(tmp_path))
+    app.data_dir.run_daily_lock.parent.mkdir(parents=True, exist_ok=True)
+    stale = (datetime.now() - timedelta(hours=4)).isoformat(timespec="seconds")
+    app.data_dir.run_daily_lock.write_text(json.dumps({"pid": 1, "created_at": stale}))
+
+    result = DailyRun(app, RunConfig(lock_ttl_minutes=60)).execute("manual", datetime(2026, 9, 9, 9, 0))
+    assert result["status"] != "skipped_locked", "a four-hour-old lock is stale against a 60 minute TTL"

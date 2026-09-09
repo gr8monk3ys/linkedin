@@ -1,11 +1,11 @@
 """The invitation sender: who, how many, and what stops it. No browser."""
 
-from unittest.mock import patch
-
 from click.testing import CliRunner
 
+from linkedin.app import App
 from linkedin.automation.session import ActionResult
 from linkedin.cli import _app, cli
+from linkedin.data.paths import DataDir
 from linkedin.services.automation_service import connection_note_for, send_due_connections
 from linkedin.services.daily_run import DailyRun, RunConfig, build_plan
 from tests.fake_session import FakeSession
@@ -15,27 +15,37 @@ def _actions(*ids):
     return [{"action": "send_connection", "contact_id": i, "name": f"C{i}", "priority": 100 - i} for i in ids]
 
 
-def test_sends_in_planner_order_and_records_each_outcome():
+def _crm(tmp_path, ids, without_url=()):
+    """Real repos on disk, so the CRM write is an assertion rather than a lambda."""
+    app = App(DataDir(tmp_path))
+    for i in ids:
+        app.contact_svc.add_contact(f"C{i}", "Engineer", "Co", "" if i in without_url else f"https://li/in/c{i}")
+    return app
+
+
+def _send(app, session, actions, **kw):
+    return send_due_connections(session, actions, app.contact_repo, app.draft_repo, app.contact_svc, **kw)
+
+
+def test_sends_in_planner_order_and_records_each_outcome(tmp_path):
+    app = _crm(tmp_path, [1, 2, 3, 4, 5], without_url=[5])
     session = FakeSession()
-    responses = iter(
-        [
-            ActionResult("ok", "", None),
-            ActionResult("skipped", "already connected", None),
-            ActionResult("failed", "Connect button missing", None),
-            ActionResult("ok", "", None),
-        ]
+    # A scripted sequence through the double's own interface, rather than
+    # patching `_verb` and testing past it.
+    session.results["connect"] = [
+        ActionResult("ok", "", None),
+        ActionResult("skipped", "already connected", None),
+        ActionResult("failed", "Connect button missing", None),
+        ActionResult("ok", "", None),
+    ]
+    outcome = _send(
+        app,
+        session,
+        [{"action": "follow_up_today", "contact_id": 9, "name": "Not an invitation"}, *_actions(1, 2, 3, 4, 5)],
     )
-    session.results["connect"] = None
-    with patch.object(session, "_verb", side_effect=lambda name, *a, **k: next(responses)):
-        sent_ids = []
-        outcome = send_due_connections(
-            session,
-            [{"action": "follow_up_today", "contact_id": 9, "name": "Not an invitation"}, *_actions(1, 2, 3, 4, 5)],
-            url_for=lambda cid: "" if cid == 5 else f"https://linkedin.com/in/c{cid}",
-            note_for=lambda cid: "",
-            on_sent=sent_ids.append,
-        )
-    assert [r["contact_id"] for r in outcome["sent"]] == [1, 4] and sent_ids == [1, 4]
+    assert [r["contact_id"] for r in outcome["sent"]] == [1, 4]
+    advanced = [c["id"] for c in app.contact_repo.list_all() if c["status"] == "connection_sent"]
+    assert advanced == [1, 4], "the CRM write is inside the tested module now"
     assert outcome["skipped"] == [
         {"contact_id": 2, "name": "C2", "reason": "already connected"},
         {"contact_id": 5, "name": "C5", "reason": "no linkedin_url"},
@@ -44,23 +54,20 @@ def test_sends_in_planner_order_and_records_each_outcome():
     assert outcome["stopped"] == ""
 
 
-def test_a_budget_refusal_stops_the_loop_without_touching_the_rest():
+def test_a_budget_refusal_stops_the_loop_without_touching_the_rest(tmp_path):
+    app = _crm(tmp_path, list([1, 2, 3]))
     session = FakeSession()
     session.results["connect"] = ActionResult("refused", "daily connection limit reached", None)
-    sent_ids = []
-    outcome = send_due_connections(
-        session, _actions(1, 2, 3), url_for=lambda cid: "u", note_for=lambda cid: "", on_sent=sent_ids.append
-    )
-    assert outcome["sent"] == [] and sent_ids == [] and outcome["stopped"] == "daily connection limit reached"
+    outcome = _send(app, session, _actions(1, 2, 3))
+    assert outcome["sent"] == [] and outcome["stopped"] == "daily connection limit reached"
     assert len(session.calls_to("connect")) == 1
 
 
-def test_limit_caps_below_the_budget():
+def test_limit_caps_below_the_budget(tmp_path):
+    app = _crm(tmp_path, list([1, 2, 3]))
     session = FakeSession()
     session.results["connect"] = ActionResult("ok", "", None)
-    outcome = send_due_connections(
-        session, _actions(1, 2, 3), url_for=lambda cid: "u", note_for=lambda cid: "", on_sent=lambda cid: None, limit=2
-    )
+    outcome = _send(app, session, _actions(1, 2, 3), limit=2)
     assert len(outcome["sent"]) == 2 and outcome["stopped"] == "limit of 2 reached"
 
 
@@ -168,71 +175,61 @@ def test_the_sender_draws_from_the_whole_queue_not_the_plan_slice(fake_session):
     assert [a["name"] for a in run.invitation_queue()] == ["Fresh"]
 
 
-def test_limit_caps_attempts_not_successes():
+def test_limit_caps_attempts_not_successes(tmp_path):
     """A --limit 1 run whose send fails must stop at one profile, not walk the queue.
 
     This is what happened live: every send failed, `limit` only counted
     successes, and the run loaded 28 profiles against LinkedIn.
     """
+    app = _crm(tmp_path, list(range(1, 30)))
     session = FakeSession()
     session.results["connect"] = ActionResult("failed", "send_button not found", None)
-    outcome = send_due_connections(
-        session,
-        _actions(*range(1, 30)),
-        url_for=lambda cid: "u",
-        note_for=lambda cid: "",
-        on_sent=lambda cid: None,
-        limit=1,
-    )
+
+    outcome = _send(app, session, _actions(*range(1, 30)), limit=1)
     assert len(session.calls_to("connect")) == 1
     assert len(outcome["failed"]) == 1 and outcome["stopped"] == "limit of 1 reached"
 
 
-def test_a_run_of_failures_stops_the_sweep():
+def test_a_run_of_failures_stops_the_sweep(tmp_path):
     """Three identical failures is a markup breakage; the next twenty-five say nothing new."""
+    app = _crm(tmp_path, list(range(1, 30)))
     session = FakeSession()
     session.results["connect"] = ActionResult("failed", "send_button not found", None)
-    outcome = send_due_connections(
-        session, _actions(*range(1, 30)), url_for=lambda cid: "u", note_for=lambda cid: "", on_sent=lambda cid: None
-    )
+
+    outcome = _send(app, session, _actions(*range(1, 30)))
     assert len(session.calls_to("connect")) == 3
     assert "3 sends failed in a row" in outcome["stopped"] and "send_button not found" in outcome["stopped"]
 
 
-def test_a_success_or_skip_resets_the_failure_run():
+def test_a_success_or_skip_resets_the_failure_run(tmp_path):
+    app = _crm(tmp_path, list(range(1, 30)))
     session = FakeSession()
-    responses = iter(
-        [
-            ActionResult("failed", "x", None),
-            ActionResult("failed", "x", None),
-            ActionResult("ok", "", None),
-            ActionResult("failed", "x", None),
-            ActionResult("failed", "x", None),
-            ActionResult("skipped", "already connected", None),
-            ActionResult("failed", "x", None),
-            ActionResult("failed", "x", None),
-            ActionResult("failed", "x", None),
-        ]
-    )
-    with patch.object(session, "_verb", side_effect=lambda name, *a, **k: next(responses)):
-        outcome = send_due_connections(
-            session, _actions(*range(1, 30)), url_for=lambda cid: "u", note_for=lambda cid: "", on_sent=lambda cid: None
-        )
+    session.results["connect"] = [
+        ActionResult("failed", "x", None),
+        ActionResult("failed", "x", None),
+        ActionResult("ok", "", None),
+        ActionResult("failed", "x", None),
+        ActionResult("failed", "x", None),
+        ActionResult("skipped", "already connected", None),
+        ActionResult("failed", "x", None),
+        ActionResult("failed", "x", None),
+        ActionResult("failed", "x", None),
+    ]
+
+    outcome = _send(app, session, _actions(*range(1, 30)))
     assert len(outcome["sent"]) == 1 and len(outcome["skipped"]) == 1 and len(outcome["failed"]) == 7
     assert "3 sends failed in a row" in outcome["stopped"]
 
 
-def test_an_unconfirmed_send_is_not_a_sent_one():
+def test_an_unconfirmed_send_is_not_a_sent_one(tmp_path):
+    app = _crm(tmp_path, list([1, 2, 3]))
     """The page clicked Send but would not confirm delivery. The contact must not
     advance on a maybe: the tool reported "Sent invitation to Jonathan Shin" for
     an invitation that never appeared in LinkedIn's sent list."""
     session = FakeSession()
     session.results["connect"] = ActionResult("unconfirmed", "dialog still open", None)
-    sent_ids = []
-    outcome = send_due_connections(
-        session, _actions(1, 2, 3), url_for=lambda cid: "u", note_for=lambda cid: "", on_sent=sent_ids.append
-    )
-    assert outcome["sent"] == [] and sent_ids == []
+    outcome = _send(app, session, _actions(1, 2, 3))
+    assert outcome["sent"] == []
     assert [r["contact_id"] for r in outcome["unconfirmed"]] == [1]
     assert outcome["stopped"] == "a send could not be confirmed; stopping"
     assert len(session.calls_to("connect")) == 1

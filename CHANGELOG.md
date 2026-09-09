@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/gr8monk3ys/linkedin/compare/v0.1.2...v0.2.0) (2026-09-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* the interview, optimize, research, discover, market, templates, calendar, campaigns and conversations command groups are removed. Job postings survive as `postings`.
+
+### Code Refactoring
+
+* cut the nine unused command groups and fix the invitation sender ([#68](https://github.com/gr8monk3ys/linkedin/issues/68)) ([e515d29](https://github.com/gr8monk3ys/linkedin/commit/e515d2937404ad56a80542030a3e50a66510764d))
+* deepen the Session interface, one write shape and one preamble ([#70](https://github.com/gr8monk3ys/linkedin/issues/70)) ([8043d44](https://github.com/gr8monk3ys/linkedin/commit/8043d4496287c0a21a1d6942c9f275dd93c5a544))
+
 ## [0.1.2](https://github.com/gr8monk3ys/linkedin/compare/v0.1.1...v0.1.2) (2026-09-04)
 
 

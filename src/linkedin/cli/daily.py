@@ -15,11 +15,8 @@ from linkedin.constants import (
 )
 from linkedin.services.daily_run import DailyRun, RunConfig, build_plan
 from linkedin.services.run_state import (
-    acquire_run_lock,
-    append_run_log,
     entry_timestamp,
     load_run_history_entries,
-    release_run_lock,
 )
 
 
@@ -332,34 +329,22 @@ def run_daily(
         notify_on_recovery=notify_on_recovery,
         retry_attempts=retry_attempts,
         retry_backoff_seconds=retry_backoff_seconds,
+        lock_ttl_minutes=lock_ttl_minutes,
         collect_metrics=collect_metrics,
         send_connections=send_connections,
     )
     run = _daily_run(config, show_drafts=False, as_json=as_json)
 
-    lock_acquired, lock_error = acquire_run_lock(_app.data_dir, lock_ttl_minutes=lock_ttl_minutes)
-    if not lock_acquired:
-        now = datetime.now().isoformat(timespec="seconds")
-        skipped = {
-            "status": "skipped_locked",
-            "trigger": trigger,
-            "reason": lock_error,
-            "started_at": now,
-            "finished_at": now,
-        }
-        append_run_log(_app.data_dir, skipped)
-        _emit_run_status(skipped, as_json=as_json)
+    # The lock is the run's, along with idempotency, retries and the log.
+    result = run.execute(trigger, datetime.now(), scheduled=trigger == "scheduled")
+    if result.get("status") == "skipped_locked":
+        _emit_run_status(result, as_json=as_json)
         return
-
-    try:
-        result = run.execute(trigger, datetime.now(), scheduled=trigger == "scheduled")
-        _emit_run_result(result, as_json)
-        # A stalled planner and a crashed run must both be visible to whatever
-        # scheduled us. Reporting exit 0 is how five months of empty runs hid.
-        if result.get("status") in ("no_actions", "failed"):
-            raise SystemExit(1)
-    finally:
-        release_run_lock(_app.data_dir)
+    _emit_run_result(result, as_json)
+    # A stalled planner and a crashed run must both be visible to whatever
+    # scheduled us. Reporting exit 0 is how five months of empty runs hid.
+    if result.get("status") in ("no_actions", "failed"):
+        raise SystemExit(1)
 
 
 @cli.command("run-history")

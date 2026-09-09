@@ -15,8 +15,10 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
   There is one error protocol; services do not raise `AIClientError` to the CLI.
 - **Proposal**: a *proposed* pipeline transition derived from inbound signals (messages, invitations).
   Applied one at a time by a human; a hand edit since the sync wins.
-- **Run**: one execution of `run-daily`. Has a status: `success`, `no_actions`, `failed`.
-  A run that generates only templates is `failed`.
+- **Run**: one execution of `run-daily`. Has a status: `success`, `no_actions`, `failed`,
+  `skipped_duplicate`, `skipped_locked`. A run that generates only templates is `failed`.
+  `DailyRun.execute` owns the whole lifecycle: the lock, idempotency, retries, the failure
+  streak, the run log and the classification. It is the only writer of the run log.
 - **Planner**: the module holding `ACTIONS` (one row per action name: label, command, draft spec),
   both status-rule tables, and the coverage checks. Every action a rule or a date branch can emit
   has a row; a half-added action fails at import or in the date-branch test.

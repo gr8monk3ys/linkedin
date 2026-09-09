@@ -36,6 +36,9 @@ DEFAULT_CAPS: dict[str, int] = {
     # CONTEXT.md's "there is no 'no budget'" false for exactly the write with
     # the widest blast radius.
     "profile_update": 2,
+    # Following costs no invitation quota, so it can run warmer than
+    # `connection`, but it is still an outbound action under a real name.
+    "follow": 10,
 }
 KINDS = tuple(DEFAULT_CAPS)
 

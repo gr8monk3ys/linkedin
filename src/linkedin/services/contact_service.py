@@ -266,6 +266,23 @@ class ContactService:
             "reason": reason,
         }
 
+    def record_followed(self, contact_id: int, when: str = "") -> ContactDict | None:
+        """Note that we follow this person on LinkedIn.
+
+        Not a pipeline status: following is not contact, and the pipeline
+        describes conversations. It is a field so the follow sweep can pass
+        over people already followed, and so `contacts view` says why someone
+        with no outreach is nonetheless in the network.
+        """
+        contact = self.contacts.get(contact_id)
+        if not contact:
+            return None
+        contact["followed_at"] = when or datetime.now().strftime("%Y-%m-%d")
+        contact.setdefault("activities", []).append(
+            {"type": "followed", "date": contact["followed_at"], "detail": "Followed on LinkedIn"}
+        )
+        return self.contacts.update(contact)
+
     def set_pinned(self, contact_id: int, pinned: bool) -> ContactDict | None:
         """Pin (or unpin) a contact: exempt from ranking, always followed."""
         contact = self.contacts.get(contact_id)

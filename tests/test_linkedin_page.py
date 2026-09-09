@@ -1195,3 +1195,53 @@ class TestJobResultScrolling:
 
         page.locator = locator
         assert len(LinkedInPage(page).get_job_results(limit=25)) == 1
+
+
+class TestFollow:
+    """The only action available on the highest-value contacts: their profiles
+    offer Follow instead of Connect."""
+
+    def test_follows_from_the_top_card(self, page):
+        follow = FakeElement("Follow Ada Lovelace")
+        card = page.register_top_card({("button", "Follow Ada Lovelace"): follow})
+
+        # The control flips to Following once it takes; that is the read-back.
+        original = follow.click
+
+        def click():
+            original()
+            card.children[canonical("role", "button", sel.FOLLOWING_BUTTON)] = [FakeElement("Following")]
+
+        follow.click = click
+        assert LinkedInPage(page).follow_profile(name="Ada Lovelace").outcome == "ok"
+        assert follow.clicked == 1
+
+    def test_already_following_is_a_normal_absence(self, page):
+        """The same control becomes Following. Clicking it again unfollows."""
+        following = FakeElement("Following")
+        page.register_top_card({("button", sel.FOLLOWING_BUTTON): following})
+
+        lp = LinkedInPage(page)
+        assert lp.follow_profile(name="Ada Lovelace").outcome == "not_applicable"
+        assert following.clicked == 0 and lp.selector_misses == []
+
+    def test_a_follow_belonging_to_someone_else_is_not_clicked(self, page):
+        """A person's own activity sits in the top card, and a post there carries
+        a Follow for its author."""
+        someone_else = FakeElement("Follow RevTech News")
+        page.register_top_card({("button", "Follow RevTech News"): someone_else})
+
+        lp = LinkedInPage(page)
+        result = lp.follow_profile(name="Ada Lovelace")
+        assert someone_else.clicked == 0
+        assert result.outcome == "selector_missing" and "follow_button" in lp.selector_misses
+
+    def test_a_button_that_never_flips_is_unconfirmed(self, page):
+        page.register_top_card({("button", "Follow Ada Lovelace"): FakeElement("Follow Ada Lovelace")})
+        result = LinkedInPage(page).follow_profile(name="Ada Lovelace")
+        assert result.outcome == "unconfirmed" and not result
+
+    def test_no_top_card_is_a_selector_miss(self, page):
+        lp = LinkedInPage(page)
+        assert lp.follow_profile(name="Ada").outcome == "selector_missing"
+        assert "profile_top_card" in lp.selector_misses

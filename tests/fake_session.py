@@ -23,6 +23,7 @@ VERBS = (
     "comment",
     "react",
     "feed",
+    "follow",
     "sync_profile",
     "easy_apply",
     "search",
@@ -47,9 +48,11 @@ class FakeSession:
     def selector_health(self) -> dict:
         return self.health
 
-    def _verb(self, name, *args, **kwargs) -> ActionResult:
-        self.calls.append((name, args, kwargs))
-        scripted = self.results.get(name)
+    def _verb(self, verb, /, *args, **kwargs) -> ActionResult:
+        # Positional-only: `follow(url, name=...)` and any future verb with a
+        # `name` argument would otherwise collide with this parameter.
+        self.calls.append((verb, args, kwargs))
+        scripted = self.results.get(verb)
         if isinstance(scripted, list):
             # A sequence, so a test can express "ok, then refused" without
             # patching `_verb` and testing past this double's own interface.

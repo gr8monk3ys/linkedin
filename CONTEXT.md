@@ -21,20 +21,28 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
   both status-rule tables, and the coverage checks. Every action a rule or a date branch can emit
   has a row; a half-added action fails at import or in the date-branch test.
 - **Session**: one open browser logged into LinkedIn. Exposes named verbs (`connect`, `message`,
-  `post`, `react`, `comment`, `inbox`, `jobs`, `scrape`, `search`, `sync_profile`, `easy_apply`),
-  owns budget, pacing, dry run, and the selector-health report on close. The test double is a
+  `post`, `react`, `feed`, `comment`, `inbox`, `jobs`, `scrape`, `search`, `sync_profile`,
+  `easy_apply`), owns budget, pacing, dry run, and the selector-health report on close. The page
+  object is behind it and not part of the interface: two callers reached past it for the feed and
+  for resuming an Easy Apply wizard, and so paid no budget and ignored dry run. The test double is a
   fake session, not a fake page.
-- **Action result**: what every session verb returns: `status` in `ok | skipped | refused | failed`,
-  `reason`, `data`. `refused` is a rule saying no (budget, template draft); `skipped` is a normal
-  absence; `failed` is a raise or a selector miss.
+- **Action result**: what every session verb returns: `status` in `ok | skipped | refused | failed |
+  unconfirmed`, `reason`, `data`. `refused` is a rule saying no (budget, template draft); `skipped`
+  is a normal absence; `failed` is a raise or a selector miss; `unconfirmed` is a write that may not
+  have happened, and is falsy, so nothing counts it as done. Its budget is spent regardless: a write
+  we cannot vouch for must be assumed to have happened, or the next run repeats it.
 - **Dry run**: the session navigates and reads, never writes, never spends budget.
 - **Budget**: daily caps per action kind, in `limits.json` under the data dir. `spend(kind, n)`
   and `remaining(kind)`. There is no "no budget".
 - **Data dir**: the one root every file lives under (`LINKEDIN_DATA_DIR`, default `~/.linkedin-cli`).
   Repos take their file at construction. Backups enumerate the directory.
 - **Write result**: what a page-object write returns: `outcome` in `ok | not_applicable |
-  selector_missing | degraded`, plus `detail` (the post URN for `create_post`). A write into an
-  editor we do not recognise is `selector_missing`, never a quiet success.
+  selector_missing | degraded | unconfirmed`, plus `detail` (the post URN for `create_post`). A write
+  into an editor we do not recognise is `selector_missing`, never a quiet success. `degraded` is a
+  write that happened but whose follow-up could not be read, so it cannot be measured: a post with no
+  URN, still a success. `unconfirmed` is a write that may not have happened at all. Those two were
+  one word once, which is how a post we cannot measure and an invitation that may never have been
+  sent became the same value, and the difference ended up carried in prose.
 - **Post**: a published LinkedIn post: URN, text, posted-at, source draft, source calendar entry.
   The join key for per-post metrics. A calendar entry is a schedule row that points at a post.
 - **Thread index**: the per-sync record of message threads: sender, thread URL, last-message time,

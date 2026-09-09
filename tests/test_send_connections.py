@@ -226,10 +226,8 @@ def test_an_unconfirmed_send_is_not_a_sent_one():
     """The page clicked Send but would not confirm delivery. The contact must not
     advance on a maybe: the tool reported "Sent invitation to Jonathan Shin" for
     an invitation that never appeared in LinkedIn's sent list."""
-    from linkedin.automation.linkedin_page import INVITATION_UNCONFIRMED
-
     session = FakeSession()
-    session.results["connect"] = ActionResult("ok", INVITATION_UNCONFIRMED, None)
+    session.results["connect"] = ActionResult("unconfirmed", "dialog still open", None)
     sent_ids = []
     outcome = send_due_connections(
         session, _actions(1, 2, 3), url_for=lambda cid: "u", note_for=lambda cid: "", on_sent=sent_ids.append
@@ -255,30 +253,16 @@ def test_dry_run_does_not_promise_a_send(fake_session):
 # -- the guard every advancing caller must go through --------------------------
 
 
-def test_invitation_confirmed_separates_clicked_from_delivered():
-    """`session._write` flattens a degraded write to ok, so truthiness alone
-    means "we clicked Send", not "an invitation was sent"."""
-    from linkedin.automation.linkedin_page import INVITATION_UNCONFIRMED
-    from linkedin.services.automation_service import invitation_confirmed
-
-    assert invitation_confirmed(ActionResult("ok", "", None))
-    assert not invitation_confirmed(ActionResult("ok", INVITATION_UNCONFIRMED, None))
-    assert not invitation_confirmed(ActionResult("failed", "boom", None))
-    assert not invitation_confirmed(ActionResult("skipped", "already connected", None))
-
-
 def test_automate_connect_does_not_advance_on_an_unconfirmed_send(fake_session):
     """The single-contact command had the bug the sweep was written to prevent:
     a degraded result is truthy, so it printed "sent" and advanced the contact."""
-    from linkedin.automation.linkedin_page import INVITATION_UNCONFIRMED
-
     runner = CliRunner()
     _add(runner, "Ann", "https://linkedin.com/in/ann")
-    fake_session.results["connect"] = ActionResult("ok", INVITATION_UNCONFIRMED, None)
+    fake_session.results["connect"] = ActionResult("unconfirmed", "dialog still open", None)
 
     result = runner.invoke(cli, ["automate", "connect", "1"])
     assert result.exit_code == 1
-    assert "delivery is unconfirmed" in result.output
+    assert "Unconfirmed: dialog still open" in result.output
     assert "Connection request sent" not in result.output
     assert _app.contact_repo.list_all()[0]["status"] == "not_contacted"
 

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from linkedin.automation.budget import Budget
+from linkedin.automation.linkedin_page import WriteResult
 from linkedin.automation.rate_limiter import RateLimiter
 from linkedin.automation.session import ActionResult, AutomationUnavailable, LinkedInSession, LoginFailed
 from linkedin.data.paths import DataDir
@@ -42,7 +43,7 @@ def test_result_is_truthy_only_on_ok():
 
 def test_connect_navigates_paces_acts_records():
     s, page = make({"connection": 1})
-    page.send_connection_request.return_value = True
+    page.send_connection_request.return_value = WriteResult("ok")
     r = s.connect("https://li/in/a", note="hi")
     assert r
     page.goto_profile.assert_called_once_with("https://li/in/a")
@@ -61,7 +62,7 @@ def test_connect_refused_before_navigating_when_budget_is_out():
 
 def test_a_missing_button_is_skipped_and_spends_nothing():
     s, page = make({"connection": 1})
-    page.send_connection_request.return_value = False
+    page.send_connection_request.return_value = WriteResult("not_applicable", "")
     r = s.connect("u")
     assert r.status == "skipped"
     assert s.budget.remaining("connection") == 1
@@ -99,10 +100,10 @@ def test_empty_text_is_refused_without_touching_the_page():
 
 def test_post_records_on_success_only():
     s, page = make({"post": 1})
-    page.create_post.return_value = False
+    page.create_post.return_value = WriteResult("not_applicable", "")
     assert s.post("x").status == "skipped"
     assert s.budget.remaining("post") == 1
-    page.create_post.return_value = True
+    page.create_post.return_value = WriteResult("ok")
     assert s.post("x")
     assert s.budget.remaining("post") == 0
 
@@ -137,13 +138,13 @@ def test_react_dry_run_reports_the_would_be_count():
 
 def test_sync_profile_reports_per_field_and_fails_if_any_did():
     s, page = make()
-    page.update_headline.return_value = True
-    page.update_about.return_value = False
+    page.update_headline.return_value = WriteResult("ok")
+    page.update_about.return_value = WriteResult("not_applicable", "")
     r = s.sync_profile(headline="h", about="a")
     assert r.status == "failed"
     assert r.data == {"headline": "updated", "about": "failed"}
     assert s.sync_profile().status == "refused"
-    page.update_headline.return_value = True
+    page.update_headline.return_value = WriteResult("ok")
     assert s.sync_profile(headline="h").data == {"headline": "updated"}
 
 
@@ -246,7 +247,9 @@ def _fake_stack(monkeypatch, *, logged_in=True, login_ok=False):
 def test_open_yields_a_logged_in_session_and_closes(monkeypatch, tmp_path):
     browser, page = _fake_stack(monkeypatch)
     with LinkedInSession.open(DataDir(tmp_path), headless=True) as s:
-        assert s.page is page
+        # Asserted through the interface: the page is an implementation detail
+        # now, and reaching for it is what let two callers skip the preamble.
+        assert s.selector_health() is page.selector_health.return_value
         assert not s.dry_run
         assert s.budget.usage_file == DataDir(tmp_path).automation_usage
     browser.close.assert_called_once()
@@ -279,7 +282,7 @@ def test_open_hands_the_window_to_a_person_and_saves_the_session(monkeypatch, tm
         return True
 
     with LinkedInSession.open(DataDir(tmp_path), on_login_needed=person_logs_in) as s:
-        assert s.page is page
+        assert s.selector_health() is page.selector_health.return_value
     assert seen == [page]
     browser.save_session.assert_called_once()
     browser.close.assert_called_once()
@@ -364,8 +367,6 @@ def _noop():
 
 
 def test_not_applicable_is_skipped_and_spends_nothing():
-    from linkedin.automation.linkedin_page import WriteResult
-
     s, page = make({"connection": 1})
     page.send_connection_request.return_value = WriteResult("not_applicable", "already connected or pending")
     r = s.connect("u")
@@ -375,7 +376,6 @@ def test_not_applicable_is_skipped_and_spends_nothing():
 
 def test_selector_missing_is_failed_not_skipped():
     """A renamed Connect button is a breakage; it must not read as 'already connected'."""
-    from linkedin.automation.linkedin_page import WriteResult
 
     s, page = make({"connection": 1})
     page.send_connection_request.return_value = WriteResult("selector_missing", "connect_button not found")
@@ -404,3 +404,100 @@ def test_degraded_is_ok_with_the_reason_and_no_data():
     assert r.status == "ok" and r.data is None
     assert "URN" in r.reason
     assert s.budget.remaining("post") == 0
+
+
+def test_the_two_halves_of_a_partial_write_map_differently():
+    """`degraded` and `unconfirmed` were one word, so "a post we cannot measure"
+    and "an invitation that may never have been sent" became the same value and
+    the difference ended up carried in prose."""
+    s, page = make({"post": 1, "connection": 1})
+
+    page.create_post.return_value = WriteResult("degraded", "posted, but the URN could not be read back")
+    posted = s.post("x")
+    assert posted.status == "ok" and posted, "a post that happened is a success even when unmeasurable"
+
+    page.send_connection_request.return_value = WriteResult("unconfirmed", "dialog still open")
+    invited = s.connect("https://li/in/a")
+    assert invited.status == "unconfirmed"
+    assert not invited, "a send we cannot vouch for must not read as done"
+    assert s.budget.remaining("connection") == 0, "but it still costs an invitation"
+
+
+def test_a_page_write_that_is_not_a_write_result_is_a_failure():
+    """The old contract accepted a bool, which no adapter produces and which the
+    doubles used to skip the confirmation and the URN read-back."""
+    s, page = make({"connection": 1})
+    page.send_connection_request.return_value = True
+    r = s.connect("https://li/in/a")
+    assert r.status == "failed" and "WriteResult" in r.reason
+
+
+def test_navigation_failures_inside_react_are_failed_not_raised():
+    """`react` navigated outside its try, so a raise there escaped the verb
+    instead of becoming the `failed` every other verb returns."""
+    s, page = make({"reaction": 5})
+    page.goto_feed.side_effect = RuntimeError("navigation blew up")
+    r = s.react(3)
+    assert r.status == "failed" and "RuntimeError" in r.reason
+
+
+def test_editing_the_public_profile_costs_budget():
+    """The widest-blast-radius write had no cap at all, which made CONTEXT's
+    "there is no 'no budget'" false for exactly that verb."""
+    s, page = make({"profile_update": 1})
+    page.update_headline.return_value = WriteResult("ok")
+
+    assert s.sync_profile(headline="h").status == "ok"
+    assert s.budget.remaining("profile_update") == 0
+    assert s.sync_profile(headline="h").status == "refused"
+
+
+def test_a_dry_run_spends_nothing_anywhere():
+    """One place derives it now, so this holds for every verb rather than the
+    ones that remembered to check."""
+    s, page = make({"reaction": 5, "metrics": 3, "profile_update": 2}, dry_run=True)
+    page.update_headline.return_value = WriteResult("ok")
+
+    s.react(2)
+    s.sync_profile(headline="h")
+    s.metrics()
+    assert s.budget.remaining("reaction") == 5
+    assert s.budget.remaining("metrics") == 3
+    assert s.budget.remaining("profile_update") == 2
+
+
+def test_reading_the_feed_pays_the_preamble():
+    """`engage_feed` took the feed straight off the page object, so the one path
+    that publishes model output publicly paid no budget and ignored dry run."""
+    s, page = make({"search": 1})
+    page.get_feed_posts.return_value = [{"author": "Ann"}]
+
+    read = s.feed(limit=5)
+    assert read.data == [{"author": "Ann"}]
+    assert s.budget.remaining("search") == 0
+    assert s.feed().status == "refused"
+
+
+def test_a_dry_run_reads_the_feed_and_spends_nothing():
+    s, page = make({"search": 2}, dry_run=True)
+    page.get_feed_posts.return_value = [{"author": "Ann"}]
+    assert s.feed().data == [{"author": "Ann"}]
+    assert s.budget.remaining("search") == 2
+
+
+def test_resuming_an_open_wizard_navigates_nowhere():
+    """A person finished a step by hand; the wizard is already on screen. The
+    CLI used to reach past the session to continue it."""
+    s, page = make({"easy_apply": 1})
+    page.easy_apply.return_value = {"status": "submitted"}
+
+    r = s.easy_apply(submit=True, continue_open=True)
+    assert r.status == "ok"
+    page.goto_profile.assert_not_called()
+    assert page.easy_apply.call_args.kwargs["max_steps"] == 2
+    assert s.budget.remaining("easy_apply") == 0
+
+
+def test_easy_apply_still_needs_a_url_when_not_resuming():
+    s, _ = make({"easy_apply": 1})
+    assert s.easy_apply(submit=True).status == "refused"

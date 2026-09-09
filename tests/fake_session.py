@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Any
-from unittest.mock import MagicMock
 
 from linkedin.automation.budget import Budget
 from linkedin.automation.session import ActionResult
@@ -23,6 +22,7 @@ VERBS = (
     "like_post",
     "comment",
     "react",
+    "feed",
     "sync_profile",
     "easy_apply",
     "search",
@@ -37,9 +37,9 @@ class FakeSession:
     def __init__(self, dry_run: bool = False):
         self.dry_run = dry_run
         self.budget = Budget.in_memory()
-        self.page = MagicMock()
         self.calls: list[tuple[str, tuple, dict]] = []
-        self.results: dict[str, ActionResult] = {}
+        #: verb name -> one result, or a list consumed in order
+        self.results: dict[str, ActionResult | list[ActionResult]] = {}
         self.health: dict = {"healthy": True, "misses": [], "selectors": {}}
         self.closed = False
         self.opened_with: dict[str, Any] = {}
@@ -49,8 +49,13 @@ class FakeSession:
 
     def _verb(self, name, *args, **kwargs) -> ActionResult:
         self.calls.append((name, args, kwargs))
-        if name in self.results:
-            return self.results[name]
+        scripted = self.results.get(name)
+        if isinstance(scripted, list):
+            # A sequence, so a test can express "ok, then refused" without
+            # patching `_verb` and testing past this double's own interface.
+            return scripted.pop(0) if scripted else ActionResult("ok")
+        if scripted is not None:
+            return scripted
         if self.dry_run:
             return ActionResult("ok", "dry_run", None)
         return ActionResult("ok")

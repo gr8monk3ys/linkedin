@@ -32,6 +32,10 @@ DEFAULT_CAPS: dict[str, int] = {
     "search": 30,
     "profile_view": 50,
     "metrics": 3,
+    # The verb that rewrites the public profile had no cap at all, which made
+    # CONTEXT.md's "there is no 'no budget'" false for exactly the write with
+    # the widest blast radius.
+    "profile_update": 2,
 }
 KINDS = tuple(DEFAULT_CAPS)
 

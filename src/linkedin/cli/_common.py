@@ -87,6 +87,13 @@ def _exit_unless_ok(result, *, dry_run_message: str, failure_prefix: str) -> Non
     if result.dry_run:
         console.print(f"[cyan]Dry run:[/cyan] {dry_run_message}")
         raise SystemExit(0)
+    if result.status == "unconfirmed":
+        # Not a failure: it may well have happened. Saying "could not send" would
+        # invite a retry, which is the one thing that must not follow a write we
+        # cannot vouch for. The budget has already been spent for the same reason.
+        console.print(f"[yellow]Unconfirmed: {result.reason}[/yellow]")
+        console.print("[dim]  Treated as done for budgeting. Check before retrying.[/dim]")
+        raise SystemExit(1)
     if not result:
         console.print(f"[red]{failure_prefix} ({result.status}: {result.reason}).[/red]")
         raise SystemExit(1)

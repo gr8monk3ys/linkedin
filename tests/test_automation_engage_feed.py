@@ -6,6 +6,7 @@ import pytest
 
 from linkedin.ai.client import AIClientError
 from linkedin.automation.budget import Budget
+from linkedin.automation.linkedin_page import WriteResult
 from linkedin.automation.session import LinkedInSession
 from linkedin.services.automation_service import AutomationService, publish_unreviewed
 from tests.test_session import NoPacer
@@ -36,8 +37,8 @@ class TestEngageFeed:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0), _post(1, author="Bob"), _post(2, author="Cara")]
-        page.like_post.return_value = True
-        page.comment_on_post.return_value = True
+        page.like_post.return_value = WriteResult("ok")
+        page.comment_on_post.return_value = WriteResult("ok")
         session = session_over(page)
 
         with patch("linkedin.ai.client.generate_with_ai", return_value="Nice point!") as gen:
@@ -60,7 +61,7 @@ class TestEngageFeed:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0, content="")]
-        page.like_post.return_value = True
+        page.like_post.return_value = WriteResult("ok")
         with patch("linkedin.ai.client.generate_with_ai") as gen:
             results = svc.engage_feed(session_over(page), limit=1, comment_count=1, approve_comment=publish_unreviewed)
         gen.assert_not_called()
@@ -70,7 +71,7 @@ class TestEngageFeed:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0)]
-        page.like_post.return_value = True
+        page.like_post.return_value = WriteResult("ok")
         with patch("linkedin.ai.client.generate_with_ai", side_effect=AIClientError("down")):
             results = svc.engage_feed(session_over(page), limit=1, comment_count=1, approve_comment=publish_unreviewed)
         assert results[0]["liked"]
@@ -93,7 +94,7 @@ class TestEngageFeed:
         page = MagicMock()
         long_content = "x" * 120
         page.get_feed_posts.return_value = [_post(0, content=long_content)]
-        page.like_post.return_value = True
+        page.like_post.return_value = WriteResult("ok")
         results = svc.engage_feed(session_over(page), limit=1, approve_comment=publish_unreviewed)
         assert results[0]["content_preview"] == "x" * 47 + "..."
 
@@ -185,7 +186,7 @@ class TestCommentApproval:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0)]
-        page.like_post.return_value = True
+        page.like_post.return_value = WriteResult("ok")
         session = session_over(page)
 
         with patch("linkedin.ai.client.generate_with_ai", return_value="Nice point!"):
@@ -200,8 +201,8 @@ class TestCommentApproval:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0)]
-        page.like_post.return_value = True
-        page.comment_on_post.return_value = True
+        page.like_post.return_value = WriteResult("ok")
+        page.comment_on_post.return_value = WriteResult("ok")
 
         seen = []
         with patch("linkedin.ai.client.generate_with_ai", return_value="Nice point!"):
@@ -219,7 +220,7 @@ class TestCommentApproval:
         svc = AutomationService(profile_repo)
         page = MagicMock()
         page.get_feed_posts.return_value = [_post(0)]
-        page.like_post.return_value = True
+        page.like_post.return_value = WriteResult("ok")
 
         with patch("linkedin.ai.client.generate_with_ai", return_value="I cannot help with that."):
             results = svc.engage_feed(session_over(page), limit=1, comment_count=1, approve_comment=publish_unreviewed)

@@ -159,7 +159,7 @@ class TestConnectionRequest:
         self._dialog(page, closes=False)
 
         result = LinkedInPage(page).send_connection_request()
-        assert result.outcome == "degraded" and "unconfirmed" in result.detail
+        assert result.outcome == "unconfirmed" and not result
 
     def test_a_connect_button_outside_the_top_card_is_never_clicked(self, page):
         """The regression. LinkedIn shows "Invite <someone else> to connect" on

@@ -613,9 +613,7 @@ def automate_easy_apply(application_id, submit, resume_repo, dry_run, headless):
         if result.reason == "ready_to_submit" and not headless:
             console.print("[yellow]Stopped at the review step. Review the application in the browser window.[/yellow]")
             if click.confirm("Submit it now?"):
-                result = session.record_easy_apply_outcome(
-                    session.page.easy_apply(resume_path="", submit=True, max_steps=2)
-                )
+                result = session.easy_apply(submit=True, continue_open=True)
         elif result.reason == "needs_manual_input" and not headless:
             # The automation never invents an answer, so a wizard that asks a
             # question stops here -- which is most of them. With a person at

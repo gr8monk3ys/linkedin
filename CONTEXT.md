@@ -21,8 +21,10 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
   both status-rule tables, and the coverage checks. Every action a rule or a date branch can emit
   has a row; a half-added action fails at import or in the date-branch test.
 - **Session**: one open browser logged into LinkedIn. Exposes named verbs (`connect`, `message`,
-  `post`, `react`, `comment`, `inbox`, `jobs`, `scrape`, `search`, `sync_profile`, `easy_apply`),
-  owns budget, pacing, dry run, and the selector-health report on close. The test double is a
+  `post`, `react`, `feed`, `comment`, `inbox`, `jobs`, `scrape`, `search`, `sync_profile`,
+  `easy_apply`), owns budget, pacing, dry run, and the selector-health report on close. The page
+  object is behind it and not part of the interface: two callers reached past it for the feed and
+  for resuming an Easy Apply wizard, and so paid no budget and ignored dry run. The test double is a
   fake session, not a fake page.
 - **Action result**: what every session verb returns: `status` in `ok | skipped | refused | failed |
   unconfirmed`, `reason`, `data`. `refused` is a rule saying no (budget, template draft); `skipped`

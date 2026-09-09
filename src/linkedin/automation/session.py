@@ -82,7 +82,7 @@ class LinkedInSession:
     """The verbs. Construct through `open()`; tests hand in a page and a budget."""
 
     def __init__(self, page: LinkedInPage, budget: Budget, *, pacer: RateLimiter | None = None, dry_run: bool = False, browser: BrowserManager | None = None):
-        self.page = page
+        self._page = page
         self.budget = budget
         self.pacer = pacer or RateLimiter()
         self.dry_run = dry_run
@@ -127,7 +127,7 @@ class LinkedInSession:
             browser.close()
 
     def selector_health(self) -> dict:
-        return self.page.selector_health()
+        return self._page.selector_health()
 
     # -- internals ----------------------------------------------------------
 
@@ -200,8 +200,8 @@ class LinkedInSession:
     def connect(self, profile_url: str, note: str = "") -> ActionResult:
         return self._write(
             "connection",
-            lambda: self.page.send_connection_request(note=note),
-            navigate=lambda: self.page.goto_profile(profile_url),
+            lambda: self._page.send_connection_request(note=note),
+            navigate=lambda: self._page.goto_profile(profile_url),
             skipped_reason="no Connect button, or already connected/pending",
         )
 
@@ -210,8 +210,8 @@ class LinkedInSession:
             return _refused("empty message")
         return self._write(
             "message",
-            lambda: self.page.send_message(text),
-            navigate=lambda: self.page.goto_profile(profile_url),
+            lambda: self._page.send_message(text),
+            navigate=lambda: self._page.goto_profile(profile_url),
             skipped_reason="not connected, or message dialog not found",
         )
 
@@ -220,16 +220,16 @@ class LinkedInSession:
         (posted, URN unreadable) is `ok` with the reason set and no data."""
         if not text.strip():
             return _refused("empty post")
-        return self._write("post", lambda: self.page.create_post(text), skipped_reason="post editor not found")
+        return self._write("post", lambda: self._page.create_post(text), skipped_reason="post editor not found")
 
     def like_post(self, post_index: int) -> ActionResult:
         """Like one feed post already on screen (the feed pipeline)."""
-        return self._write("reaction", lambda: self.page.like_post(post_index), skipped_reason="already liked, or no Like button")
+        return self._write("reaction", lambda: self._page.like_post(post_index), skipped_reason="already liked, or no Like button")
 
     def comment(self, post_index: int, text: str) -> ActionResult:
         if not text.strip():
             return _refused("empty comment")
-        return self._write("comment", lambda: self.page.comment_on_post(post_index, text), skipped_reason="comment box not found")
+        return self._write("comment", lambda: self._page.comment_on_post(post_index, text), skipped_reason="comment box not found")
 
     def react(self, count: int, profile_url: str = "") -> ActionResult:
         """Like up to `count` posts: a contact's recent activity, or the home feed.
@@ -245,16 +245,25 @@ class LinkedInSession:
             # Navigation inside the try: a raise here is a breakage like any
             # other, and used to escape the verb instead of becoming `failed`.
             if profile_url:
-                self.page.goto_recent_activity(profile_url)
+                self._page.goto_recent_activity(profile_url)
             else:
-                self.page.goto_feed()
+                self._page.goto_feed()
             if self.dry_run:
                 return _ok(count, reason="dry_run")
-            liked = int(self.page.like_visible_posts(count))
+            liked = int(self._page.like_visible_posts(count))
         except Exception as exc:
             return _failed(f"{type(exc).__name__}: {exc}", data=0)
         self._spend("reaction", liked)
         return _ok(liked) if liked else _skipped("no posts to like", data=0)
+
+    def feed(self, limit: int = 10) -> ActionResult:
+        """Read the home feed. `data` is the page object's post dicts.
+
+        A read verb so the feed pays budget, pacing and dry run like everything
+        else. `engage_feed` used to take this straight off the page object, and
+        so paid none of them.
+        """
+        return self._read("search", lambda: self._page.get_feed_posts(max_posts=limit))
 
     def sync_profile(self, headline: str = "", about: str = "") -> ActionResult:
         """Push headline and/or About. `data` is {field: "updated" | "failed" | "dry_run"} for the fields given."""
@@ -264,7 +273,7 @@ class LinkedInSession:
             return _refused("daily profile_update limit reached")
         self.pacer.wait()
         results: dict[str, str] = {}
-        for field, value, update in (("headline", headline, self.page.update_headline), ("about", about, self.page.update_about)):
+        for field, value, update in (("headline", headline, self._page.update_headline), ("about", about, self._page.update_about)):
             if not value:
                 continue
             if self.dry_run:
@@ -282,23 +291,35 @@ class LinkedInSession:
             return _failed("LinkedIn's profile editor did not accept every change", data=results)
         return _ok(results)
 
-    def easy_apply(self, job_url: str, resume_path: str = "", submit: bool = False) -> ActionResult:
+    def easy_apply(
+        self, job_url: str = "", resume_path: str = "", submit: bool = False, *, continue_open: bool = False
+    ) -> ActionResult:
         """Run the Easy Apply flow. Budget is spent only on a submitted application.
 
         `data` is the page object's result dict; `status` maps its `status`:
         submitted → ok; ready_to_submit / needs_manual_input / no_easy_apply →
         skipped with that reason; anything else → failed.
+
+        `continue_open` resumes a wizard already on screen after a person
+        finished a step by hand, so it navigates nowhere and needs no job URL.
+        A parameter rather than a second verb: there is one caller, and a verb
+        with one caller is surface without a second adapter to justify it.
         """
-        if not job_url:
+        if not job_url and not continue_open:
             return _refused("application has no job URL")
         if submit and not self.budget.can("easy_apply"):
             return _refused("daily easy_apply limit reached")
         self.pacer.wait()
         if self.dry_run:
-            return _ok({"status": "dry_run", "detail": f"Would Easy Apply to {job_url}"}, reason="dry_run")
-        self.page.goto_profile(job_url)  # generic navigation; any URL
+            target = "the open application" if continue_open else job_url
+            return _ok({"status": "dry_run", "detail": f"Would Easy Apply to {target}"}, reason="dry_run")
+        if not continue_open:
+            self._page.goto_profile(job_url)  # generic navigation; any URL
         try:
-            result = self.page.easy_apply(resume_path=resume_path, submit=submit)
+            if continue_open:
+                result = self._page.easy_apply(resume_path="", submit=True, max_steps=2)
+            else:
+                result = self._page.easy_apply(resume_path=resume_path, submit=submit)
         except Exception as exc:
             return _failed(f"{type(exc).__name__}: {exc}")
         return self.record_easy_apply_outcome(result)
@@ -321,22 +342,22 @@ class LinkedInSession:
     def search(self, query: str, limit: int = 20, network: str = "") -> ActionResult:
         """People search. `data` is a list of {name, headline, linkedin_url}."""
         def act():
-            self.page.goto_search(query, network=network)
-            return self.page.get_search_results()[:limit]
+            self._page.goto_search(query, network=network)
+            return self._page.get_search_results()[:limit]
         return self._read("search", act)
 
     def jobs(self, query: str, location: str = "", limit: int = 25) -> ActionResult:
         """Job search. `data` is a list of raw job dicts."""
         def act():
-            self.page.goto_job_search(query, location=location)
-            return self.page.get_job_results(limit=limit)
+            self._page.goto_job_search(query, location=location)
+            return self._page.get_job_results(limit=limit)
         return self._read("search", act)
 
     def scrape(self, profile_url: str) -> ActionResult:
         """One profile. `data` is {name, headline, location, about}; skipped when no name could be read."""
         def act():
-            self.page.goto_profile(profile_url)
-            return self.page.scrape_profile()
+            self._page.goto_profile(profile_url)
+            return self._page.scrape_profile()
         result = self._read("profile_view", act)
         if result and not result.data.get("name"):
             return _skipped("no profile name on the page", data=result.data)
@@ -352,18 +373,18 @@ class LinkedInSession:
         row: dict[str, Any] = {}
         try:
             self.pacer.wait()
-            network = self.page.read_network_counts()
+            network = self._page.read_network_counts()
             self.pacer.wait()
-            row.update(self.page.read_dashboard_metrics())
+            row.update(self._page.read_dashboard_metrics())
             row["connections"] = network.get("connections")
             if row.get("followers") is None:
                 row["followers"] = network.get("followers_on_profile")
             self.pacer.wait()
-            row["ssi"] = self.page.read_ssi()
+            row["ssi"] = self._page.read_ssi()
             posts: dict[str, int | None] = {}
             for urn in post_urns or []:
                 self.pacer.wait()
-                posts[urn] = self.page.read_post_impressions(urn)
+                posts[urn] = self._page.read_post_impressions(urn)
             row["posts"] = posts
         except Exception as exc:
             return _failed(f"{type(exc).__name__}: {exc}", data=row)
@@ -383,11 +404,11 @@ class LinkedInSession:
 
         def act():
             self.pacer.wait()
-            self.page.goto_messaging()
-            threads = self.page.get_message_threads(limit=thread_limit)
+            self._page.goto_messaging()
+            threads = self._page.get_message_threads(limit=thread_limit)
             self.pacer.wait()
-            self.page.goto_sent_invitations()
-            pending = self.page.get_pending_sent_invitations()
+            self._page.goto_sent_invitations()
+            pending = self._page.get_pending_sent_invitations()
             return {"threads": threads, "pending_invitations": pending}
 
         try:

@@ -90,7 +90,8 @@ class AutomationService:
         Returns one result dict per post seen:
             {"author", "content_preview", "liked", "commented", "comment_text", "skipped_reason"}
         """
-        posts = session.page.get_feed_posts(max_posts=limit)
+        read = session.feed(limit=limit)
+        posts = read.data or []
         if not posts:
             return []
 

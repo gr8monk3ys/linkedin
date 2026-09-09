@@ -410,3 +410,26 @@ def test_easy_apply_question_step_headless_is_still_a_failure(runner, fake_sessi
     )
     result = runner.invoke(cli, ["automate", "easy-apply", "1", "--submit", "--headless"])
     assert result.exit_code == 1
+
+
+def test_engage_feed_runs_through_the_session_and_is_reviewed(runner, fake_session, monkeypatch):
+    """The path that publishes model output publicly under a real name had no
+    test through the interface that ships it, because the fake session handed
+    it a MagicMock page and `engage_feed` read the page directly."""
+    fake_session.results["feed"] = ActionResult(
+        "ok", "", [{"element_index": 0, "author": "Ann", "headline": "Engineer", "content": "shipping a thing"}]
+    )
+    monkeypatch.setattr("linkedin.ai.client.generate_with_ai", lambda *a, **k: "Nice work on that.")
+
+    result = runner.invoke(cli, ["automate", "engage", "--feed", "--likes", "1", "--comments", "1", "--yes"])
+    assert result.exit_code == 0, result.output
+    assert fake_session.calls_to("feed"), "the feed must be read through the session, not the page"
+    assert fake_session.calls_to("like_post")
+
+
+def test_engage_feed_stops_when_the_session_refuses_the_read(runner, fake_session):
+    """The budget now reaches the feed, so an exhausted one is visible here."""
+    fake_session.results["feed"] = ActionResult("refused", "daily search limit reached", None)
+    result = runner.invoke(cli, ["automate", "engage", "--feed", "--likes", "1"])
+    assert result.exit_code == 0, result.output
+    assert not fake_session.calls_to("like_post")

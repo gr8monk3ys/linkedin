@@ -247,7 +247,9 @@ def _fake_stack(monkeypatch, *, logged_in=True, login_ok=False):
 def test_open_yields_a_logged_in_session_and_closes(monkeypatch, tmp_path):
     browser, page = _fake_stack(monkeypatch)
     with LinkedInSession.open(DataDir(tmp_path), headless=True) as s:
-        assert s.page is page
+        # Asserted through the interface: the page is an implementation detail
+        # now, and reaching for it is what let two callers skip the preamble.
+        assert s.selector_health() is page.selector_health.return_value
         assert not s.dry_run
         assert s.budget.usage_file == DataDir(tmp_path).automation_usage
     browser.close.assert_called_once()
@@ -280,7 +282,7 @@ def test_open_hands_the_window_to_a_person_and_saves_the_session(monkeypatch, tm
         return True
 
     with LinkedInSession.open(DataDir(tmp_path), on_login_needed=person_logs_in) as s:
-        assert s.page is page
+        assert s.selector_health() is page.selector_health.return_value
     assert seen == [page]
     browser.save_session.assert_called_once()
     browser.close.assert_called_once()
@@ -462,3 +464,40 @@ def test_a_dry_run_spends_nothing_anywhere():
     assert s.budget.remaining("reaction") == 5
     assert s.budget.remaining("metrics") == 3
     assert s.budget.remaining("profile_update") == 2
+
+
+def test_reading_the_feed_pays_the_preamble():
+    """`engage_feed` took the feed straight off the page object, so the one path
+    that publishes model output publicly paid no budget and ignored dry run."""
+    s, page = make({"search": 1})
+    page.get_feed_posts.return_value = [{"author": "Ann"}]
+
+    read = s.feed(limit=5)
+    assert read.data == [{"author": "Ann"}]
+    assert s.budget.remaining("search") == 0
+    assert s.feed().status == "refused"
+
+
+def test_a_dry_run_reads_the_feed_and_spends_nothing():
+    s, page = make({"search": 2}, dry_run=True)
+    page.get_feed_posts.return_value = [{"author": "Ann"}]
+    assert s.feed().data == [{"author": "Ann"}]
+    assert s.budget.remaining("search") == 2
+
+
+def test_resuming_an_open_wizard_navigates_nowhere():
+    """A person finished a step by hand; the wizard is already on screen. The
+    CLI used to reach past the session to continue it."""
+    s, page = make({"easy_apply": 1})
+    page.easy_apply.return_value = {"status": "submitted"}
+
+    r = s.easy_apply(submit=True, continue_open=True)
+    assert r.status == "ok"
+    page.goto_profile.assert_not_called()
+    assert page.easy_apply.call_args.kwargs["max_steps"] == 2
+    assert s.budget.remaining("easy_apply") == 0
+
+
+def test_easy_apply_still_needs_a_url_when_not_resuming():
+    s, _ = make({"easy_apply": 1})
+    assert s.easy_apply(submit=True).status == "refused"

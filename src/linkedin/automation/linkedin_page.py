@@ -266,6 +266,8 @@ class LinkedInPage:
             if top.count() == 0:
                 return self._missing("profile_top_card", "no top card on the page")
 
+            self._wait_for_top_card_actions(top)
+
             connect_btn = top.get_by_role("button", name=sel.CONNECT_BUTTON)
             if connect_btn.count() > 0:
                 connect_btn.first.click()
@@ -335,6 +337,82 @@ class LinkedInPage:
         except Exception:
             return _ok()
         return _unconfirmed(INVITATION_UNCONFIRMED)
+
+    def _wait_for_top_card_actions(self, top, timeout_ms: int = 8000) -> None:
+        """Wait until the top card has an action control on it.
+
+        The card is server-rendered but its buttons arrive after it, so a read
+        in between sees a card with nothing in it. Any of these appearing means
+        the bar has mounted; none of them appearing is a real answer too, so a
+        timeout is not an error here.
+        """
+        for pattern in (sel.FOLLOW_BUTTON, sel.FOLLOWING_BUTTON, sel.CONNECT_BUTTON, sel.MORE_BUTTON):
+            try:
+                top.get_by_role("button", name=pattern).first.wait_for(timeout=timeout_ms // 4)
+                return
+            except Exception:
+                continue
+
+    def follow_profile(self, name: str = "") -> WriteResult:
+        """Follow the person whose profile is open. Scoped to the top card.
+
+        The highest-value people in the CRM cannot be invited at all: their
+        profiles offer Follow instead of Connect, which is creator mode or
+        LinkedIn withholding invitations. Following is the only action
+        available on them, so it is the only way to reach them.
+
+        Pass `name` when the caller knows it, which the CRM always does. The
+        top card can contain a person's own recent activity, and a post in it
+        carries a Follow for *its* author, so the loose match would follow
+        somebody else. With a name, only "Follow <name>" is accepted.
+
+        Already following is `not_applicable`, never a second click: the same
+        control becomes Following or Unfollow, and clicking it again unfollows.
+        """
+        try:
+            top = self._top_card()
+            try:
+                top.wait_for(timeout=10000)
+            except Exception:
+                pass
+            if top.count() == 0:
+                return self._missing("profile_top_card", "no top card on the page")
+
+            # Wait for the control, not just the card. The action bar mounts
+            # after the section does, and reading in between finds an empty top
+            # card and falls through to the More menu, which is how a profile
+            # with a plain Follow button read as having no Follow at all.
+            self._wait_for_top_card_actions(top)
+
+            if top.get_by_role("button", name=sel.FOLLOWING_BUTTON).count() > 0:
+                return _na("already following")
+
+            wanted = f"Follow {name}".strip() if name else sel.FOLLOW_BUTTON
+            button = top.get_by_role("button", name=wanted, exact=bool(name))
+            if button.count() == 0 and name:
+                # The name on the page can differ from the CRM's spelling.
+                button = top.get_by_role("button", name=sel.FOLLOW_BUTTON)
+            if button.count() == 0:
+                more = top.get_by_role("button", name=sel.MORE_BUTTON)
+                if more.count() == 0:
+                    return self._missing("follow_button", "no Follow or More button in the top card")
+                more.first.click()
+                self.page.wait_for_timeout(1200)
+                item = self.page.get_by_role("menuitem", name=sel.FOLLOW_MENU_ITEM)
+                if item.count() == 0:
+                    return _na("no Follow in the top card's More menu")
+                item.first.click()
+            else:
+                button.first.click()
+
+            self.page.wait_for_timeout(1500)
+            if top.get_by_role("button", name=sel.FOLLOWING_BUTTON).count() > 0:
+                return _ok()
+            # A click is not evidence here either. The control flipping to
+            # Following is the page saying it took.
+            return _unconfirmed("clicked Follow but the button did not change to Following")
+        except Exception as exc:
+            return self._missing("follow_button", f"{type(exc).__name__}: {exc}")
 
     # -------------------------------------------------------------------------
     # Messaging

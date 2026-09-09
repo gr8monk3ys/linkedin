@@ -296,3 +296,89 @@ CONNECTION_OUTCOMES = ("sent", "skipped", "failed", "unconfirmed")
 def empty_connection_outcome(stopped: str = "") -> dict:
     """An outcome dict with every bucket present. One shape, one place."""
     return {**{k: [] for k in CONNECTION_OUTCOMES}, "stopped": stopped}
+
+
+#: The buckets `follow_due_profiles` reports.
+FOLLOW_OUTCOMES = ("followed", "skipped", "failed", "unconfirmed")
+
+
+def empty_follow_outcome(stopped: str = "") -> dict:
+    return {**{k: [] for k in FOLLOW_OUTCOMES}, "stopped": stopped}
+
+
+def follow_due_profiles(
+    session: LinkedInSession,
+    actions: list[dict],
+    contacts,
+    contact_svc,
+    *,
+    limit: int | None = None,
+    max_consecutive_failures: int = 3,
+) -> dict:
+    """Follow the ranked contacts, best first, until the run stops.
+
+    Exists because the people worth most in this CRM cannot be invited: their
+    profiles offer Follow instead of Connect, so an invitation sweep skips
+    every one of them. Twenty-one of twenty-three did on 2026-09-09.
+
+    Same stop rules as the invitation sweep and for the same reasons: `limit`
+    caps attempts rather than successes, a refusal from the budget ends the
+    run, and a repeated failure is a markup breakage rather than a property of
+    the contact. A contact already recorded as followed is passed over without
+    a page load; the page still refuses a second click if that record is wrong,
+    so it is an optimisation and not a source of truth.
+    """
+    followed: list[dict] = []
+    skipped: list[dict] = []
+    failed: list[dict] = []
+    unconfirmed: list[dict] = []
+    stopped = ""
+    attempts = 0
+    consecutive_failures = 0
+    for action in actions:
+        if limit is not None and attempts >= limit:
+            stopped = f"limit of {limit} reached"
+            break
+        contact_id = action["contact_id"]
+        contact = contacts.get(contact_id) or {}
+        row = {"contact_id": contact_id, "name": contact.get("name") or action.get("name", "")}
+        if contact.get("followed_at"):
+            skipped.append({**row, "reason": "already followed"})
+            continue
+        url = str(contact.get("linkedin_url") or "")
+        if not url:
+            skipped.append({**row, "reason": "no linkedin_url"})
+            continue
+        attempts += 1
+        result = session.follow(url, name=contact.get("name") or "")
+        if result.status == "unconfirmed":
+            unconfirmed.append({**row, "reason": result.reason})
+            stopped = "a follow could not be confirmed; stopping"
+            break
+        if result:
+            consecutive_failures = 0
+            followed.append(row)
+            if not session.dry_run:
+                contact_svc.record_followed(contact_id)
+        elif result.status == "refused":
+            stopped = result.reason
+            break
+        elif result.status == "skipped":
+            consecutive_failures = 0
+            skipped.append({**row, "reason": result.reason})
+            if not session.dry_run and "already following" in (result.reason or ""):
+                # The page knows better than the CRM; write it down.
+                contact_svc.record_followed(contact_id)
+        else:
+            failed.append({**row, "reason": result.reason})
+            consecutive_failures += 1
+            if consecutive_failures >= max_consecutive_failures:
+                stopped = f"{consecutive_failures} follows failed in a row ({result.reason}); stopping"
+                break
+    return {
+        "followed": followed,
+        "skipped": skipped,
+        "failed": failed,
+        "unconfirmed": unconfirmed,
+        "stopped": stopped,
+    }

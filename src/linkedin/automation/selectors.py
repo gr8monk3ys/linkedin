@@ -49,6 +49,16 @@ ADD_NOTE_TEXTBOX = "Add a note"
 SEND_BUTTON = re.compile(r"^Send(?: invitation| now| without a note)?$", re.I)
 CONNECT_DIALOG = "dialog"
 
+#: The top card's Follow control, labelled "Follow <name>". Matched on that
+#: trailing space on purpose: a bare "Follow" is a substring of "Following" and
+#: of "Unfollow", so the loose form would read an account we already follow as
+#: one we still can, and click it back off. Verified live 2026-09-09.
+FOLLOW_BUTTON = re.compile(r"^Follow\s", re.I)
+#: What the same control says once we follow. Either label means "already done".
+FOLLOWING_BUTTON = re.compile(r"^(Following|Unfollow)\b", re.I)
+#: In the More menu it is a bare word, with no name after it.
+FOLLOW_MENU_ITEM = re.compile(r"^Follow$", re.I)
+
 MESSAGE_BUTTON = "Message"
 MESSAGE_TEXTBOX = "Write a message"
 
@@ -368,6 +378,7 @@ FRAGILE_SELECTORS = {
     "sign_in_button": SIGN_IN_BUTTON,
     "profile_top_card": PROFILE_TOP_CARD,
     "connect_button": CONNECT_BUTTON,
+    "follow_button": FOLLOW_BUTTON.pattern,
     "connect_dialog": CONNECT_DIALOG,
     "send_button": SEND_BUTTON.pattern,
     "message_button": MESSAGE_BUTTON,

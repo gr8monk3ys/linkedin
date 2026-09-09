@@ -13,6 +13,10 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
   Never published unattended; never passed off as a draft.
 - **AI result**: the value every model call returns: `text`, `error`, `was_fallback`.
   There is one error protocol; services do not raise `AIClientError` to the CLI.
+- **Follow**: following someone on LinkedIn, which is not contact and so is not a pipeline
+  status. Recorded as `followed_at` on the contact. It matters because the highest-ranked
+  people in this CRM cannot be invited at all: their profiles offer Follow instead of
+  Connect, and 21 of 23 in the invitation queue did on 2026-09-09.
 - **Proposal**: a *proposed* pipeline transition derived from inbound signals (messages, invitations).
   Applied one at a time by a human; a hand edit since the sync wins.
 - **Run**: one execution of `run-daily`. Has a status: `success`, `no_actions`, `failed`,
@@ -22,9 +26,9 @@ Terms as this codebase uses them. Use these words in code, tests, and docs.
 - **Planner**: the module holding `ACTIONS` (one row per action name: label, command, draft spec),
   both status-rule tables, and the coverage checks. Every action a rule or a date branch can emit
   has a row; a half-added action fails at import or in the date-branch test.
-- **Session**: one open browser logged into LinkedIn. Exposes named verbs (`connect`, `message`,
-  `post`, `react`, `feed`, `comment`, `inbox`, `jobs`, `scrape`, `search`, `sync_profile`,
-  `easy_apply`), owns budget, pacing, dry run, and the selector-health report on close. The page
+- **Session**: one open browser logged into LinkedIn. Exposes named verbs (`connect`, `follow`,
+  `message`, `post`, `react`, `feed`, `comment`, `inbox`, `jobs`, `scrape`, `search`,
+  `sync_profile`, `easy_apply`), owns budget, pacing, dry run, and the selector-health report on close. The page
   object is behind it and not part of the interface: two callers reached past it for the feed and
   for resuming an Easy Apply wizard, and so paid no budget and ignored dry run. The test double is a
   fake session, not a fake page.

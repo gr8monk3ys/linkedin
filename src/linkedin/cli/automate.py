@@ -7,6 +7,7 @@ from rich.table import Table
 
 from linkedin.cli._common import _app, _exit_unless_ok, cli, console
 from linkedin.services.automation_service import (
+    follow_due_profiles,
     publish_unreviewed,
     send_due_connections,
 )
@@ -301,6 +302,72 @@ def automate_connect_due(limit, dry_run, headless):
         console.print(f"[yellow]Stopped: {outcome['stopped']}[/yellow]")
     verb = "would be attempted" if dry_run else "sent"
     console.print(f"{len(outcome['sent'])} {verb}, {len(outcome['skipped'])} skipped, {len(outcome['failed'])} failed.")
+
+
+def _follow_due(session, actions: list[dict], limit: int | None = None) -> dict:
+    """The follow sweep over this process's App."""
+    return follow_due_profiles(session, actions, _app.contact_repo, _app.contact_svc, limit=limit)
+
+
+@automate.command("follow")
+@click.argument("contact_id", type=int)
+@click.option("--dry-run", is_flag=True, help="Navigate but do not click Follow")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+def automate_follow(contact_id, dry_run, headless):
+    """Follow a contact on LinkedIn.
+
+    The only action available on the people this CRM ranks highest: their
+    profiles offer Follow rather than Connect.
+    """
+    contact = _app.contact_repo.get(contact_id)
+    if not contact:
+        console.print(f"[red]Contact #{contact_id} not found.[/red]")
+        raise SystemExit(1)
+    if not contact.get("linkedin_url"):
+        console.print(f"[red]Contact #{contact_id} has no linkedin_url.[/red]")
+        raise SystemExit(1)
+
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        result = session.follow(contact["linkedin_url"], name=contact.get("name") or "")
+    _exit_unless_ok(
+        result,
+        dry_run_message=f"would follow {contact['name']}.",
+        failure_prefix="Could not follow",
+    )
+    _app.contact_svc.record_followed(contact_id)
+    console.print(f"[green]Now following {contact['name']}.[/green]")
+
+
+@automate.command("follow-due")
+@click.option("--limit", type=int, default=None, help="Follow at most this many (the daily budget still applies)")
+@click.option("--dry-run", is_flag=True, help="Navigate but do not click Follow")
+@click.option("--headless", is_flag=True, help="Run without a visible browser window")
+def automate_follow_due(limit, dry_run, headless):
+    """Follow the ranked contacts, best first, up to the daily budget.
+
+    Runs the same queue the invitation sweep does. Most of that queue cannot be
+    invited at all, so this is how those people are reached.
+    """
+    due = DailyRun(_app.get(), RunConfig()).invitation_queue()
+    if not due:
+        console.print("[dim]Nobody in the queue.[/dim]")
+        return
+    with _open_session(headless=headless, dry_run=dry_run) as session:
+        outcome = _follow_due(session, due, limit=limit)
+    for row in outcome["followed"]:
+        console.print(f"[green]{'Would follow' if dry_run else 'Followed'} {row['name']}.[/green]")
+    for row in outcome["skipped"]:
+        console.print(f"[dim]Skipped {row['name']}: {row['reason']}[/dim]")
+    for row in outcome["failed"]:
+        console.print(f"[red]Failed {row['name']}: {row['reason']}[/red]")
+    for row in outcome["unconfirmed"]:
+        console.print(f"[yellow]Unconfirmed {row['name']}: {row['reason']}[/yellow]")
+    if outcome["stopped"]:
+        console.print(f"[yellow]Stopped: {outcome['stopped']}[/yellow]")
+    verb = "would be followed" if dry_run else "followed"
+    console.print(
+        f"{len(outcome['followed'])} {verb}, {len(outcome['skipped'])} skipped, {len(outcome['failed'])} failed."
+    )
 
 
 @automate.command("message")

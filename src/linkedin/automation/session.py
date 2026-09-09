@@ -256,6 +256,22 @@ class LinkedInSession:
         self._spend("reaction", liked)
         return _ok(liked) if liked else _skipped("no posts to like", data=0)
 
+    def follow(self, profile_url: str, name: str = "") -> ActionResult:
+        """Follow a profile. The only action available on a follow-only person.
+
+        `name` is passed through so the page object can insist the Follow it
+        clicks is the profile's own and not one belonging to a post in their
+        activity.
+        """
+        if not profile_url:
+            return _refused("contact has no linkedin_url")
+        return self._write(
+            "follow",
+            lambda: self._page.follow_profile(name=name),
+            skipped_reason="already following, or no Follow control",
+            navigate=lambda: self._page.goto_profile(profile_url),
+        )
+
     def feed(self, limit: int = 10) -> ActionResult:
         """Read the home feed. `data` is the page object's post dicts.
 
